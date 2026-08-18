@@ -37,14 +37,21 @@ jobs:
         run: npm ci || npm install
       - name: Build
         working-directory: site
-        # BASE_PATH lets Astro emit correct asset URLs for the project site
-        # https://senro.dev/ (see site/astro.config.mjs for the one place the
-        # domain itself is declared).
+        # BASE_PATH is the path the project site is served under
+        # (/senro on github.io). Astro needs it to emit correct asset URLs,
+        # and astro.config.mjs's remarkBaseLinks needs it to prefix the
+        # root-relative links written inside Markdown.
         env:
           BASE_PATH: ${{ steps.pages.outputs.base_path }}
         run: npm run build
       - name: Check links
         working-directory: site
+        # The SAME BASE_PATH the build used. The checker strips it before
+        # resolving an href against dist/, so omitting it here reports every
+        # link on a based build as missing, and passing a different one would
+        # check a layout nobody deploys.
+        env:
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
         run: npm run linkcheck
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5

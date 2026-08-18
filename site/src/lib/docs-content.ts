@@ -11,8 +11,10 @@ export const LLMS_DESCRIPTION =
   "A pipeline engine defined in Go: build a Line of Steps as ordinary Go code, run it, and attach " +
   "to it live over a unix socket to watch and debug what it's doing. A pipeline engine first - " +
   "CI/CD is the obvious first use, not the boundary of what it's for.";
-export const LLMS_NOTES =
-  "Auto-generated from the senro documentation at https://senro.dev/docs.";
+// No absolute URL here: every link in these files is built with absoluteUrl
+// from Astro's own `site` and `base`, and a domain written a second time here
+// is one that goes stale the day the site moves.
+export const LLMS_NOTES = "Auto-generated from the senro documentation.";
 
 // Every doc page, raw (frontmatter included), keyed by project-absolute path.
 const rawPages = import.meta.glob("/src/pages/docs/**/*.md", {

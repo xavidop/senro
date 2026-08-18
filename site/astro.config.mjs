@@ -39,11 +39,45 @@ function remarkMermaid() {
   };
 }
 
+// remarkBaseLinks prefixes root-relative Markdown links with the configured
+// base. Astro rewrites `base` into component hrefs but NOT into links written
+// inside Markdown, so on a project Pages site (base "/senro/") a page linking
+// "/docs/steps/" resolves to <origin>/docs/steps/ and 404s: the docs are at
+// <origin>/senro/docs/steps/. Every cross-link in the docs tree is written
+// root-relative, so without this the whole tree is broken the moment it is
+// served under a base, and only there, which is why a base-less build looks
+// fine.
+//
+// Anchors, external URLs and protocol-relative URLs are left alone, as is
+// anything already carrying the base, so the transform is idempotent.
+function remarkBaseLinks() {
+  const prefix = base.replace(/\/$/, "");
+  return (tree) => {
+    if (!prefix) return;
+    const fix = (node) => {
+      const url = node.url;
+      if (typeof url !== "string") return;
+      if (!url.startsWith("/") || url.startsWith("//")) return;
+      if (url === prefix || url.startsWith(prefix + "/")) return;
+      node.url = prefix + url;
+    };
+    visit(tree, "link", fix);
+    visit(tree, "definition", fix);
+  };
+}
+
 export default defineConfig({
-  // The custom domain (CNAME) the site is served from: see this file's own
-  // top comment. senro.dev is a placeholder until a real domain is chosen;
-  // change only this line.
-  site: "https://senro.dev",
+  // The origin the site is actually served from. Canonical links, the
+  // sitemap and robots.txt's Sitemap line are all derived from it, so a
+  // value that is not where the site lives points crawlers and readers at
+  // a host that does not answer.
+  //
+  // This is the GitHub Pages project URL, which is what
+  // `gh api repos/xavidop/senro/pages` reports and where the Docs workflow
+  // publishes. To move to a custom domain, do BOTH: add site/public/CNAME
+  // containing the bare domain, and change this line to match. Doing only
+  // one leaves the built HTML disagreeing with where it is served.
+  site: "https://xavidop.github.io",
   base,
   // Internal doc links are root-relative (/docs/...), so they resolve the same
   // with or without a trailing slash; "ignore" lets the dev server serve both
@@ -56,7 +90,7 @@ export default defineConfig({
   // alike. See src/lib/docs-content.ts.
   integrations: [sitemap()],
   markdown: {
-    remarkPlugins: [remarkMermaid],
+    remarkPlugins: [remarkMermaid, remarkBaseLinks],
     shikiConfig: {
       // Two themes, not one. A single light theme was pinned here while the
       // site itself has a full dark palette, so in dark mode every code block

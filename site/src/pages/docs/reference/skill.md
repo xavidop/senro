@@ -86,13 +86,13 @@ Some of this is being built right now; the skill describes what's merged, not wh
 ## llms.txt
 
 If your agent does not use skills, point it at the docs directly: this site publishes the
-[llms.txt convention](https://llmstxt.org/). [`/llms.txt`](https://senro.dev/llms.txt) is a short
-linked index for an agent to navigate; [`/llms-full.txt`](https://senro.dev/llms-full.txt) is the
+[llms.txt convention](https://llmstxt.org/). [`/llms.txt`](/llms.txt) is a short
+linked index for an agent to navigate; [`/llms-full.txt`](/llms-full.txt) is the
 entire documentation as one Markdown file, for a single fetch. A prompt that works in most coding
 agents:
 
 ```text
-Add senro to my Go project. Docs: https://senro.dev/llms.txt
+Add senro to my Go project. Docs: <the site's /llms.txt>
 ```
 
 ## See also
