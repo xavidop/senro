@@ -1,0 +1,57 @@
+---
+// senro's background texture, drawn in the same vocabulary as the brand
+// mark: a line that opens into a passing loop and closes again. Keeping
+// the two in one vocabulary matters more than it sounds, because a texture
+// built from a shape the mark avoids puts that shape back on the page,
+// just tiled and faint instead of front and centre.
+//
+// Scattered at a large scale and low opacity so it reads as texture rather
+// than as something a reader has to parse. Purely decorative (aria-hidden),
+// positioned behind whatever section it is placed in.
+interface Props {
+  opacity?: number;
+}
+const { opacity = 1 } = Astro.props;
+---
+
+<svg
+  class="track-field"
+  style={`opacity:${opacity}`}
+  preserveAspectRatio="none"
+  aria-hidden="true"
+  focusable="false"
+>
+  <defs>
+    <pattern id="track-tile" width="120" height="72" patternUnits="userSpaceOnUse">
+      <path
+        d="M6,16 H22 L30,10 L38,16 L30,22 L22,16 M38,16 H54"
+        class="track-field__line"
+      ></path>
+      <path
+        d="M42,52 H58 L66,46 L74,52 L66,58 L58,52 M74,52 H102"
+        class="track-field__line"
+      ></path>
+    </pattern>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#track-tile)"></rect>
+</svg>
+
+<style>
+  .track-field {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 0;
+    mask-image: linear-gradient(180deg, black, transparent 92%);
+    -webkit-mask-image: linear-gradient(180deg, black, transparent 92%);
+  }
+  .track-field__line {
+    fill: none;
+    stroke: var(--line-strong);
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+</style>

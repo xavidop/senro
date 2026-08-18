@@ -1,0 +1,8 @@
+# A virtual workspace root: it declares the members and the shared tool
+# configuration, and is not a distribution itself.
+[tool.uv.workspace]
+members = ["packages/*", "services/*"]
+exclude = ["packages/legacy"]
+
+[tool.ruff]
+line-length = 100

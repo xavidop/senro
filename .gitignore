@@ -1,0 +1,64 @@
+# Build artifacts
+/bin/
+/dist/
+# Anchored to the repo root: an unanchored "senro" would also match
+# cmd/senro/, the CLI's own source package, and silently exclude it from
+# every `git add`.
+/senro
+
+# Run state
+/runs/
+# examples/monorepo and examples/customgraph move into the workspace they fan
+# out over before they build, so their run directories land there and not at
+# the repo root.
+/examples/monorepo/workspace/runs/
+/examples/customgraph/workspace/runs/
+
+# Go
+*.test
+*.out
+
+# The browser UI's compiled client, and the toolchain's own WebAssembly
+# bootstrap, both produced by `make wasm` into the directory internal/webui
+# embeds from. See that target's own comment for why neither is committed:
+# one is a 4MB binary that changes with every Go release and every edit to
+# the packages it links, and the other belongs to the toolchain and has to
+# match the compiler that built the first.
+/internal/webui/assets/senro-ui.wasm
+/internal/webui/assets/senro-ui.wasm.gz
+/internal/webui/assets/wasm_exec.js
+
+# Language-fixture build output.
+#
+# The unit graphs parse manifests and never run a build tool, so nothing in
+# the test suite creates these. A person validating a fixture against the real
+# tool does: `mvn -o validate` inside unit/maven/testdata leaves a target/ in
+# every module, and `gradle -q projects` over unit/gradle/testdata leaves a
+# project cache and a build directory. That is how these first appeared as
+# untracked files. Ignored rather than merely deleted, so validating a fixture
+# again does not put them back in front of the next person.
+#
+# Scoped to the fixtures on purpose. An unanchored `target/` or `build/` would
+# also hide a directory somebody legitimately adds elsewhere in this repo.
+/unit/*/testdata/**/target/
+/unit/*/testdata/**/build/
+/unit/*/testdata/**/node_modules/
+/unit/*/testdata/**/__pycache__/
+/unit/*/testdata/**/.gradle/
+
+# Node / Astro (site/)
+node_modules/
+site/dist/
+site/.astro/
+
+# Editor / OS
+.DS_Store
+
+# stray local test logs
+.race_test_output.txt
+*.race.out
+
+# Eclipse/Buildship output the IDE drops inside the Gradle unit-graph
+# fixtures. The fixtures are read as source by unit/gradle's tests; nothing
+# compiles them, so bin/ here is never ours and must not be committed.
+/unit/gradle/testdata/*/**/bin/

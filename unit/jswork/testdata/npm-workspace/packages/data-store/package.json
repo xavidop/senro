@@ -1,0 +1,6 @@
+{
+  "name": "@acme/store",
+  "version": "0.1.0",
+  "main": "src/index.js",
+  "dependencies": { "@acme/core": "^0.1.0" }
+}

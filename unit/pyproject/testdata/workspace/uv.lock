@@ -1,0 +1,17 @@
+version = 1
+requires-python = ">=3.12"
+
+[[package]]
+name = "acme-core"
+version = "0.1.0"
+source = { editable = "packages/core" }
+
+[[package]]
+name = "acme-store"
+version = "0.1.0"
+source = { editable = "packages/store" }
+
+[[package]]
+name = "acme-web"
+version = "0.1.0"
+source = { editable = "packages/web" }

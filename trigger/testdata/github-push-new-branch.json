@@ -1,0 +1,24 @@
+{
+  "provider": "github",
+  "event": "push",
+  "payload": {
+    "ref": "refs/heads/master",
+    "before": "0000000000000000000000000000000000000000",
+    "after": "6113728f27ae82c7b1a177c8d03f9e96e0adf246",
+    "created": true,
+    "deleted": false,
+    "commits": [
+      {
+        "added": [
+          "README.md"
+        ],
+        "removed": [],
+        "modified": []
+      }
+    ],
+    "repository": {
+      "full_name": "Codertocat/Hello-World",
+      "default_branch": "master"
+    }
+  }
+}

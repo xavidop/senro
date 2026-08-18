@@ -1,0 +1,297 @@
+---
+import "@fontsource-variable/plus-jakarta-sans";
+import "@fontsource-variable/inter";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
+import "@fontsource/ibm-plex-mono/600.css";
+import "../styles/global.css";
+import RailMark from "../components/RailMark.astro";
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+const {
+  title = "senro - a pipeline engine, defined in Go",
+  description = "senro defines pipelines as Go code, runs them, and exposes a live attach protocol so a second process can watch and debug a running pipeline. A pipeline engine first - CI/CD is the obvious first use, not the boundary of what it's for.",
+} = Astro.props;
+
+const base = import.meta.env.BASE_URL;
+const repo = "https://github.com/xavidop/senro";
+// Landing-page section anchors are absolute so they work from any page
+// (including /docs/*), not just the home page.
+const nav = [
+  { href: `${base}#why`, label: "Why" },
+  { href: `${base}#features`, label: "Features" },
+  { href: `${base}#invariants`, label: "How it works" },
+  { href: `${base}docs`, label: "Docs" },
+];
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#f6f6fb" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <link rel="icon" href={`${base}favicon.svg?v=4`} type="image/svg+xml" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap site-header__inner">
+        <a class="brand" href={base} aria-label="senro home">
+          <RailMark size={26} />
+          <span class="brand__word">senro</span>
+          <span class="brand__kana">線路</span>
+        </a>
+        <button class="nav-toggle" data-nav-toggle aria-label="Menu" aria-controls="site-nav" aria-expanded="false">
+          <span></span><span></span><span></span>
+        </button>
+        <nav class="site-nav" id="site-nav" aria-label="Primary">
+          {nav.map((n) => <a href={n.href}>{n.label}</a>)}
+          <a class="site-nav__gh" href={repo} target="_blank" rel="noopener" aria-label="senro on GitHub">
+            <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true">
+              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+            </svg>
+            <span>GitHub</span>
+          </a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <slot />
+    </main>
+
+    <script>
+      const navToggle = document.querySelector("[data-nav-toggle]");
+      const header = document.querySelector(".site-header");
+      if (navToggle && header) {
+        navToggle.addEventListener("click", () => {
+          const open = header.toggleAttribute("data-open");
+          navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+        });
+        header.querySelectorAll(".site-nav a").forEach((a) => {
+          a.addEventListener("click", () => {
+            header.removeAttribute("data-open");
+            navToggle.setAttribute("aria-expanded", "false");
+          });
+        });
+      }
+    </script>
+
+    <footer class="site-footer">
+      <div class="wrap site-footer__inner">
+        <div class="site-footer__brand">
+          <RailMark size={30} />
+          <div>
+            <strong>senro</strong>
+            <p>A pipeline engine, defined in Go.</p>
+          </div>
+        </div>
+        <div class="site-footer__links">
+          <a href="https://pkg.go.dev/github.com/xavidop/senro" target="_blank" rel="noopener">API reference</a>
+          <a href={`${base}docs/reference/embedding/`}>Embedding</a>
+          <a href={repo} target="_blank" rel="noopener">GitHub</a>
+          <a href={`${repo}/blob/main/LICENSE`} target="_blank" rel="noopener">MIT License</a>
+        </div>
+      </div>
+      <div class="wrap site-footer__base">
+        <span>線路 · senro · railway track</span>
+        <span>© 2026 Xavier Portilla Edo</span>
+      </div>
+    </footer>
+
+    <style>
+      .site-header {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        backdrop-filter: blur(12px);
+        background: color-mix(in srgb, var(--bg) 82%, transparent);
+        border-bottom: 1px solid var(--line);
+      }
+      .site-header__inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 66px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+      }
+      .brand__word {
+        font-family: var(--font-display);
+        font-size: 1.3rem;
+        font-weight: 600;
+      }
+      .brand__kana {
+        font-family: var(--font-display);
+        color: var(--signal);
+        font-size: 0.95rem;
+        opacity: 0.85;
+      }
+      .site-nav {
+        display: flex;
+        align-items: center;
+        gap: 1.6rem;
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+      }
+      .site-nav a {
+        color: var(--muted);
+        transition: color 0.2s var(--ease);
+      }
+      .site-nav a:hover {
+        color: var(--ink);
+      }
+      .site-nav__gh {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        color: var(--rail-deep) !important;
+        border: 1px solid color-mix(in srgb, var(--rail) 40%, transparent);
+        background: var(--rail-soft);
+        padding: 0.4rem 0.9rem;
+        border-radius: 999px;
+        transition:
+          border-color 0.2s var(--ease),
+          background 0.2s var(--ease);
+      }
+      .site-nav__gh svg {
+        color: var(--rail);
+      }
+      .site-nav__gh:hover {
+        border-color: var(--rail);
+        background: color-mix(in srgb, var(--rail) 24%, transparent);
+        color: var(--rail-deep) !important;
+      }
+      .nav-toggle {
+        display: none;
+        flex-direction: column;
+        justify-content: center;
+        gap: 5px;
+        width: 42px;
+        height: 42px;
+        background: none;
+        border: 1px solid var(--line-strong);
+        border-radius: 10px;
+        cursor: pointer;
+      }
+      .nav-toggle span {
+        display: block;
+        width: 18px;
+        height: 2px;
+        margin: 0 auto;
+        background: var(--ink);
+        border-radius: 2px;
+        transition:
+          transform 0.22s var(--ease),
+          opacity 0.22s var(--ease);
+      }
+      .site-header[data-open] .nav-toggle span:nth-child(1) {
+        transform: translateY(7px) rotate(45deg);
+      }
+      .site-header[data-open] .nav-toggle span:nth-child(2) {
+        opacity: 0;
+      }
+      .site-header[data-open] .nav-toggle span:nth-child(3) {
+        transform: translateY(-7px) rotate(-45deg);
+      }
+
+      @media (max-width: 720px) {
+        .nav-toggle {
+          display: flex;
+        }
+        .site-nav {
+          position: absolute;
+          top: 100%;
+          left: 0;
+          right: 0;
+          display: none;
+          flex-direction: column;
+          align-items: stretch;
+          gap: 0;
+          padding: 0.6rem 1.25rem 1rem;
+          background: color-mix(in srgb, var(--bg) 98%, transparent);
+          backdrop-filter: blur(12px);
+          border-bottom: 1px solid var(--line);
+          box-shadow: 0 22px 44px -26px rgba(24, 29, 32, 0.4);
+        }
+        .site-header[data-open] .site-nav {
+          display: flex;
+        }
+        .site-nav a {
+          padding: 0.7rem 0.3rem;
+          font-size: 1rem;
+          border-bottom: 1px solid var(--line);
+        }
+        .site-nav__gh {
+          margin-top: 0.7rem;
+          justify-content: center;
+          border-bottom: 1px solid color-mix(in srgb, var(--rail) 40%, transparent) !important;
+        }
+      }
+
+      .site-footer {
+        border-top: 1px solid var(--line);
+        padding-block: 3rem 2rem;
+        margin-top: 4rem;
+        background: linear-gradient(180deg, transparent, var(--bg-3));
+      }
+      .site-footer__inner {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2rem;
+        justify-content: space-between;
+        align-items: flex-start;
+      }
+      .site-footer__brand {
+        display: flex;
+        gap: 0.9rem;
+        align-items: center;
+        max-width: 320px;
+      }
+      .site-footer__brand strong {
+        font-family: var(--font-display);
+        font-size: 1.2rem;
+      }
+      .site-footer__brand p {
+        color: var(--muted);
+        margin: 0.2rem 0 0;
+        font-size: 0.9rem;
+      }
+      .site-footer__links {
+        display: grid;
+        gap: 0.7rem;
+        font-family: var(--font-mono);
+        font-size: 0.85rem;
+      }
+      .site-footer__links a {
+        color: var(--muted);
+      }
+      .site-footer__links a:hover {
+        color: var(--signal);
+      }
+      .site-footer__base {
+        display: flex;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 1rem;
+        margin-top: 2.5rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid var(--line);
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        color: var(--muted-2);
+      }
+    </style>
+  </body>
+</html>

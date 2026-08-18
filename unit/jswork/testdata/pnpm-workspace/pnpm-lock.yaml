@@ -1,0 +1,29 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .: {}
+
+  apps/web:
+    dependencies:
+      '@acme/store':
+        specifier: workspace:^
+        version: link:../../packages/store
+    devDependencies:
+      '@acme/testkit':
+        specifier: workspace:*
+        version: link:../../packages/testkit
+
+  packages/core: {}
+
+  packages/store:
+    dependencies:
+      '@acme/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/testkit: {}

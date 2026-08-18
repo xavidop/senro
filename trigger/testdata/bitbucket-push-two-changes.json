@@ -1,0 +1,52 @@
+{
+  "provider": "bitbucket",
+  "event": "repo:push",
+  "payload": {
+    "repository": {
+      "full_name": "team_name/repo_name"
+    },
+    "push": {
+      "changes": [
+        {
+          "new": {
+            "type": "branch",
+            "name": "main",
+            "target": {
+              "type": "commit",
+              "hash": "709d658dc5b6d6afcd46049c2f332ee3f515a67d"
+            }
+          },
+          "old": {
+            "type": "branch",
+            "name": "main",
+            "target": {
+              "type": "commit",
+              "hash": "1e65c05c1d5171631d92438a13901ca7dae9618c"
+            }
+          },
+          "created": false,
+          "forced": false,
+          "closed": false,
+          "commits": [],
+          "truncated": false
+        },
+        {
+          "new": {
+            "type": "tag",
+            "name": "v1.0.0",
+            "target": {
+              "type": "commit",
+              "hash": "709d658dc5b6d6afcd46049c2f332ee3f515a67d"
+            }
+          },
+          "old": null,
+          "created": true,
+          "forced": false,
+          "closed": false,
+          "commits": [],
+          "truncated": false
+        }
+      ]
+    }
+  }
+}

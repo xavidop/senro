@@ -1,0 +1,995 @@
+---
+import type { MarkdownHeading } from "astro";
+import Layout from "./Layout.astro";
+import Search from "../components/Search.astro";
+
+const { frontmatter, headings = [] } = Astro.props as {
+  frontmatter?: { title?: string };
+  headings?: MarkdownHeading[];
+};
+const title = frontmatter?.title
+  ? `${frontmatter.title} - senro docs`
+  : "senro docs";
+
+// In-page table of contents: the h2/h3 headings of the current page, rendered
+// on the right with scroll-spy so a reader always sees where they are. Astro
+// generates a slug for every heading (matching the anchor id it emits), so the
+// links here point straight at those anchors. Rendered only when a page has
+// enough structure to be worth navigating (2+ entries).
+const pageHeadings = headings.filter((h) => h.depth === 2 || h.depth === 3);
+const showPageToc = pageHeadings.length >= 2;
+
+const base = import.meta.env.BASE_URL;
+
+// Ordered, grouped multi-page navigation. slug "" is the docs index.
+const groups = [
+  {
+    label: "Start",
+    items: [
+      { slug: "", title: "Introduction" },
+      { slug: "install", title: "Install" },
+      { slug: "quickstart", title: "Quickstart" },
+      { slug: "concepts", title: "Concepts" },
+    ],
+  },
+  {
+    label: "Steps",
+    items: [
+      { slug: "steps", title: "Steps & commands" },
+      { slug: "steps/ordering", title: "Ordering" },
+      { slug: "steps/settings", title: "Env, dir & timeout" },
+      { slug: "steps/retries", title: "Retries" },
+      { slug: "steps/handlers", title: "Failure handlers" },
+      { slug: "steps/states", title: "Step states" },
+      { slug: "steps/conditions", title: "Conditions" },
+      { slug: "steps/functions", title: "Go functions as steps" },
+    ],
+  },
+  {
+    label: "Executors",
+    items: [
+      { slug: "executors", title: "Choosing an executor" },
+      { slug: "executors/containers", title: "Containers" },
+      { slug: "executors/kubernetes", title: "Kubernetes" },
+      { slug: "executors/ssh", title: "SSH" },
+      { slug: "executors/func-remote", title: "Func steps off the coordinator" },
+    ],
+  },
+  {
+    label: "Files & caching",
+    items: [
+      { slug: "data/workspaces", title: "Workspaces" },
+      { slug: "data/persistent", title: "Persistent workspaces" },
+      { slug: "data/scratch", title: "Scratch caches" },
+      { slug: "data/caching", title: "Caching a step" },
+      { slug: "data/cache-keys", title: "What's in a cache key" },
+      { slug: "data/shared-cache", title: "Sharing a cache" },
+      { slug: "data/cache-stores", title: "Buckets & registries" },
+      { slug: "data/archiving", title: "Archiving runs" },
+    ],
+  },
+  {
+    label: "Monorepos",
+    items: [
+      { slug: "monorepo", title: "Overview" },
+      { slug: "monorepo/fan-out", title: "Fan-out" },
+      { slug: "monorepo/needs-each", title: "Per-unit edges" },
+      { slug: "monorepo/partition", title: "Sharding" },
+      { slug: "monorepo/affected", title: "Affected units" },
+      { slug: "monorepo/unit-graphs", title: "Unit graphs" },
+    ],
+  },
+  {
+    label: "Secrets",
+    items: [
+      { slug: "secrets", title: "Using secrets" },
+      { slug: "secrets/channels", title: "Safe & refused channels" },
+    ],
+  },
+  {
+    label: "Watch & control",
+    items: [
+      { slug: "attach", title: "Attach" },
+      { slug: "attach/tui", title: "The TUI" },
+      { slug: "attach/browser", title: "The browser UI" },
+      { slug: "attach/control-ops", title: "Control operations" },
+      { slug: "attach/shell", title: "The shell" },
+      { slug: "attach/security", title: "Security" },
+    ],
+  },
+  {
+    label: "Automate",
+    items: [
+      { slug: "triggers", title: "Triggers" },
+      { slug: "triggers/events", title: "Events & providers" },
+      { slug: "notifications", title: "Notifications" },
+    ],
+  },
+  {
+    label: "Extend",
+    items: [
+      { slug: "extend", title: "Extension points" },
+      { slug: "extend/unit-graph", title: "A unit graph" },
+      { slug: "extend/trigger-source", title: "A trigger source" },
+      { slug: "extend/notifier", title: "A notifier" },
+      { slug: "extend/exporter", title: "A trace exporter" },
+      { slug: "extend/analyzer", title: "A failure analyzer" },
+      { slug: "extend/analyzer-genkit", title: "A Genkit analyzer" },
+    ],
+  },
+  {
+    label: "CLI",
+    items: [
+      { slug: "cli", title: "All commands" },
+      { slug: "cli/run", title: "run, attach, shell, ui" },
+      { slug: "cli/cache", title: "cache & verify" },
+      { slug: "cli/workspaces", title: "ws, logs & func" },
+    ],
+  },
+  {
+    label: "Reference",
+    items: [
+      { slug: "reference/event-stream", title: "The event stream" },
+      { slug: "reference/api", title: "api: the wire contract" },
+      { slug: "reference/embedding", title: "Embedding" },
+      { slug: "reference/debugging", title: "Reading a failed run" },
+      { slug: "reference/skill", title: "Agent skill" },
+    ],
+  },
+];
+
+// Emit directory-style hrefs with a trailing slash so relative links inside
+// pages resolve the same way no matter how the visitor arrived.
+const hrefFor = (slug?: string) => {
+  const s = slug ?? "";
+  return base + "docs/" + (s ? s + "/" : "");
+};
+const norm = (p: string) => p.replace(/\/+$/, "") || "/";
+const here = norm(Astro.url.pathname);
+
+const flat = groups.flatMap((g) => g.items).filter((i) => typeof i.slug === "string");
+const idx = flat.findIndex((i) => norm(hrefFor(i.slug)) === here);
+const prev = idx > 0 ? flat[idx - 1] : null;
+const next = idx >= 0 && idx < flat.length - 1 ? flat[idx + 1] : null;
+---
+
+<Layout title={title}>
+  <div class="docs wrap">
+    <aside class="toc" data-toc aria-label="Docs navigation">
+      <Search />
+      <button class="toc__toggle" data-toc-toggle aria-controls="toc-nav" aria-expanded="false">
+        <span>Documentation menu</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>
+      </button>
+      <div class="toc__inner" id="toc-nav">
+        {
+          groups.map((g) => (
+            <div class="toc__group">
+              <p class="toc__title">{g.label}</p>
+              <ul>
+                {g.items.map((i) => (
+                  <li>
+                    <a
+                      href={hrefFor(i.slug)}
+                      aria-current={norm(hrefFor(i.slug)) === here ? "page" : undefined}
+                      class:list={[
+                        "toc__link",
+                        { "toc__link--active": norm(hrefFor(i.slug)) === here },
+                      ]}
+                    >
+                      {i.title}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))
+        }
+      </div>
+    </aside>
+
+    <article class="doc">
+      <slot />
+
+      <nav class="doc-nav" aria-label="Page navigation">
+        {
+          prev ? (
+            <a class="doc-nav__link doc-nav__link--prev" href={hrefFor(prev.slug)}>
+              <span>← Previous</span>
+              <strong>{prev.title}</strong>
+            </a>
+          ) : (
+            <span />
+          )
+        }
+        {
+          next && (
+            <a class="doc-nav__link doc-nav__link--next" href={hrefFor(next.slug)}>
+              <span>Next →</span>
+              <strong>{next.title}</strong>
+            </a>
+          )
+        }
+      </nav>
+    </article>
+
+    {
+      showPageToc && (
+        <aside class="page-toc" aria-label="On this page">
+          <p class="page-toc__title">On this page</p>
+          <ul>
+            {pageHeadings.map((h) => (
+              <li
+                class:list={[
+                  "page-toc__item",
+                  { "page-toc__item--sub": h.depth === 3 },
+                ]}
+              >
+                <a href={`#${h.slug}`} class="page-toc__link" data-toc-link={h.slug}>
+                  {h.text}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </aside>
+      )
+    }
+  </div>
+</Layout>
+
+<style is:global>
+  .docs {
+    display: grid;
+    grid-template-columns: 220px minmax(0, 1fr) 200px;
+    gap: 3rem;
+    padding-block: 3rem 4rem;
+    align-items: start;
+  }
+  .toc {
+    position: sticky;
+    top: 84px;
+    max-height: calc(100vh - 100px);
+    display: flex;
+    flex-direction: column;
+  }
+  .toc__inner {
+    overflow-y: auto;
+    min-height: 0;
+  }
+  .toc__group {
+    margin-bottom: 1.4rem;
+  }
+  .toc__title {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted-2);
+    margin: 0 0 0.5rem;
+  }
+  .toc ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.15rem;
+  }
+  .toc__link {
+    display: block;
+    font-size: 0.92rem;
+    color: var(--muted);
+    padding: 0.3rem 0.7rem;
+    border-radius: 8px;
+    border-left: 2px solid transparent;
+    transition:
+      color 0.2s var(--ease),
+      background 0.2s var(--ease),
+      border-color 0.2s var(--ease);
+  }
+  .toc__link:hover {
+    color: var(--rail-deep);
+    background: var(--bg-3);
+  }
+  .toc__link--active {
+    color: var(--rail-deep);
+    background: var(--rail-soft);
+    border-left-color: var(--rail);
+    font-weight: 500;
+  }
+
+  .doc {
+    max-width: 880px;
+    font-size: 1.02rem;
+  }
+  /* Keep prose at a readable measure, but let tables, code, and diagrams use
+     the full content width so wide tables are not cramped. */
+  .doc > p,
+  .doc > ul,
+  .doc > ol,
+  .doc > blockquote {
+    max-width: 72ch;
+  }
+  .doc > :first-child {
+    margin-top: 0;
+  }
+  .doc h1 {
+    font-size: var(--step-4);
+    margin-bottom: 0.4rem;
+  }
+  .doc h2 {
+    font-size: var(--step-2);
+    margin-top: 2.6rem;
+    padding-top: 1.3rem;
+    border-top: 1px solid var(--line);
+    scroll-margin-top: 84px;
+  }
+  .doc h3 {
+    font-size: var(--step-1);
+    margin-top: 1.8rem;
+    scroll-margin-top: 84px;
+  }
+  .doc p {
+    color: var(--muted);
+  }
+  .doc strong {
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .doc a:not(.badge):not(.doc-nav__link) {
+    color: var(--rail-deep);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    text-decoration-color: color-mix(in srgb, var(--rail) 45%, transparent);
+  }
+  .doc a:not(.doc-nav__link):hover {
+    text-decoration-color: var(--rail);
+  }
+  .doc ul,
+  .doc ol {
+    color: var(--muted);
+    padding-left: 1.2rem;
+  }
+  .doc li {
+    margin: 0.35rem 0;
+  }
+  .doc li::marker {
+    color: var(--rail);
+  }
+  .doc :not(pre) > code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    background: var(--bg-3);
+    border: 1px solid var(--line);
+    padding: 0.1rem 0.4rem;
+    border-radius: 6px;
+    color: var(--rail-deep);
+  }
+  .doc pre.astro-code,
+  .doc pre {
+    background: var(--code-bg) !important;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 1.15rem 1.3rem;
+    overflow-x: auto;
+    margin: 1.2rem 0;
+    font-size: 0.95rem;
+    line-height: 1.7;
+  }
+  /* Dark mode takes Shiki's second theme. Three selectors, matching the
+     pattern in global.css exactly: the media query is the default "system"
+     state and must not win over an explicit light choice, and the data-theme
+     rules are the toggle in both directions. Without this the tokens keep
+     their light-theme colours and punctuation disappears. */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .doc .astro-code,
+    :root:not([data-theme="light"]) .doc .astro-code span {
+      color: var(--shiki-dark) !important;
+      background-color: transparent !important;
+    }
+  }
+  :root[data-theme="dark"] .doc .astro-code,
+  :root[data-theme="dark"] .doc .astro-code span {
+    color: var(--shiki-dark) !important;
+    background-color: transparent !important;
+  }
+
+  .doc pre code {
+    background: none;
+    border: 0;
+    padding: 0;
+  }
+  /* Mermaid diagrams: before the client renderer runs, hide the raw source; once
+     rendered, present the SVG as a centered, bordered figure. */
+  .doc pre.mermaid {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    margin: 1.8rem 0;
+    text-align: center;
+    line-height: normal;
+    font-family: var(--font-body);
+    color: transparent;
+    overflow-x: auto;
+  }
+  .doc pre.mermaid[data-processed="true"] {
+    color: inherit;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 1.4rem 1.2rem;
+  }
+  .doc pre.mermaid svg {
+    max-width: 100%;
+    height: auto;
+  }
+  /* Rendered diagrams are click-to-zoom. */
+  .doc pre.mermaid[data-processed="true"] {
+    position: relative;
+    cursor: zoom-in;
+  }
+  .mermaid-zoom {
+    position: absolute;
+    top: 0.6rem;
+    right: 0.6rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.25rem 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--muted);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    opacity: 0;
+    transition: opacity 0.18s var(--ease);
+    pointer-events: none;
+  }
+  .doc pre.mermaid[data-processed="true"]:hover .mermaid-zoom {
+    opacity: 1;
+  }
+
+  /* Full-screen diagram viewer (zoom + pan). */
+  .diagram-modal[hidden] {
+    display: none;
+  }
+  .diagram-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .diagram-modal__backdrop {
+    position: absolute;
+    inset: 0;
+    background: color-mix(in srgb, var(--ink) 78%, transparent);
+    backdrop-filter: blur(2px);
+  }
+  .diagram-modal__stage {
+    position: relative;
+    z-index: 1;
+    width: 94vw;
+    height: 88vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    cursor: grab;
+    touch-action: none;
+  }
+  .diagram-modal__stage:active {
+    cursor: grabbing;
+  }
+  .diagram-modal__stage svg {
+    max-width: 90vw;
+    max-height: 84vh;
+    height: auto;
+    transform-origin: center center;
+    will-change: transform;
+    background: var(--bg-2);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+  }
+  .diagram-modal__toolbar {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    z-index: 2;
+    display: flex;
+    gap: 0.4rem;
+  }
+  .diagram-modal__toolbar button {
+    min-width: 2.2rem;
+    height: 2.2rem;
+    padding: 0 0.7rem;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    color: var(--ink);
+    background: var(--bg);
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: border-color 0.18s var(--ease);
+  }
+  .diagram-modal__toolbar button:hover {
+    border-color: var(--rail);
+  }
+  .doc blockquote {
+    margin: 1.4rem 0;
+    padding: 0.6rem 1.1rem;
+    border-left: 3px solid var(--rail);
+    background: var(--rail-soft);
+    border-radius: 0 10px 10px 0;
+  }
+  .doc blockquote p {
+    color: var(--ink);
+    margin: 0;
+  }
+  .doc table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.2rem 0;
+    font-size: 0.86rem;
+    display: block;
+    overflow-x: auto;
+  }
+  .doc th,
+  .doc td {
+    text-align: left;
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    vertical-align: top;
+  }
+  .doc th {
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.02em;
+  }
+  .doc td code {
+    white-space: nowrap;
+  }
+  .doc hr {
+    border: 0;
+    border-top: 1px solid var(--line);
+    margin: 2.5rem 0;
+  }
+
+  .doc-nav {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 3.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--line);
+  }
+  .doc-nav__link {
+    display: grid;
+    gap: 0.2rem;
+    padding: 0.9rem 1.2rem;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--bg-2);
+    min-width: 44%;
+    transition:
+      border-color 0.2s var(--ease),
+      transform 0.2s var(--ease);
+  }
+  .doc-nav__link:hover {
+    border-color: var(--rail);
+    transform: translateY(-2px);
+  }
+  .doc-nav__link--next {
+    text-align: right;
+  }
+  .doc-nav__link span {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--muted-2);
+  }
+  .doc-nav__link strong {
+    color: var(--rail-deep);
+  }
+
+  .page-toc {
+    position: sticky;
+    top: 84px;
+    max-height: calc(100vh - 100px);
+    overflow-y: auto;
+    font-size: 0.85rem;
+  }
+  .page-toc__title {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted-2);
+    margin: 0 0 0.6rem;
+  }
+  .page-toc ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.1rem;
+    border-left: 1px solid var(--line);
+  }
+  .page-toc__item {
+    margin: 0;
+  }
+  .page-toc__link {
+    display: block;
+    color: var(--muted-2);
+    padding: 0.25rem 0.8rem;
+    margin-left: -1px;
+    border-left: 2px solid transparent;
+    line-height: 1.35;
+    transition:
+      color 0.2s var(--ease),
+      border-color 0.2s var(--ease);
+  }
+  .page-toc__item--sub .page-toc__link {
+    padding-left: 1.6rem;
+    font-size: 0.8rem;
+  }
+  .page-toc__link:hover {
+    color: var(--rail-deep);
+  }
+  .page-toc__link--active {
+    color: var(--rail-deep);
+    border-left-color: var(--rail);
+    font-weight: 500;
+  }
+
+  .toc__toggle {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 0.55rem 0.75rem;
+    background: var(--bg-2);
+    border: 1px solid var(--line-strong);
+    border-radius: 10px;
+    font-family: var(--font-body);
+    font-size: 0.92rem;
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .toc__toggle svg {
+    color: var(--muted-2);
+    transition: transform 0.22s var(--ease);
+  }
+  .toc[data-open] .toc__toggle svg {
+    transform: rotate(180deg);
+  }
+
+  @media (max-width: 1180px) {
+    .docs {
+      grid-template-columns: 220px minmax(0, 1fr);
+    }
+    .page-toc {
+      display: none;
+    }
+  }
+
+  @media (max-width: 900px) {
+    .docs {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0;
+      padding-block: 1.5rem 3rem;
+    }
+    .toc {
+      position: static;
+      max-height: none;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 1.2rem;
+      margin-bottom: 1.5rem;
+    }
+    .toc__toggle {
+      display: flex;
+      margin-top: 0.25rem;
+    }
+    .toc__inner {
+      display: none;
+      margin-top: 0.5rem;
+      max-height: 65vh;
+      overflow-y: auto;
+    }
+    .toc[data-open] .toc__inner {
+      display: block;
+    }
+    .toc__group {
+      margin-bottom: 0.9rem;
+    }
+  }
+</style>
+
+<script>
+  const tocToggle = document.querySelector("[data-toc-toggle]");
+  const toc = document.querySelector("[data-toc]");
+  if (tocToggle && toc) {
+    tocToggle.addEventListener("click", () => {
+      const open = toc.toggleAttribute("data-open");
+      tocToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    toc.querySelectorAll(".toc__inner a").forEach((a) => {
+      a.addEventListener("click", () => {
+        toc.removeAttribute("data-open");
+        tocToggle.setAttribute("aria-expanded", "false");
+      });
+    });
+  }
+
+  // Keep your place in the sidebar across page loads: this is a multi-page
+  // site, so each navigation re-renders the nav scrolled to the top. Bring the
+  // active entry back into view within the nav's own scroll container (only the
+  // container scrolls, never the page), so the sidebar does not jump to the top
+  // every time you follow a link.
+  const tocInner = document.getElementById("toc-nav");
+  const activeLink = tocInner?.querySelector(".toc__link--active");
+  if (tocInner && activeLink) {
+    const c = tocInner.getBoundingClientRect();
+    const a = activeLink.getBoundingClientRect();
+    if (a.top < c.top || a.bottom > c.bottom) {
+      tocInner.scrollTop += a.top - c.top - c.height / 2 + a.height / 2;
+    }
+  }
+</script>
+
+<script>
+  // Scroll-spy for the on-this-page TOC: highlight the section the reader is
+  // currently in. The active heading is the last one whose top has scrolled
+  // above a line ~100px below the viewport top, computed on scroll (throttled
+  // with requestAnimationFrame) so it stays deterministic rather than relying
+  // on IntersectionObserver's fire-order across fast scrolls.
+  const tocLinks = Array.from(document.querySelectorAll("[data-toc-link]"));
+  if (tocLinks.length) {
+    const linkBySlug = new Map(
+      tocLinks.map((a) => [a.getAttribute("data-toc-link"), a]),
+    );
+    const headingEls = tocLinks
+      .map((a) => document.getElementById(a.getAttribute("data-toc-link") || ""))
+      .filter((el) => el !== null);
+
+    let activeSlug: string | null = null;
+    const setActive = (slug: string | null) => {
+      if (slug === activeSlug) return;
+      if (activeSlug) linkBySlug.get(activeSlug)?.classList.remove("page-toc__link--active");
+      activeSlug = slug;
+      if (slug) linkBySlug.get(slug)?.classList.add("page-toc__link--active");
+    };
+
+    // A click on a TOC link wins over the scroll-spy until the reader scrolls
+    // again. Without this, clicking an entry whose section sits in the last
+    // screenful highlights a different one the moment the smooth scroll
+    // settles, because that heading can never reach the activation line (see
+    // the bottom-of-page case in update below).
+    let pinned: string | null = null;
+
+    const update = () => {
+      if (pinned) {
+        setActive(pinned);
+        return;
+      }
+
+      let current = headingEls[0];
+      for (const h of headingEls) {
+        if (h.getBoundingClientRect().top - 100 <= 0) current = h;
+        else break;
+      }
+
+      // Once the page is scrolled to the bottom, every remaining heading is
+      // stuck below the activation line forever: there is no scroll left to
+      // bring it up. The reader is looking at the last section, so say so
+      // rather than leaving the previous one highlighted.
+      const doc = document.documentElement;
+      const atBottom =
+        Math.ceil(window.scrollY + window.innerHeight) >= doc.scrollHeight - 1;
+      if (atBottom) {
+        const last = headingEls[headingEls.length - 1];
+        if (last) current = last;
+      }
+
+      setActive(current ? current.id : null);
+    };
+
+    // Pin on click, release on the reader's next deliberate scroll. A plain
+    // scroll listener cannot release it, because the click's own smooth scroll
+    // fires scroll events too.
+    for (const a of tocLinks) {
+      a.addEventListener("click", () => {
+        const slug = a.getAttribute("data-toc-link");
+        if (!slug) return;
+        pinned = slug;
+        setActive(slug);
+      });
+    }
+    for (const ev of ["wheel", "touchmove", "keydown"]) {
+      window.addEventListener(ev, () => { pinned = null; }, { passive: true });
+    }
+
+    let ticking = false;
+    window.addEventListener(
+      "scroll",
+      () => {
+        if (ticking) return;
+        ticking = true;
+        requestAnimationFrame(() => {
+          update();
+          ticking = false;
+        });
+      },
+      { passive: true },
+    );
+    update();
+  }
+</script>
+
+<script>
+  // Render any mermaid diagrams on the page. mermaid is a sizeable dependency,
+  // so it is dynamically imported only on pages that actually contain a
+  // <pre class="mermaid"> (produced by the remarkMermaid plugin in
+  // astro.config.mjs from a ```mermaid fenced block). Theme variables match the
+  // site palette so diagrams read as part of the page, not a foreign embed.
+  // paletteVars maps senro's CSS custom properties onto mermaid's theme
+  // variables. Node fill is --bg-3 rather than a tinted brand colour so text
+  // sits on the same surface the rest of the page uses, and --ink is the text
+  // colour in both schemes, which is what guarantees the contrast.
+  function paletteVars() {
+    const css = getComputedStyle(document.documentElement);
+    const v = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
+    return {
+      background: v("--bg-2", "#ffffff"),
+      primaryColor: v("--bg-3", "#f2f2f8"),
+      primaryBorderColor: v("--rail", "#6d75c7"),
+      primaryTextColor: v("--ink", "#26262f"),
+      secondaryColor: v("--bg-2", "#ffffff"),
+      tertiaryColor: v("--bg-3", "#f2f2f8"),
+      lineColor: v("--muted", "#63636f"),
+      textColor: v("--ink", "#26262f"),
+      fontSize: "14px",
+    };
+  }
+
+  if (document.querySelector("pre.mermaid")) {
+    const mermaid = (await import("mermaid")).default;
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      theme: "base",
+      fontFamily: "var(--font-body), system-ui, sans-serif",
+      // Read from the live palette rather than written out here. The previous
+      // values were hardcoded and light (#e3ecf1 fills, #181d20 text, a teal
+      // #2f6690 border) with a comment claiming they matched the site. They
+      // did not: the site is indigo, and those were left behind by an earlier
+      // palette. Worse, being fixed and light meant that in dark mode a
+      // diagram kept pale fills while the arrows went to near-invisible grey.
+      //
+      // getComputedStyle resolves whichever scheme is active, so a diagram is
+      // correct in both without a second set of values to keep in step. Read
+      // once at init, which is enough: nothing changes data-theme at runtime,
+      // and a prefers-color-scheme change reloads the renderer anyway.
+      themeVariables: paletteVars(),
+    });
+    try {
+      await mermaid.run({ querySelector: "pre.mermaid" });
+    } catch (err) {
+      console.error("mermaid render failed", err);
+    }
+    // Outside the catch on purpose. mermaid.run rejects on the first diagram
+    // that fails, so wiring zoom inside the try meant one bad diagram cost
+    // every other diagram on the page its zoom, silently. setupDiagramZoom
+    // already selects only diagrams that actually rendered, so running it
+    // regardless gives the survivors their zoom back.
+    setupDiagramZoom();
+  }
+
+  // Click-to-maximize for rendered diagrams: a full-screen viewer with wheel /
+  // button zoom and drag-to-pan. Vanilla, no extra dependency.
+  function setupDiagramZoom() {
+    const diagrams = Array.from(
+      document.querySelectorAll('pre.mermaid[data-processed="true"]'),
+    ).filter((pre) => pre.querySelector("svg"));
+    if (!diagrams.length) return;
+
+    const modal = document.createElement("div");
+    modal.className = "diagram-modal";
+    modal.hidden = true;
+    modal.innerHTML =
+      '<div class="diagram-modal__backdrop" data-close></div>' +
+      '<div class="diagram-modal__toolbar">' +
+      '<button data-zoom-out aria-label="Zoom out">-</button>' +
+      '<button data-zoom-reset aria-label="Reset zoom">100%</button>' +
+      '<button data-zoom-in aria-label="Zoom in">+</button>' +
+      '<button data-close aria-label="Close viewer">Close</button>' +
+      "</div>" +
+      '<div class="diagram-modal__stage" data-stage></div>';
+    document.body.appendChild(modal);
+
+    const stage = modal.querySelector("[data-stage]") as HTMLElement;
+    let scale = 1,
+      tx = 0,
+      ty = 0,
+      dragging = false,
+      startX = 0,
+      startY = 0;
+
+    const apply = () => {
+      const svg = stage.firstElementChild as SVGElement | null;
+      if (svg) svg.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+    };
+    const setScale = (next: number) => {
+      scale = Math.min(Math.max(next, 0.3), 8);
+      apply();
+    };
+    const open = (svg: SVGElement) => {
+      stage.innerHTML = "";
+      const clone = svg.cloneNode(true) as SVGElement;
+      clone.style.transform = "";
+      stage.appendChild(clone);
+      scale = 1;
+      tx = 0;
+      ty = 0;
+      apply();
+      modal.hidden = false;
+      document.body.style.overflow = "hidden";
+    };
+    const close = () => {
+      modal.hidden = true;
+      document.body.style.overflow = "";
+    };
+
+    diagrams.forEach((pre) => {
+      const hint = document.createElement("span");
+      hint.className = "mermaid-zoom";
+      hint.textContent = "click to zoom";
+      hint.setAttribute("aria-hidden", "true");
+      pre.appendChild(hint);
+      pre.addEventListener("click", () => {
+        const svg = pre.querySelector("svg") as SVGElement | null;
+        if (svg) open(svg);
+      });
+    });
+
+    modal.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", close));
+    modal.querySelector("[data-zoom-in]")?.addEventListener("click", () => setScale(scale * 1.25));
+    modal.querySelector("[data-zoom-out]")?.addEventListener("click", () => setScale(scale / 1.25));
+    modal.querySelector("[data-zoom-reset]")?.addEventListener("click", () => {
+      scale = 1;
+      tx = 0;
+      ty = 0;
+      apply();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (!modal.hidden && e.key === "Escape") close();
+    });
+    stage.addEventListener(
+      "wheel",
+      (e: WheelEvent) => {
+        e.preventDefault();
+        setScale(scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12));
+      },
+      { passive: false },
+    );
+    stage.addEventListener("pointerdown", (e: PointerEvent) => {
+      dragging = true;
+      startX = e.clientX - tx;
+      startY = e.clientY - ty;
+      stage.setPointerCapture(e.pointerId);
+    });
+    stage.addEventListener("pointermove", (e: PointerEvent) => {
+      if (!dragging) return;
+      tx = e.clientX - startX;
+      ty = e.clientY - startY;
+      apply();
+    });
+    stage.addEventListener("pointerup", () => {
+      dragging = false;
+    });
+  }
+</script>

@@ -1,0 +1,16 @@
+{
+  "provider": "github",
+  "event": "push",
+  "payload": {
+    "ref": "refs/tags/simple-tag",
+    "before": "6113728f27ae82c7b1a177c8d03f9e96e0adf246",
+    "after": "0000000000000000000000000000000000000000",
+    "created": false,
+    "deleted": true,
+    "commits": [],
+    "repository": {
+      "full_name": "Codertocat/Hello-World",
+      "default_branch": "master"
+    }
+  }
+}

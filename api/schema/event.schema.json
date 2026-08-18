@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://senro.dev/schema/event.schema.json",
+  "title": "senro event",
+  "description": "One entry in a run's append-only ledger (events.jsonl). Routing fields are flat; the type-specific body is nested under payload. The envelope is OPEN: additionalProperties is true because events are persisted and re-read by arbitrary later readers, and a newer engine may add envelope fields within the same major version. Consumers MUST ignore unknown envelope fields, unknown type values, and unknown payload fields: treating any of them as an error breaks forward compatibility.",
+  "type": "object",
+  "required": ["v", "seq", "ts", "type"],
+  "additionalProperties": true,
+  "properties": {
+    "v": {
+      "type": "integer",
+      "description": "Envelope version. Major must match between client and engine.",
+      "minimum": 1
+    },
+    "seq": {
+      "type": "integer",
+      "description": "Monotonically increasing sequence number within the run.",
+      "minimum": 0
+    },
+    "ts": { "type": "string", "format": "date-time" },
+    "type": {
+      "type": "string",
+      "description": "Event type. The enum below is informative, not exhaustive: newer engines emit types absent from this list and clients must ignore them.",
+      "examples": [
+        "run.started", "run.finished",
+        "plan.resolved", "plan.expanded", "plan.expansion_skipped",
+        "step.created", "step.started", "step.finished", "step.retried", "step.log.appended",
+        "cache.hit", "cache.miss", "cache.saved", "cache.degraded",
+        "ws.snapshot", "ws.restored", "ws.evicted",
+        "binary.staged",
+        "secret.resolved", "secret.redacted",
+        "control.applied", "breakpoint.hit",
+        "handler.started", "handler.succeeded", "handler.failed", "handler.superseded",
+        "shell.opened", "shell.closed",
+        "notify.delivered", "notify.failed", "notify.dropped",
+        "analysis.proposed", "analysis.applied", "analysis.rejected"
+      ]
+    },
+    "run": { "type": "string", "description": "Run ID." },
+    "step": {
+      "type": "string",
+      "description": "Stable base step ID. Never carries an attempt suffix; see attempt."
+    },
+    "attempt": {
+      "type": "integer",
+      "description": "Attempt number, 1-based. Absent or 0 when the event is not step-scoped.",
+      "minimum": 0
+    },
+    "group": {
+      "type": "string",
+      "description": "Expansion parent, so clients can aggregate without knowing the plan structure."
+    },
+    "trace_id": {
+      "type": "string",
+      "description": "The W3C Trace Context trace this run belongs to: 16 bytes as 32 lowercase hex characters, never the all-zero value, identical on every event of the run and different for every run. Taken from an inbound traceparent when there was a valid one, and freshly generated otherwise. Absent on events written by builds older than protocol v1.1. The span structure lives in the payloads: run.started carries span_id, parent_span_id, trace_flags and tracestate; step.started and step.finished carry span_id, parent_span_id and linked_span_ids.",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Type-specific body. Unknown fields MUST be ignored."
+    }
+  }
+}

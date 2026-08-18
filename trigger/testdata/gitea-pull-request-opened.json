@@ -1,0 +1,26 @@
+{
+  "provider": "gitea",
+  "event": "pull_request",
+  "payload": {
+    "action": "opened",
+    "number": 1,
+    "pull_request": {
+      "state": "open",
+      "title": "Update the README with new information",
+      "base": {
+        "label": "main",
+        "ref": "main",
+        "sha": "9353195a19e45482665306e466c832c46560532d"
+      },
+      "head": {
+        "label": "feature/changes",
+        "ref": "feature/changes",
+        "sha": "0d1a26e67d8f5eaf1f6ba5c57fc3c7d91ac0fd1c"
+      }
+    },
+    "repository": {
+      "full_name": "gordon/hello-world",
+      "default_branch": "main"
+    }
+  }
+}

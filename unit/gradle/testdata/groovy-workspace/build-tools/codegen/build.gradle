@@ -1,0 +1,3 @@
+// ':tools:codegen' lives here rather than under tools/, because
+// settings.gradle reassigned its projectDir. Nothing depends on it, so a
+// change to it runs it alone.

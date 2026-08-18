@@ -1,0 +1,117 @@
+name: Release
+
+# Releases are driven by Conventional Commits:
+#   1. semantic-release analyzes commits on main and decides the next
+#      version, updates CHANGELOG.md, commits it, and creates + pushes the
+#      git tag (vX.Y.Z).
+#   2. GoReleaser builds the senro CLI binary and creates the GitHub Release
+#      with the artifacts, checksums, and SBOM for that tag.
+#   3. SLSA provenance is generated for the released artifacts.
+#
+# senro is one module: the root module and every package under it,
+# including api/, are consumed via `go get github.com/xavidop/senro@vX.Y.Z`,
+# a single tag. contrib/ is outside that: each directory there is a nested
+# module with its own go.mod, so this tag neither carries nor versions it,
+# and nothing in the root module depends on one. There used to be a separate api/vX.Y.Z tag and a "prepare"
+# step (.github/scripts/release-api-submodule.sh, wired in via
+# .releaserc.json) that tagged it and rewrote root go.mod's `require` to
+# point at that tag before the root tag was cut. Both are gone now that
+# api/ is a plain package tree of the root module rather than its own
+# module; see CONTRIBUTING.md's Releases section.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # create tags, releases, and commit the changelog + go.mod
+  issues: write # semantic-release success comments
+  pull-requests: write
+  id-token: write # SLSA / keyless signing
+
+jobs:
+  release:
+    name: Version & build
+    runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.semantic.outputs.new_release_published }}
+      version: ${{ steps.semantic.outputs.new_release_version }}
+      tag: ${{ steps.semantic.outputs.new_release_git_tag }}
+      hashes: ${{ steps.hashes.outputs.hashes }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history so semantic-release can analyze commits
+          persist-credentials: true
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install Syft (SBOM)
+        uses: anchore/sbom-action/download-syft@v0
+
+      # 1. Determine the next version, update CHANGELOG.md, commit it, and
+      # create and push the tag.
+      - name: Semantic Release
+        id: semantic
+        uses: cycjimmy/semantic-release-action@v6
+        with:
+          semantic_version: 24
+          extra_plugins: |
+            @semantic-release/changelog@6
+            @semantic-release/git@10
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 2. Build and publish the GitHub Release for the tag semantic-release
+      # created. senro is one module, so GoReleaser's GOWORK=off build
+      # resolves api/ (and everything else) as part of the same module,
+      # exactly like an external `go get` would.
+      - name: Run GoReleaser
+        if: steps.semantic.outputs.new_release_published == 'true'
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The Homebrew formula is committed to xavidop/homebrew-tap, a
+          # different repository, which GITHUB_TOKEN cannot write to (it is
+          # scoped to this repo, so GoReleaser gets 403 "Resource not
+          # accessible by integration"). HOMEBREW_TAP_TOKEN must be a PAT (or
+          # GitHub App token) with contents:write on the tap repo.
+          #
+          # The fallback keeps the variable always defined: .goreleaser.yaml
+          # interpolates {{ .Env.HOMEBREW_TAP_TOKEN }}, and an undefined env
+          # var there is a template error that would fail the ENTIRE release,
+          # including artifacts that are otherwise fine. With the fallback, a
+          # missing secret degrades to exactly today's behaviour instead.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # 3 (continued). Export the artifact hashes for the provenance job (4).
+      - name: Export artifact hashes
+        id: hashes
+        if: steps.semantic.outputs.new_release_published == 'true'
+        run: echo "hashes=$(base64 -w0 < dist/checksums.txt)" >> "$GITHUB_OUTPUT"
+
+  provenance:
+    name: SLSA provenance
+    needs: release
+    if: needs.release.outputs.published == 'true'
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.release.outputs.hashes }}
+      upload-assets: true
+      upload-tag-name: ${{ needs.release.outputs.tag }}
+      provenance-name: senro.intoto.jsonl

@@ -1,0 +1,5 @@
+dependencies {
+    // The map form of a project dependency, which names the path under a
+    // `path:` key rather than passing it positionally.
+    implementation project(path: ':libs:core')
+}

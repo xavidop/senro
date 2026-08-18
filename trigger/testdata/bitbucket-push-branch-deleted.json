@@ -1,0 +1,29 @@
+{
+  "provider": "bitbucket",
+  "event": "repo:push",
+  "payload": {
+    "repository": {
+      "full_name": "team_name/repo_name"
+    },
+    "push": {
+      "changes": [
+        {
+          "new": null,
+          "old": {
+            "type": "branch",
+            "name": "feature/booking-validation",
+            "target": {
+              "type": "commit",
+              "hash": "c4b2b7914156a878aa7c9da452a09fb50c2091f2"
+            }
+          },
+          "created": false,
+          "forced": false,
+          "closed": true,
+          "commits": [],
+          "truncated": false
+        }
+      ]
+    }
+  }
+}

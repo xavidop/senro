@@ -1,0 +1,257 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+          cache-dependency-path: go.mod
+      - name: go build
+        run: go build ./...
+      - name: go vet
+        run: go vet ./...
+      # The browser UI's client is compiled to WebAssembly and embedded, and
+      # is deliberately not committed (see the Makefile's own wasm target).
+      # Building it here does two things: it proves the js/wasm build still
+      # compiles, which an ordinary `go build ./...` cannot say, and it lets
+      # the `senro ui` end-to-end test actually serve a client instead of
+      # skipping itself.
+      - name: make wasm
+        run: make wasm
+      # -coverpkg=./... measures how much of the whole module each test binary
+      # reaches, not just the package under test, which is the honest number for
+      # a library whose tests deliberately drive it from the outside.
+      #
+      # SENRO_REQUIRE_DOCKER=1 turns internal/dockerd/dockertest.Require's
+      # skip into a failure. This job runs on ubuntu-latest, which ships a
+      # Docker daemon, so a container test that stopped exercising the
+      # daemon here is a red build rather than a quietly green one. The
+      # macOS cross-platform job below deliberately does not set this: it
+      # has no daemon, and dockertest.Require's skip is the correct outcome
+      # there, printed with its reason.
+      - name: go test (race, coverage)
+        env:
+          SENRO_REQUIRE_DOCKER: "1"
+        run: go test -race -count=1 -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
+      - name: Coverage summary
+        run: |
+          total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}')
+          {
+            echo "### Coverage"
+            echo
+            echo "**$total** of statements"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Total coverage: $total"
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 14
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+          cache-dependency-path: go.mod
+      - name: golangci-lint
+        # v9 supports golangci-lint v2; the version is pinned for reproducibility
+        # and the timeout lives in .golangci.yml (run.timeout).
+        #
+        # This job blocks the merge. It used to run with continue-on-error:
+        # true, while the standard set (.golangci.yml) had 57 pre-existing
+        # errcheck/staticcheck/unused issues across the repository: a gate
+        # that could not fail is not a gate, it is decoration, and this repo
+        # had already shipped bugs (a ledger reporting success for buffered
+        # bytes against a closed file; a stopped consumer leaving its
+        # producer's file handle open) that an enforced errcheck would have
+        # caught. Every issue was fixed rather than suppressed.
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
+  # `make all` (fmt, vet, test, lint) is the one target this repo's own gate
+  # is supposed to pass locally before a push. This job runs the exact
+  # command a contributor runs, so a check that only exists in this workflow
+  # (like the gofmt gate below) can never drift from what `make all` actually
+  # does.
+  #
+  # It is also the only place in this workflow that enforces `gofmt -l`
+  # cleanliness; the `test` and `lint` jobs above do not check formatting on
+  # their own. `make all` running `golangci-lint` too means this job lints a
+  # second time, redundant with the dedicated `lint` job above - that job
+  # stays because golangci-lint-action gives inline PR annotations and
+  # caching that a plain `make lint` run does not; this job stays because a
+  # `make all` that silently skipped one of its own steps in CI would no
+  # longer be the same command a contributor runs.
+  make-all:
+    name: make all
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      # golangci-lint-action installs its own copy for the lint job above,
+      # but that copy isn't shared with this job. make all's lint target
+      # calls the golangci-lint binary directly, so it needs one on PATH
+      # here too. Version matches the lint job's and .golangci.yml's note.
+      - name: Install golangci-lint
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - run: make all
+
+  # contrib/ holds NESTED Go modules, each with its own go.mod. Go excludes a
+  # nested module from the parent's `./...`, so every job above is blind to
+  # them: the build, the vet, the coverage run and golangci-lint-action would
+  # all stay green with a contrib module that does not compile at all.
+  #
+  # That blindness is the feature being paid for. contrib/genkitanalyzer
+  # depends on senro and on Genkit's SDK while senro depends on neither, which
+  # is what keeps the Google AI stack out of the dependency graph of everyone
+  # who imports senro and keeps api/nodeps_test.go standing. This job is the
+  # price: it names each module explicitly so a second one cannot be added
+  # without landing here too.
+  #
+  # `make all` above also covers these (the Makefile's CONTRIB_MODULES). This
+  # job stays because it runs them under -race and gives golangci-lint-action
+  # the inline PR annotations the dedicated lint job gives the root module,
+  # and because a per-module job says which module broke without reading a log.
+  contrib:
+    name: contrib module (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [contrib/genkitanalyzer]
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+          cache-dependency-path: ${{ matrix.module }}/go.mod
+      - name: go build
+        run: go build ./...
+      - name: go vet
+        run: go vet ./...
+      # No provider credential here, and there must never be one: the tests
+      # define their model in-process with genkit.DefineModel and reach no
+      # network.
+      - name: go test (race)
+        run: go test -race -count=1 ./...
+      - name: golangci-lint
+        # working-directory is set explicitly: the job-level `defaults.run`
+        # above applies to `run` steps only, never to an action.
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          working-directory: ${{ matrix.module }}
+
+  # The Linux test job above cannot see a break in the platform-specific
+  # halves of this repo: peer-credential auth is implemented three times
+  # (internal/attachsrv/peercred_{darwin,linux,other}.go), and attach serves
+  # over Unix domain sockets. This job builds and type-checks the module and
+  # runs the full suite on macOS, where the darwin peercred path is real code
+  # rather than the fallback.
+  #
+  # No windows-latest leg here, unlike mamori's equivalent job, and
+  # deliberately so: not because nobody got around to it. Attach's security
+  # boundary is a peer-credential check, SO_PEERCRED on
+  # linux, LOCAL_PEERCRED on darwin; peercred_other.go is the fallback for
+  # every other GOOS, and it fails closed (refuses the connection) rather
+  # than skip the check, exactly because there is no windows equivalent
+  # implemented. Gating the two syscall.Kill(pid, 0) calls that also block a
+  # windows build (internal/attachsrv/registry.go's pidAlive, ~line 287, and
+  # cmd/senro/discover.go, ~line 111) would make the package compile on
+  # windows, but attach itself would still refuse every connection there;
+  # shipping that as "supported" would be worse than not shipping it. The
+  # attach transport is unix sockets with peer-credential checks by design
+  # (see the root README's Platform support section). A real windows
+  # peer-credential mechanism is not implemented, so this job, and
+  # .goreleaser.yaml's build matrix, stay linux/darwin only until one is
+  # designed and built, not merely until someone gates a syscall call.
+  cross-platform:
+    name: macos-latest
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+          cache-dependency-path: go.mod
+      - name: go build
+        run: go build ./...
+      # vet type-checks the _test.go files too, so a test that only compiles on
+      # Linux fails here rather than silently never running.
+      - name: go vet
+        run: go vet ./...
+      - name: make wasm
+        run: make wasm
+      - name: go test (race)
+        run: go test -race -count=1 ./...
+
+  # govulncheck is call-graph aware, so an advisory in a package we require but
+  # never call does not fail the build.
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Scan
+        run: "$(go env GOPATH)/bin/govulncheck ./..."
+      # A nested module's dependency tree is not in the root module's, so the
+      # scan above never reaches it. genkitanalyzer's is by far the larger of
+      # the two (an AI SDK, OpenTelemetry, a JSON schema stack), so leaving it
+      # out would mean the module with the most surface got the least
+      # attention. Globbed rather than listed: an unscanned module is a worse
+      # failure than a job that quietly grows a second directory.
+      - name: Scan contrib modules
+        run: |
+          for mod in contrib/*/go.mod; do
+            dir=$(dirname "$mod")
+            echo "==> $dir"
+            (cd "$dir" && "$(go env GOPATH)/bin/govulncheck" ./...)
+          done
+
+  # .github/dependabot.yml is hand-maintained while this repo's own ecosystems
+  # (the Go module, the GitHub Actions workflows, the site/ npm project) are
+  # not, so the two can drift apart silently: a new ecosystem is built,
+  # tested and linted from day one but never receives a dependency update.
+  # This closes that gap by failing CI instead, the same way a missed test
+  # would.
+  dependabot-coverage:
+    name: dependabot covers every ecosystem
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - run: pip install --disable-pip-version-check pyyaml
+      - run: python3 .github/scripts/check_dependabot_coverage.py

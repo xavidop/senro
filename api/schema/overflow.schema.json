@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://senro.dev/schema/overflow.schema.json",
+  "title": "senro lifecycle overflow body",
+  "description": "The JSON body a server returns alongside a 410 Gone from GET /api/stream when the requested fromSeq has already been evicted from its retained ring. The synchronous counterpart to stream_end.schema.json's reason:\"overflowed\": the server knows before it ever writes a body that this seq range is permanently unavailable, so it answers with a real HTTP status rather than a stream line. CLOSED (additionalProperties is false), matching frame.schema.json and stream_end.schema.json's own reasoning.",
+  "type": "object",
+  "required": ["error", "hint"],
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "type": "string",
+      "description": "Always \"lifecycle_overflow\".",
+      "const": "lifecycle_overflow"
+    },
+    "hint": {
+      "type": "string",
+      "description": "The same resume pairing stream_end.schema.json's hint field documents: GET /api/state for a fresh snapshot, then GET /api/stream?from=<state.seq+1>."
+    }
+  }
+}

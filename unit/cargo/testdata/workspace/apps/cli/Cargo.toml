@@ -1,0 +1,18 @@
+[package]
+name = "cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "cli"
+path = "src/main.rs"
+
+[dependencies]
+store = { path = "../../crates/store", version = "0.1.0" }
+serde.workspace = true
+
+[dev-dependencies]
+testutil = { path = "../../crates/testutil" }
+
+[target.'cfg(unix)'.dependencies]
+platform = { path = "../../crates/platform" }

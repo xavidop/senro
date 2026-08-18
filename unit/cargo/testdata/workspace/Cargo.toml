@@ -1,0 +1,18 @@
+# The workspace root. It is not a package itself: it holds the member list,
+# the shared dependency table and the lockfile, and nothing else.
+[workspace]
+resolver = "2"
+members = [
+    "crates/*",
+    "apps/cli",
+]
+exclude = ["crates/scratch"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+core = { path = "crates/core", version = "0.1.0" }
+serde = { version = "1.0", features = ["derive"] }

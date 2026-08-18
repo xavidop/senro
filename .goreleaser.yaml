@@ -1,0 +1,187 @@
+# GoReleaser configuration for senro.
+#
+# senro is one module, released via one semver git tag and consumed by
+# `go get github.com/xavidop/senro` (root module, and every package under
+# it, api/ included); there is nothing to "build" for a plain library
+# import. GoReleaser here builds and releases the one shipped binary, the
+# senro CLI, with checksums, a changelog, and (in CI) SLSA provenance. The
+# CLI is additionally published to a Homebrew tap (see brews: below) so
+# `brew install xavidop/tap/senro` works.
+#
+# api/ used to be tagged and released as its own module (api/vX.Y.Z) by the
+# release workflow before this ran; that step is gone now that api/ is a
+# plain package tree of the root module, tagged along with everything else
+# by the one vX.Y.Z tag.
+version: 2
+
+project_name: senro
+
+# One before-hook, and only one: `make wasm`.
+#
+# The senro CLI embeds the browser UI's client, which is Go compiled to
+# WebAssembly (see internal/webui). It is deliberately not committed, for
+# the reasons that Makefile target's own comment gives, so a release built
+# without running it would ship a senro whose every command works except
+# `senro ui`, which would refuse with webui.ErrBundleMissing. An honest
+# refusal, but a poor release.
+#
+# `sh -c` because hooks are exec'd without a shell and this target needs
+# one: it reads `go env GOROOT` to copy the toolchain's own WebAssembly
+# bootstrap next to the client it just compiled, so the two always come
+# from the same Go. `make` and `gzip` are both present on the
+# ubuntu-latest runner the release workflow uses.
+#
+# There is still no `go mod download` hook beside it: GoReleaser's build
+# step runs `go build` in cmd/senro (see builds[].env below for why
+# GOWORK=off is still set there), which resolves and downloads the module's
+# own deps, api/ included, since it is now an ordinary package of this same
+# module rather than a separate `require`.
+before:
+  hooks:
+    - sh -c "make wasm"
+
+builds:
+  - id: senro
+    dir: cmd/senro
+    main: .
+    binary: senro
+    env:
+      - CGO_ENABLED=0
+      - GOWORK=off
+    # windows is deliberately absent, unlike mamori's build matrix, and not
+    # because of an unfixed bug: senro's attach transport is unix sockets
+    # with a peer-credential check (SO_PEERCRED on linux, LOCAL_PEERCRED on
+    # darwin; see the root README's Platform support section), and no
+    # windows equivalent is implemented.
+    # internal/attachsrv/registry.go's pidAlive (~line 287) and
+    # cmd/senro/discover.go (~line 111) both also call syscall.Kill(pid, 0)
+    # unconditionally, which would need its own windows-specific gate, but
+    # fixing only that would make the CLI compile for windows while attach
+    # still refused every connection there (peercred_other.go fails closed
+    # on any platform without a real check, by design), which is a worse
+    # outcome than not shipping a windows binary at all: it would advertise
+    # support the CLI's core feature does not actually have. A real windows
+    # peer-credential mechanism is not implemented. Add windows back to
+    # this list once one is designed and built, not merely once the syscall
+    # calls are gated.
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      # No -X flags here, deliberately.
+      #
+      # run.started's engine_version is not injected at link time: the engine
+      # reads it from the running binary's own build info, because the binary
+      # that runs the engine is the user's compiled pipeline, not this CLI.
+      # See internal/engine.readEngineVersion.
+      #
+      # There is no -X main.version= either: cmd/senro declares no
+      # version/commit/date vars to receive one. Add those together with
+      # whatever command first has a genuine use for them, not before.
+
+archives:
+  - id: senro
+    ids: [senro]
+    name_template: "senro_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # No windows format override here: the build matrix above is linux and
+    # darwin only, so an override for a platform that is never built is dead
+    # config that reads as though windows ships. Add it back with windows
+    # itself, not before.
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+sboms:
+  - artifacts: archive
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Documentation
+      regexp: '^.*?docs(\(.+\))??!?:.+$'
+      order: 2
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - "^test:"
+      - "^chore:"
+      - "merge conflict"
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: xavidop
+    name: senro
+  draft: false
+  prerelease: auto
+  name_template: "senro {{ .Tag }}"
+  footer: |
+    ---
+    **api package:** `github.com/xavidop/senro/api`, the wire types for the attach
+    protocol, ships as part of this same release; it has no dependency beyond the
+    standard library.
+
+    senro is consumed via `go get github.com/xavidop/senro@{{ .Tag }}`.
+    This release ships the `senro` CLI binary above. Install it via
+    `brew install xavidop/tap/senro` or
+    `go install github.com/xavidop/senro/cmd/senro@latest`.
+
+# Publishes the senro CLI archive to a Homebrew tap. The CLI is the only
+# shipped binary, so it is the only formula.
+#
+# `brews:` (mirrored from mamori deliberately, same tap/directory/token
+# shape) is reported deprecated by `goreleaser check` under GoReleaser
+# v2.17.1 (deprecated since v2.10, in favor of `homebrew_casks:`; see
+# https://goreleaser.com/deprecations/#brews). Confirmed it is still
+# functional, not removed: `goreleaser release`/`build` process it fine,
+# printing only a warning. release.yml's actual release step runs
+# `goreleaser release --clean`, never `check`, so this warning does not
+# block a real release. `homebrew_casks:` was not adopted here instead
+# because it is a materially different distribution mechanism (a Cask, not
+# a Formula: different default directory, different `brew install --cask`
+# UX, and typically expects a signed/notarized binary on macOS), not a
+# drop-in rename; that is a real product decision for whoever owns the tap,
+# not something to change silently while wiring up CI. Worth revisiting.
+#
+# The tap lives in a DIFFERENT repository, which is why this block needs its
+# own token. A workflow's automatic GITHUB_TOKEN is scoped to the repository
+# running the workflow, so using it here fails with "403 Resource not
+# accessible by integration" when GoReleaser tries to commit the formula to
+# xavidop/homebrew-tap. HOMEBREW_TAP_TOKEN must therefore be a token with
+# contents:write on the TAP repo (see release.yml, which falls back to
+# GITHUB_TOKEN when the secret is absent so a missing secret degrades to
+# "the release publishes, only the formula step fails" rather than breaking
+# the whole release on a template error).
+brews:
+  - name: senro
+    ids: [senro]
+    # Homebrew resolves a tap's formulae from the Formula/ directory when the
+    # tap has one, and ignores .rb files at the repo root entirely. Without
+    # this, GoReleaser writes senro.rb to the root of a tap that already has
+    # Formula/ and Casks/ directories, the push succeeds, and
+    # `brew install xavidop/tap/senro` still reports "No available formula",
+    # which looks like a release failure but is purely a placement problem.
+    directory: Formula
+    repository:
+      owner: xavidop
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/xavidop/senro"
+    description: "CLI for the senro pipeline engine: build and run a pipeline, attach to a live or finished run, and follow it from the terminal"
+    license: "MIT"
+    test: |
+      # `senro version` does not exist in this build (see cmd/senro/main.go's
+      # usage: run, attach, ui, help; no version subcommand). --help is the
+      # one invocation guaranteed to exist, print something senro-specific,
+      # and exit 0, so it is what actually proves the installed binary works.
+      assert_match "senro is the CLI companion", shell_output("#{bin}/senro --help")

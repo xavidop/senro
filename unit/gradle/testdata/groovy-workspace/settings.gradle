@@ -1,0 +1,32 @@
+// A Groovy-DSL settings file that is entirely declarative: every include takes
+// string literals, so the project set is readable without running Gradle.
+// Validated with `gradle -q projects`, which is also why pluginManagement is
+// first: Gradle refuses a settings file where it is not.
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+    }
+}
+
+rootProject.name = 'acme'
+
+include ':apps:web'
+
+// A multi-line include, which is how a real repository writes a long list:
+// the trailing comma continues the statement onto the next line.
+include ':libs:core',
+        ':libs:store'
+
+// The parenthesised form, which Groovy accepts as readily as the bare one.
+include(':libs:testkit')
+
+// A project whose directory is NOT its path. ':tools' is created implicitly
+// by this include, and both it and ':tools:codegen' are moved somewhere else
+// entirely. Gradle 9 refuses a project whose directory does not exist, so the
+// container has to be moved too rather than left pointing at a tools/ that is
+// not there.
+include ':tools:codegen'
+project(':tools').projectDir = file('build-tools')
+project(':tools:codegen').projectDir = file('build-tools/codegen')
+
+// include ':ghost' -- a commented-out include is not an include.

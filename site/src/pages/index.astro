@@ -1,0 +1,673 @@
+---
+import Layout from "../layouts/Layout.astro";
+import RailMark from "../components/RailMark.astro";
+import TrackField from "../components/TrackField.astro";
+import PipelineRun from "../components/PipelineRun.astro";
+
+const base = import.meta.env.BASE_URL;
+const repo = "https://github.com/xavidop/senro";
+
+// A single, careful pass over the source: every match becomes a span, every
+// gap between matches is copied through untouched (and escaped) rather than
+// fed back through another .replace() call. Running several sequential
+// regex replacements over the SAME string is what corrupts markup: a later
+// pass matching text inside a span an earlier pass just inserted (for
+// example, the "t" in class="t") mangles the tag. One pass over the
+// original string never has that problem, because it never looks at HTML
+// it produced itself.
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+const CODE_TOKEN =
+  /(?<str>"[^"]*")|(?<pkg>senro|exec|retry)\.(?<fn>New|Workflow|Step|Command|OnInfra|Run)\b|\b(?<ident>p|verify|ctx)\b|\b(?<kw>if|nil)\b/g;
+
+function highlightGo(src: string): string {
+  let out = "";
+  let last = 0;
+  for (const m of src.matchAll(CODE_TOKEN)) {
+    out += escapeHtml(src.slice(last, m.index));
+    const g = m.groups!;
+    if (g.pkg) {
+      out += `${escapeHtml(g.pkg)}.<span class="f">${escapeHtml(g.fn)}</span>`;
+    } else if (g.str) {
+      out += `<span class="s">${escapeHtml(g.str)}</span>`;
+    } else if (g.kw) {
+      out += `<span class="k">${escapeHtml(g.kw)}</span>`;
+    } else if (g.ident) {
+      out += `<span class="t">${escapeHtml(g.ident)}</span>`;
+    } else {
+      out += escapeHtml(m[0]);
+    }
+    last = m.index + m[0].length;
+  }
+  out += escapeHtml(src.slice(last));
+  return out;
+}
+
+const quickstart = `p := senro.New("ci")
+
+verify := p.Workflow("verify")
+verify.Step("test", exec.Command("go", "test", "./..."))
+verify.Step("build", exec.Command("go", "build", "./...")).
+	Needs("test").
+	Retry(3, retry.OnInfra())
+
+senro.Run(ctx, p)`;
+
+const quickstartHtml = highlightGo(quickstart);
+
+const decisions = [
+  {
+    n: "1",
+    title: "Write the pipeline, run the pipeline",
+    body: "Build a plan from ordinary Go code, then run it. Your code describes the work; senro is the one thing that actually executes it, so a second process can always watch what's happening.",
+  },
+  {
+    n: "2",
+    title: "One timeline, always accurate",
+    body: "Every step starting, finishing, or retrying shows up on one timeline. The terminal UI, a finished run you reopen later, and anything else that watches all read that same timeline, so they never disagree about what happened.",
+  },
+  {
+    n: "3",
+    title: "Two kinds of step, both running today",
+    body: "Wrap any command in exec.Command and it runs on any of the four executors. Register a Go function and senro.Func runs it, with the same retries, conditions and caching a command step gets, on the coordinator or on an SSH host, where senro stages a copy of this binary and re-enters it there.",
+  },
+  {
+    n: "4",
+    title: "Content-addressed, and shareable",
+    body: "Mark a step Pure() and declare its inputs, and a re-run with nothing changed skips it entirely, restored from the content store. Point SENRO_REMOTE_CACHE at an S3-compatible bucket or an OCI registry and a fresh CI runner starts warm on what another machine already built.",
+  },
+];
+
+const features = [
+  {
+    title: "Four executors",
+    body: "Run a workflow locally, in a container on your Docker daemon, as one pod per step on Kubernetes, or on a remote host over your own SSH config. One option picks it, per workflow.",
+    href: "docs/executors/kubernetes/",
+    link: "Kubernetes & SSH",
+  },
+  {
+    title: "Go functions as steps",
+    body: "senro.Func runs a registered, typed Go function with the same retries, conditions and caching a command gets: on the coordinator, on an SSH host, or in a container.",
+    href: "docs/executors/func-remote/",
+    link: "Func steps",
+  },
+  {
+    title: "Fan-out for monorepos",
+    body: "Expand builds one step per module over eight unit graphs, with per-unit edges, duration-balanced shards, and runs narrowed to what a change actually affects.",
+    href: "docs/monorepo/fan-out/",
+    link: "Fan-out",
+  },
+  {
+    title: "A cache a fleet can share",
+    body: "Snapshotted workspaces, an opt-in Pure() action cache, and a shared tier over an S3 bucket or an OCI registry, so a fresh runner starts warm. senro verify audits purity claims.",
+    href: "docs/data/shared-cache/",
+    link: "Shared cache",
+  },
+  {
+    title: "Secrets stay out of logs",
+    body: "A secret arrives as a file, never argv or an environment value. Output is redacted, and channels nothing could clean up afterwards are refused before anything runs.",
+    href: "docs/secrets/",
+    link: "Secrets",
+  },
+  {
+    title: "Triggers without a mirror",
+    body: "The pipeline binary is its own matcher: hand it a GitHub, GitLab, Bitbucket or Gitea event and it decides to run, not run (exit 78), or error. No config duplicating what the code declares.",
+    href: "docs/triggers/",
+    link: "Triggers",
+  },
+  {
+    title: "Watch and steer a live run",
+    body: "Attach a terminal UI to a pipeline while it runs. Focus a step, read its log, retry it, skip it, pause the run, set a breakpoint, or open a shell inside the step's own sandbox.",
+    href: "docs/attach/",
+    link: "Attach",
+  },
+  {
+    title: "A browser view too",
+    body: "senro ui serves a live run on loopback from a one-time link. The page is Go compiled to WebAssembly, folding the same events as the TUI, with the same controls.",
+    href: "docs/attach/browser/",
+    link: "Browser UI",
+  },
+  {
+    title: "Retries that know what broke",
+    body: "retry.OnInfra() retries a dropped connection or a registry hiccup, and never a failing test. Retrying a real failure until it passes only deletes what the test told you.",
+    href: "docs/steps/retries/",
+    link: "Retries",
+  },
+  {
+    title: "Real outcomes, not pass or fail",
+    body: "A step ends in one of ten states. One that needed three tries is recovered, not succeeded, so flaky infrastructure cannot hide inside a green build.",
+    href: "docs/steps/states/",
+    link: "Step states",
+  },
+  {
+    title: "Notifications and traces",
+    body: "Slack, GitHub Checks, webhooks, or a destination you write against one small interface; OpenTelemetry-style traces exported straight from the event stream.",
+    href: "docs/notifications/",
+    link: "Notifications",
+  },
+  {
+    title: "Failure analysis, gated",
+    body: "Hand a failed step to an analyzer you wrote, with any model behind it. Its proposal applies only when a person or an explicit policy accepts it, never on its own.",
+    href: "docs/extend/analyzer/",
+    link: "Analyzers",
+  },
+];
+
+---
+
+<Layout>
+  <section class="hero section">
+    <TrackField opacity={0.35} />
+    <div class="wrap hero__grid">
+      <div class="hero__inner">
+        <p class="eyebrow">線路 senro, railway track</p>
+        <h1>A pipeline engine, defined in Go.</h1>
+        <p class="hero__lede">
+          Write a pipeline as ordinary Go code, run it locally, in containers, on Kubernetes or
+          over SSH, and watch it live from a second terminal or a browser while it works.
+          <strong>senro is a pipeline engine first:</strong> CI/CD is the obvious first thing to
+          build with it, not the limit of what it's for.
+        </p>
+        <div class="hero__actions">
+          <a class="btn btn--primary" href={`${base}docs/quickstart/`}>Get started</a>
+          <a class="btn btn--ghost" href={`${base}docs/`}>Read the docs</a>
+          <a class="btn btn--ghost" href={repo} target="_blank" rel="noopener">View on GitHub</a>
+        </div>
+
+        <div class="aud" role="tablist" aria-label="Audience">
+          <button class="aud__btn aud__btn--on" data-aud-btn="humans" role="tab" aria-selected="true">For humans</button>
+          <button class="aud__btn" data-aud-btn="agents" role="tab" aria-selected="false">For agents</button>
+        </div>
+
+        <div data-aud-panel="humans">
+          <p class="hero__install"><code>go get github.com/xavidop/senro</code></p>
+        </div>
+
+        <div data-aud-panel="agents" hidden>
+          <p class="hero__aud-intro">
+            Point a coding agent at senro: install the skill, or hand it the whole
+            documentation as one file.
+          </p>
+          <div class="agent-card card">
+            <p class="agent-card__label">Add the agent skill</p>
+            <p class="hero__install"><code>npx skills add xavidop/senro</code></p>
+            <p class="agent-card__label">Or paste this prompt</p>
+            <p class="hero__install hero__install--prompt"><code>Add senro to my Go project. Docs: https://senro.dev/llms.txt</code></p>
+            <div class="agent-card__links">
+              <a href={`${base}llms.txt`}>llms.txt</a>
+              <a href={`${base}llms-full.txt`}>llms-full.txt</a>
+              <a href={`${base}docs/reference/skill/`}>Agent skill guide →</a>
+            </div>
+          </div>
+        </div>
+      </div>
+      <PipelineRun />
+    </div>
+  </section>
+
+  <section id="why" class="section">
+    <div class="wrap">
+      <div class="section__head">
+        <p class="eyebrow">Why</p>
+        <h2>YAML has none of the tools you'd want for programming.</h2>
+        <p>
+          A dependency graph, retries, conditional branching, failure recovery: that's real
+          programming, asked for in a format with no functions, no types, no tests, and no
+          debugger. Teams end up either fighting the YAML or routing around it with shell scripts
+          the YAML merely calls, which just moves the real logic out of the tool meant to run it.
+        </p>
+      </div>
+      <p class="why__body">
+        senro starts from the other end: the pipeline <em>is</em> the Go program. You write the
+        graph, build it into a plan, and hand that plan to senro to run. Your code never runs a
+        step directly, which is exactly what lets a second process (an attached terminal, in
+        particular) watch, retry into, and replay the exact thing that's running. You get a real
+        language's tooling, compiler, types, <code>go test</code>, a debugger, for the code that
+        decides whether your build ships.
+      </p>
+    </div>
+  </section>
+
+  <section class="section quickstart">
+    <div class="wrap quickstart__grid">
+      <div class="section__head">
+        <p class="eyebrow">Quick start</p>
+        <h2>Two steps, one retry rule.</h2>
+        <p><code>exec.Command</code> runs any command exactly as written: no shell, no surprises. Add <code>Needs</code> to order steps, and <code>Retry(3, retry.OnInfra())</code> to retry only a dropped connection or the like, never a failing test.</p>
+        <a class="btn btn--ghost" href={`${base}docs/quickstart/`}>Full walkthrough →</a>
+      </div>
+      <pre class="code quickstart__code"><code set:html={quickstartHtml} /></pre>
+    </div>
+  </section>
+
+  <section id="features" class="section">
+    <div class="wrap">
+      <div class="section__head">
+        <p class="eyebrow">Features</p>
+        <h2>Everything a pipeline needs, in the box.</h2>
+        <p>
+          Each card is one docs page deep. All of it ships in this build; the docs keep an honest
+          list of what does not, so nothing here is aspirational.
+        </p>
+      </div>
+      <div class="grid grid--3">
+        {features.map((f) => (
+          <div class="card feature-card">
+            <h3>{f.title}</h3>
+            <p>{f.body}</p>
+            <a class="feature-card__link" href={`${base}${f.href}`}>{f.link} →</a>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section id="attach" class="section attach">
+    <div class="wrap attach__grid">
+      <div class="section__head">
+        <p class="eyebrow">See it running</p>
+        <h2>A pipeline you can watch, not just launch.</h2>
+        <p>
+          One line before <code>senro.Run</code> lets a second terminal attach while the run is
+          happening. A pipeline that never adds it pays nothing: no open port, no background
+          process.
+        </p>
+        <a class="btn btn--ghost" href={`${base}docs/attach/`}>Read the attach guide →</a>
+      </div>
+      <div class="attach__demo">
+        <div class="term">
+          <div class="term__bar"><span></span><span></span><span></span></div>
+          <pre class="term__body"><code
+><span class="term__mut">$</span> senro attach
+<span class="term__ok">ci</span>  run 20260807T101503-a1b2c3
+┌─ steps ──────────────┐ ┌─ build ──────────────────────┐
+│ <span class="term__ok">✓</span> test      succeeded│ │ go build ./...               │
+│ <span class="term__running">▸</span> build     running  │ │ #cgo CFLAGS: -O2             │
+│                      │ │ compiling ./cmd/senro ...    │
+└──────────────────────┘ └──────────────────────────────┘
+ enter focus · r retry · c cancel · q detach</code></pre>
+        </div>
+        <p class="status-legend">
+          <span><i class="status-dot status-dot--failed"></i>failed</span>
+          <span><i class="status-dot status-dot--running"></i>running / retrying</span>
+          <span><i class="status-dot status-dot--passed"></i>succeeded</span>
+          <span><i class="status-dot"></i>cached / skipped</span>
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section id="invariants" class="section">
+    <div class="wrap">
+      <div class="section__head">
+        <p class="eyebrow">How it's built</p>
+        <h2>Four decisions everything else follows from.</h2>
+      </div>
+      <div class="grid grid--2">
+        {decisions.map((d) => (
+          <div class="card inv-card">
+            <span class="inv-card__n">{d.n}</span>
+            <h3>{d.title}</h3>
+            <p>{d.body}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section class="section cta">
+    <div class="wrap cta__inner">
+      <RailMark size={40} />
+      <h2>Read the docs, or go straight to the source.</h2>
+      <div class="hero__actions">
+        <a class="btn btn--primary" href={`${base}docs/`}>Documentation</a>
+        <a class="btn btn--ghost" href={`${base}llms-full.txt`}>llms-full.txt</a>
+        <a class="btn btn--ghost" href={repo} target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </section>
+</Layout>
+
+<style>
+  .hero {
+    position: relative;
+    overflow: hidden;
+    padding-top: clamp(3rem, 2rem + 4vw, 6rem);
+  }
+  .hero__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 3rem;
+    align-items: center;
+  }
+  .hero__inner {
+    max-width: 620px;
+  }
+  .hero h1 {
+    font-size: var(--step-5);
+    margin: 1rem 0 1.2rem;
+  }
+  .hero__lede {
+    font-size: var(--step-1);
+    color: var(--muted);
+    max-width: 62ch;
+  }
+  .hero__lede code {
+    color: var(--rail-deep);
+    background: var(--rail-soft);
+    padding: 0.1rem 0.45rem;
+    border-radius: var(--radius-sm);
+  }
+  .hero__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.8rem;
+    margin: 2rem 0 1.6rem;
+  }
+  .hero__install {
+    margin: 1.4rem 0 0;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    color: var(--muted-2);
+  }
+  .hero__install code {
+    display: inline-block;
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 0.75rem 1.1rem;
+    color: var(--ink);
+  }
+  .hero__install code::before {
+    content: "$ ";
+    color: var(--rail-deep);
+  }
+
+  /* For humans / For agents toggle: sits below the CTAs so it swaps only the
+     action area beneath the lede, never the page title. */
+  .aud {
+    display: inline-flex;
+    gap: 0.2rem;
+    padding: 0.25rem;
+    margin: 0.4rem 0 0;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    background: var(--bg-2);
+  }
+  .aud__btn {
+    padding: 0.4rem 1.05rem;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--font-body);
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition:
+      background 0.2s var(--ease),
+      color 0.2s var(--ease);
+  }
+  .aud__btn--on {
+    background: var(--rail);
+    color: #fff;
+  }
+  .hero__aud-intro {
+    color: var(--muted);
+    font-size: var(--step-0);
+    max-width: 46ch;
+    margin: 1.2rem 0 0;
+  }
+  .agent-card {
+    margin-top: 1.2rem;
+    padding: 1.4rem 1.5rem;
+  }
+  .agent-card__label {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted-2);
+    margin: 0 0 0.5rem;
+  }
+  .agent-card .hero__install {
+    margin: 0 0 1.1rem;
+  }
+  .agent-card .hero__install:last-of-type {
+    margin-bottom: 1.2rem;
+  }
+  .agent-card .hero__install code {
+    display: block;
+  }
+  .hero__install--prompt code::before {
+    content: "";
+  }
+  .hero__install--prompt code {
+    white-space: normal;
+    word-break: break-all;
+    font-size: 0.85rem;
+    color: var(--rail-deep);
+  }
+  .agent-card__links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.1rem;
+    font-size: 0.9rem;
+  }
+  .agent-card__links a {
+    color: var(--rail-deep);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .agent-card__links a:hover {
+    color: var(--ink);
+  }
+
+  .why__body {
+    max-width: 68ch;
+    color: var(--muted);
+  }
+  .why__body code {
+    color: var(--rail-deep);
+  }
+
+  .quickstart__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    gap: 3rem;
+    align-items: start;
+  }
+  .quickstart__grid .section__head p code {
+    color: var(--rail-deep);
+  }
+  .quickstart__code {
+    margin-top: 0.3rem;
+    max-width: 100%;
+  }
+
+  .grid {
+    display: grid;
+    gap: 1.4rem;
+  }
+  .grid--2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .grid--3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .grid--2 h3,
+  .grid--3 h3 {
+    font-size: var(--step-0);
+    margin-bottom: 0.6rem;
+  }
+  .grid--2 p,
+  .grid--3 p {
+    margin: 0;
+    font-size: 0.95rem;
+    line-height: 1.6;
+  }
+
+  .feature-card {
+    display: flex;
+    flex-direction: column;
+  }
+  .feature-card p {
+    flex: 1;
+  }
+  .feature-card__link {
+    margin-top: 1rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--rail-deep);
+  }
+  .feature-card__link:hover {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .inv-card {
+    position: relative;
+    padding-top: 2.8rem;
+  }
+  .inv-card__n {
+    position: absolute;
+    top: 1.5rem;
+    right: 1.6rem;
+    font-family: var(--font-mono);
+    font-size: 1.5rem;
+    color: color-mix(in srgb, var(--rail) 35%, var(--bg-3));
+    font-weight: 600;
+  }
+
+  .attach__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+    gap: 3rem;
+    align-items: start;
+  }
+  .attach code {
+    color: var(--rail-deep);
+  }
+
+  /* The terminal mockup keeps its own fixed dark palette regardless of the
+     page theme, the way a real terminal window would, rather than tracking
+     light/dark mode. A soft, generously rounded panel with a diffuse
+     shadow, not a hard industrial console. */
+  .term {
+    background: #211f2e;
+    border-radius: var(--radius);
+    overflow: hidden;
+    max-width: 100%;
+    box-shadow: 0 30px 60px -32px rgba(38, 38, 47, 0.45);
+  }
+  .term__bar {
+    display: flex;
+    gap: 0.45rem;
+    padding: 0.85rem 1.1rem;
+    background: #29273a;
+  }
+  .term__bar span {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #423f57;
+  }
+  .term__body {
+    margin: 0;
+    padding: 1.2rem 1.4rem 1.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    line-height: 1.7;
+    color: #c8c6d8;
+    overflow-x: auto;
+    max-width: 100%;
+    white-space: pre;
+  }
+  .term__ok {
+    color: #86c4a6;
+  }
+  .term__running {
+    color: #e0bd7c;
+  }
+  .term__mut {
+    color: #85819c;
+  }
+
+  .status-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    margin-top: 1.2rem;
+    padding-top: 1.2rem;
+    border-top: 1px solid var(--line);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+  .status-legend span {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .cta {
+    text-align: center;
+    padding-block: clamp(3rem, 2rem + 4vw, 5rem) 6rem;
+  }
+  .cta h2 {
+    font-size: var(--step-3);
+    margin: 1.2rem 0 1.6rem;
+  }
+  .cta__inner .hero__actions {
+    justify-content: center;
+  }
+
+  @media (max-width: 960px) {
+    .hero__grid {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2.5rem;
+    }
+    .hero__inner {
+      max-width: 100%;
+    }
+  }
+
+  @media (max-width: 1080px) {
+    .grid--3 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 860px) {
+    .quickstart__grid,
+    .attach__grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .grid--2,
+    .grid--3 {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>
+
+<script>
+  // Hero "For humans / For agents" toggle: swap the panel below the CTAs, no
+  // navigation. The humans panel is the default markup (no `hidden`), so it
+  // renders correctly with JavaScript disabled; this script only adds the
+  // ability to switch to the agents panel.
+  const audBtns = document.querySelectorAll("[data-aud-btn]");
+  const audPanels = document.querySelectorAll<HTMLElement>("[data-aud-panel]");
+  audBtns.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const which = btn.getAttribute("data-aud-btn");
+      audBtns.forEach((b) => {
+        const on = b === btn;
+        b.classList.toggle("aud__btn--on", on);
+        b.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      audPanels.forEach((p) => {
+        p.hidden = p.getAttribute("data-aud-panel") !== which;
+      });
+    });
+  });
+</script>

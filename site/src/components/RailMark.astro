@@ -1,0 +1,38 @@
+---
+// The senro brand mark: a line that splits into two paths and rejoins.
+// On a railway that is a passing loop, and in senro it is a workflow that
+// fans out into parallel steps and joins again, so the shape says both at
+// once. It is symmetric on both axes and uses no node dots, which is what
+// keeps it from drifting into the share icon.
+//
+// If you redraw it, check the result at 16px first. That is the browser
+// tab favicon and it is the size that kills most marks.
+//
+// One shared component so the header, footer and favicon never drift from
+// each other. The favicon is a separate file at site/public/favicon.svg
+// because a tab icon cannot come from a component, so change both together
+// and bump the ?v= cache-buster in Layout.astro when you do.
+interface Props {
+  size?: number;
+}
+const { size = 28 } = Astro.props;
+---
+
+<svg
+  width={size}
+  height={size}
+  viewBox="0 0 32 32"
+  fill="none"
+  xmlns="http://www.w3.org/2000/svg"
+  role="img"
+  aria-label="senro"
+>
+  <rect width="32" height="32" rx="9" fill="#4f56a0"></rect>
+  <path
+    d="M4,16 H10 M22,16 H28 M10,16 L16,6 L22,16 L16,26 Z"
+    stroke="#f7f7fd"
+    stroke-width="3.2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  ></path>
+</svg>

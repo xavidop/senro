@@ -1,0 +1,24 @@
+{
+  "provider": "github",
+  "event": "push",
+  "payload": {
+    "ref": "refs/heads/topic/makefile",
+    "before": "0000000000000000000000000000000000000000",
+    "after": "fd489864e7642b48eaad6e3f155c10e46810ec72",
+    "created": true,
+    "deleted": false,
+    "commits": [
+      {
+        "added": [],
+        "removed": [],
+        "modified": [
+          "Makefile"
+        ]
+      }
+    ],
+    "repository": {
+      "full_name": "example/mono",
+      "default_branch": "main"
+    }
+  }
+}

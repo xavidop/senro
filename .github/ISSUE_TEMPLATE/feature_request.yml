@@ -1,0 +1,42 @@
+name: ✨ Feature request
+description: Suggest a capability for senro's engine, CLI, or public API
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the pipeline you're trying to build, not just the proposed solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API / behavior
+      description: Sketch the method, option, or CLI flag you have in mind.
+      render: go
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Including anything you tried to build on top of the existing API first.
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: >-
+            This keeps definition, plan, and execution separate: my own code would not need to
+            drive a step directly, and the change stays observable through the one event stream
+            (see the README's "Four decisions" section).
+  - type: dropdown
+    id: already-planned
+    attributes:
+      label: Is this already on the roadmap?
+      description: Check the README's "What's not here yet" section first.
+      options:
+        - "I checked - this is not listed there"
+        - "It's listed there and I'm asking about priority / timeline"
+        - "Not sure"
+    validations:
+      required: true

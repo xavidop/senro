@@ -1,0 +1,15 @@
+{
+  "provider": "gitea",
+  "event": "push",
+  "payload": {
+    "ref": "refs/heads/feature/changes",
+    "before": "0000000000000000000000000000000000000000",
+    "after": "28c3613ae62640216bea5e7dc71aa65356e4298b",
+    "commits": [],
+    "total_commits": 0,
+    "repository": {
+      "full_name": "meisam/woodpecktester",
+      "default_branch": "main"
+    }
+  }
+}

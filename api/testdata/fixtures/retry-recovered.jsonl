@@ -1,0 +1,8 @@
+{"v":1,"seq":1,"ts":"2026-08-07T10:00:00Z","type":"run.started","run":"01JQ1","payload":{"pipeline":"./ci","engine_version":"0.1.0","plan_digest":"sha256:bbb","started_at":"2026-08-07T10:00:00Z"}}
+{"v":1,"seq":2,"ts":"2026-08-07T10:00:00Z","type":"plan.resolved","run":"01JQ1","payload":{"digest":"sha256:bbb","nodes":1}}
+{"v":1,"seq":3,"ts":"2026-08-07T10:00:00Z","type":"step.created","run":"01JQ1","step":"flaky","payload":{"kind":"exec"}}
+{"v":1,"seq":4,"ts":"2026-08-07T10:00:01Z","type":"step.started","run":"01JQ1","step":"flaky","attempt":1,"payload":{"cmd":["./flaky.sh"]}}
+{"v":1,"seq":5,"ts":"2026-08-07T10:00:02Z","type":"step.retried","run":"01JQ1","step":"flaky","attempt":2,"payload":{"attempt":2,"reason":"ssh: connection reset by peer","predicate":"infra","backoff_ms":2137}}
+{"v":1,"seq":6,"ts":"2026-08-07T10:00:05Z","type":"step.started","run":"01JQ1","step":"flaky","attempt":2,"payload":{"cmd":["./flaky.sh"]}}
+{"v":1,"seq":7,"ts":"2026-08-07T10:00:06Z","type":"step.finished","run":"01JQ1","step":"flaky","attempt":2,"payload":{"state":"recovered","duration_ns":0}}
+{"v":1,"seq":8,"ts":"2026-08-07T10:00:06Z","type":"run.finished","run":"01JQ1","payload":{"status":"succeeded_with_recovery","steps":{"recovered":1},"duration_ns":0}}

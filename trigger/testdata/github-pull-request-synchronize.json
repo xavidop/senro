@@ -1,0 +1,22 @@
+{
+  "provider": "github",
+  "event": "pull_request",
+  "payload": {
+    "action": "synchronize",
+    "number": 2,
+    "pull_request": {
+      "number": 2,
+      "head": {
+        "sha": "ec26c3e57ca3a959ca5aad62de7213c562f8c821"
+      },
+      "base": {
+        "ref": "master",
+        "sha": "f95f852bd8fca8fcc58a9a2d6c842781e32a215e"
+      }
+    },
+    "repository": {
+      "full_name": "Codertocat/Hello-World",
+      "default_branch": "master"
+    }
+  }
+}

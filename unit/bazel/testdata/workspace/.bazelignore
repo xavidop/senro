@@ -1,0 +1,2 @@
+# Directories bazel does not look inside at all.
+vendor/generated

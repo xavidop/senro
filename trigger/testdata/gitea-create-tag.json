@@ -1,0 +1,13 @@
+{
+  "provider": "gitea",
+  "event": "create",
+  "payload": {
+    "sha": "ef98532add3b2feb7a137426bba1248724367df5",
+    "ref": "v1.0.0",
+    "ref_type": "tag",
+    "repository": {
+      "full_name": "gordon/hello-world",
+      "default_branch": "main"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+[tool.poetry]
+name = "acme-reports"
+version = "0.1.0"
+description = "A Poetry-managed distribution in the same repository."
+authors = ["Acme <dev@example.com>"]
+packages = [{ include = "acme_reports" }]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+acme-core = { path = "../../packages/core", develop = true }
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

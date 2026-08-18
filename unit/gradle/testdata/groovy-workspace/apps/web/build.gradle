@@ -1,0 +1,7 @@
+dependencies {
+    implementation project(':libs:store')
+
+    // A test-only dependency is still a dependency: a change to testkit has to
+    // rerun web's tests.
+    testImplementation project(':libs:testkit')
+}

@@ -1,0 +1,5 @@
+dependencies {
+    // The middle of the chain: web has never heard of core, and a change to
+    // core still has to rerun web.
+    api project(':libs:core')
+}

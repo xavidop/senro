@@ -1,0 +1,27 @@
+{
+  "provider": "gitea",
+  "event": "pull_request",
+  "payload": {
+    "action": "synchronized",
+    "number": 2,
+    "pull_request": {
+      "id": 93,
+      "number": 2,
+      "state": "open",
+      "base": {
+        "label": "main",
+        "ref": "main",
+        "sha": "29be01c073851cf0db0c6a466e396b725a670453"
+      },
+      "head": {
+        "label": "test-patch-1",
+        "ref": "test-patch-1",
+        "sha": "788ed8d02d3b7fcfcf6386dbcbca696aa1d4dc25"
+      }
+    },
+    "repository": {
+      "full_name": "Test-CI/multi-line-secrets",
+      "default_branch": "main"
+    }
+  }
+}

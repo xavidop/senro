@@ -1,0 +1,31 @@
+{
+  "provider": "bitbucket",
+  "event": "pullrequest:created",
+  "payload": {
+    "repository": {
+      "full_name": "team_name/repo_name"
+    },
+    "pullrequest": {
+      "id": 16,
+      "title": "Title of pull request",
+      "state": "OPEN",
+      "source": {
+        "branch": {
+          "name": "feature/booking-validation"
+        },
+        "commit": {
+          "hash": "d3022fc0ca3d"
+        }
+      },
+      "destination": {
+        "branch": {
+          "name": "main"
+        },
+        "commit": {
+          "hash": "ce5965ddd289"
+        }
+      },
+      "merge_commit": null
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "provider": "senro",
+  "event": "schedule",
+  "payload": {
+    "schedule": "0 3 * * *"
+  }
+}

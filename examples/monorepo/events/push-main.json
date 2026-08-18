@@ -1,0 +1,24 @@
+{
+  "provider": "github",
+  "event": "push",
+  "payload": {
+    "ref": "refs/heads/main",
+    "before": "737d38c599c1b2991664dfc6155d6bf516fcce36",
+    "after": "fd489864e7642b48eaad6e3f155c10e46810ec72",
+    "created": false,
+    "deleted": false,
+    "commits": [
+      {
+        "added": [],
+        "removed": [],
+        "modified": [
+          "libs/log/log.go"
+        ]
+      }
+    ],
+    "repository": {
+      "full_name": "example/mono",
+      "default_branch": "main"
+    }
+  }
+}

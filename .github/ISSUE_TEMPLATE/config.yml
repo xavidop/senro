@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Questions & discussion
+    url: https://github.com/xavidop/senro/discussions
+    about: Ask usage questions and share ideas here.
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/xavidop/senro/security/advisories/new
+    about: Please report vulnerabilities privately - do not open a public issue.
+  - name: 📖 Documentation
+    url: https://senro.dev
+    about: Guides, concepts, the CLI, and the design document.

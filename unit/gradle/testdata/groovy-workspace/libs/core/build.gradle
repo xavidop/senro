@@ -1,0 +1,2 @@
+// Nothing but the configuration the root project's `subprojects` block
+// applies. core is the bottom of the chain and depends on no sibling.

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://senro.dev/schema/frame.schema.json",
+  "title": "senro attach frame",
+  "description": "One message on the attach socket's control channel: a client-initiated request and the server's correlated response. JSON so the protocol is debuggable with websocat; only per-step log chunks use a binary channel. This schema is CLOSED (additionalProperties is false): a frame is point-to-point between an engine and a client that negotiated a version on the handshake, so both ends know the frame shape in use. Events, by contrast, are persisted to events.jsonl and re-read later by readers that never handshook with the writer, which is why their envelope stays open (see event.schema.json), and the lifecycle stream itself is not frame-wrapped at all: GET /api/stream emits bare events, and its own end-of-stream signal is stream_end.schema.json, not a frame kind here.",
+  "type": "object",
+  "required": ["v", "kind"],
+  "additionalProperties": false,
+  "properties": {
+    "v": { "type": "integer", "minimum": 1 },
+    "kind": {
+      "type": "string",
+      "enum": ["req", "res"],
+      "description": "req is a client-initiated control operation; res is the server's response, correlated by id."
+    },
+    "id": { "type": "string", "description": "Correlation ID; required on req and its matching res." },
+    "type": {
+      "type": "string",
+      "description": "Operation name, req only.",
+      "examples": ["run.cancel", "step.retry", "step.skip", "breakpoint.set", "breakpoint.clear", "run.rerun_from", "analysis.accept", "analysis.reject"]
+    },
+    "ok": { "type": "boolean", "description": "Outcome; res only." },
+    "error": { "type": "string", "description": "Failure reason; res only, when ok is false." },
+    "payload": { "type": "object" }
+  }
+}

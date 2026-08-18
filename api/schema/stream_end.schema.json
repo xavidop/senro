@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://senro.dev/schema/stream_end.schema.json",
+  "title": "senro stream end marker",
+  "description": "The terminal NDJSON line GET /api/stream writes instead of merely closing the connection, whenever the server has more to say than a bare closed channel would communicate on its own. Deliberately NOT Event-shaped: a client recognises this line by the stream_end field alone, before ever attempting to decode it as an Event. CLOSED (additionalProperties is false), matching frame.schema.json's own reasoning: this line is point-to-point on one already version-negotiated connection, not a persisted, independently-read artifact like an event.",
+  "type": "object",
+  "required": ["stream_end", "last_seq", "overflowed", "reason", "hint"],
+  "additionalProperties": false,
+  "properties": {
+    "stream_end": {
+      "type": "boolean",
+      "description": "Always true on this line. What distinguishes it from an ordinary event."
+    },
+    "last_seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The seq of the last event this connection actually delivered, 0 if none ever were. Do not derive a resume point by adding 1 to this when it is 0; use hint instead."
+    },
+    "overflowed": {
+      "type": "boolean",
+      "description": "Wire-compatibility field for a client built before reason existed. Prefer reason when present."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Why the stream ended. Informative, not exhaustive: a client must decode an unrecognised value rather than fail on it.",
+      "examples": ["run_ended", "overflowed", "write_stalled"]
+    },
+    "hint": {
+      "type": "string",
+      "description": "The server's own resume advice: GET /api/state for a fresh snapshot, then, if the run is not yet done, GET /api/stream?from=<state.seq+1>."
+    }
+  }
+}

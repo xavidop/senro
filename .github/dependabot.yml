@@ -1,0 +1,41 @@
+version: 2
+updates:
+  # senro itself: one module, one tag, everything in the repo except contrib/.
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns: ["*"]
+    labels: [dependencies, go]
+
+  # contrib/genkitanalyzer is a nested Go module with its own go.mod, so it
+  # needs its own entry: dependabot updates one manifest per entry, and the
+  # root entry above cannot see a manifest outside its own module. This is
+  # also the module whose dependencies actually move (Genkit's Go SDK and its
+  # tree), while senro's own graph is deliberately small.
+  #
+  # .github/scripts/check_dependabot_coverage.py fails CI when a go.mod has no
+  # entry here, so a third contrib module lands with its own entry or not at
+  # all.
+  - package-ecosystem: gomod
+    directory: "/contrib/genkitanalyzer"
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns: ["*"]
+    labels: [dependencies, go]
+
+  # GitHub Actions used by the workflows under .github/workflows.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly }
+    labels: [dependencies, ci]
+
+  # Docs site (npm), built and deployed by .github/workflows/pages.yml.
+  - package-ecosystem: npm
+    directory: "/site"
+    schedule: { interval: weekly }
+    labels: [dependencies, docs]

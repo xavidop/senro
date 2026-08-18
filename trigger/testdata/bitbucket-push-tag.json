@@ -1,0 +1,29 @@
+{
+  "provider": "bitbucket",
+  "event": "repo:push",
+  "payload": {
+    "repository": {
+      "full_name": "team_name/repo_name"
+    },
+    "push": {
+      "changes": [
+        {
+          "new": {
+            "type": "tag",
+            "name": "v1.0.0",
+            "target": {
+              "type": "commit",
+              "hash": "b99ea6dad8f416e57c5ca78c1ccef590600d841b"
+            }
+          },
+          "old": null,
+          "created": true,
+          "forced": false,
+          "closed": false,
+          "commits": [],
+          "truncated": false
+        }
+      ]
+    }
+  }
+}

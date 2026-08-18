@@ -1,0 +1,5 @@
+packages:
+  - "packages/*"
+  - "apps/*"
+  # Still on disk, deliberately out of the workspace.
+  - "!packages/deprecated"

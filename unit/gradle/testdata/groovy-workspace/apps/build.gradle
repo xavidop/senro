@@ -1,0 +1,4 @@
+// ':apps' is a project Gradle created implicitly out of `include ':apps:web'`,
+// and a container project is still allowed a build script of its own. Whatever
+// this configures, ':apps:web' is configured by it, so ':apps:web' depends on
+// it.

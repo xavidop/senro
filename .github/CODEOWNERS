@@ -1,0 +1,26 @@
+# Default owner for everything in the repo.
+* @xavidop
+
+# Core engine and public API
+/*.go @xavidop
+/exec/ @xavidop
+/executor/ @xavidop
+/retry/ @xavidop
+/attach/ @xavidop
+/artifact/ @xavidop
+/unit/ @xavidop
+/api/ @xavidop
+
+# CLI
+/cmd/ @xavidop
+
+# Examples
+/examples/ @xavidop
+
+# Docs site
+/site/ @xavidop
+
+# CI / release
+/.github/ @xavidop
+/.goreleaser.yaml @xavidop
+/.releaserc.json @xavidop

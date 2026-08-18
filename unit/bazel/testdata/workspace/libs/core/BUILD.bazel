@@ -1,0 +1,5 @@
+go_library(
+    name = "core",
+    srcs = ["core.go"],
+    visibility = ["//visibility:public"],
+)

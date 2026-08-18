@@ -1,0 +1,24 @@
+# golangci-lint v2 configuration for every module in this repo: golangci-lint
+# searches upwards for its config, so a nested module under contrib/ linted
+# from its own directory finds this file too, and there is one linter set for
+# the repository rather than one per go.mod. Keep this in sync with the
+# version pinned in .github/workflows/ci.yml.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # The standard set: errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+
+issues:
+  # Report every finding, not a sample of them. golangci-lint defaults to 50
+  # issues per linter and 3 occurrences of the same issue, and it truncates
+  # silently. When this repo's backlog was first measured under those defaults
+  # it looked like 57 issues; the real number was 185. The truncation never
+  # changed the exit code, so it never let a bad commit through, but it did
+  # make the work look a third of its actual size, which is its own kind of
+  # wrong answer. Zero means no limit.
+  max-issues-per-linter: 0
+  max-same-issues: 0

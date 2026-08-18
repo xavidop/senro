@@ -1,0 +1,9 @@
+{"v":1,"seq":1,"ts":"2026-08-07T11:00:00Z","type":"run.started","run":"01JQ2","payload":{"pipeline":"./ci","engine_version":"0.1.0","plan_digest":"sha256:ccc","started_at":"2026-08-07T11:00:00Z"}}
+{"v":1,"seq":2,"ts":"2026-08-07T11:00:01Z","type":"plan.expanded","run":"01JQ2","step":"test/per-unit","payload":{"parent":"test/per-unit","children":["test/per-unit[unit=a]","test/per-unit[unit=b]","test/per-unit[unit=c]"],"count":3,"skipped":12}}
+{"v":1,"seq":3,"ts":"2026-08-07T11:00:01Z","type":"cache.hit","run":"01JQ2","step":"test/per-unit[unit=a]","group":"test/per-unit","payload":{"key":"4f1c","from_run":"01JQ1"}}
+{"v":1,"seq":4,"ts":"2026-08-07T11:00:01Z","type":"step.finished","run":"01JQ2","step":"test/per-unit[unit=a]","group":"test/per-unit","attempt":1,"payload":{"state":"cached","duration_ns":0,"cached":true}}
+{"v":1,"seq":5,"ts":"2026-08-07T11:00:02Z","type":"step.started","run":"01JQ2","step":"test/per-unit[unit=b]","group":"test/per-unit","attempt":1,"payload":{"cmd":["go","test","./..."]}}
+{"v":1,"seq":6,"ts":"2026-08-07T11:00:09Z","type":"step.finished","run":"01JQ2","step":"test/per-unit[unit=b]","group":"test/per-unit","attempt":1,"payload":{"state":"succeeded","duration_ns":0}}
+{"v":1,"seq":7,"ts":"2026-08-07T11:00:02Z","type":"step.started","run":"01JQ2","step":"test/per-unit[unit=c]","group":"test/per-unit","attempt":1,"payload":{"cmd":["go","test","./..."]}}
+{"v":1,"seq":8,"ts":"2026-08-07T11:00:11Z","type":"step.finished","run":"01JQ2","step":"test/per-unit[unit=c]","group":"test/per-unit","attempt":1,"payload":{"state":"failed","exit_code":1,"duration_ns":0}}
+{"v":1,"seq":9,"ts":"2026-08-07T11:00:11Z","type":"run.finished","run":"01JQ2","payload":{"status":"failed","steps":{"cached":1,"succeeded":1,"failed":1},"duration_ns":0}}

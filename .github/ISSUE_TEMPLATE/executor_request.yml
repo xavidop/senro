@@ -1,0 +1,50 @@
+name: 🧭 Executor or platform request
+description: Ask about, or volunteer to build, a new place for steps to run
+labels: [executor, triage]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        A workflow's steps run on an ExecutorTarget: today that's senro.Local() or
+        container.Image(ref). Kubernetes and SSH executors are designed for (see the
+        ExecutorTarget doc comment in senro.go) but not built yet, and
+        Windows is a deliberate non-target (see the README's Platform support
+        section), not an oversight. This form is for asking about, or volunteering
+        to build, one of those - or a platform gap like Windows support.
+  - type: input
+    id: target
+    attributes:
+      label: Target
+      description: What you want a workflow's steps to run on.
+      placeholder: "Kubernetes Job, an SSH host, Windows, ..."
+    validations:
+      required: true
+  - type: textarea
+    id: usecase
+    attributes:
+      label: What are you trying to run there, and why don't Local or container.Image fit?
+    validations:
+      required: true
+  - type: dropdown
+    id: cacheclass
+    attributes:
+      label: Should two runs on this target share a cache equivalence class?
+      description: >-
+        Local and the container executor each declare a Class() that a Pure() step's
+        cache key depends on: two runs on the same class can
+        share a cache entry, two on different classes never do. A new executor needs
+        the same kind of answer.
+      options:
+        - "Yes - it's always the same environment (e.g. one pinned image, AMI, or host image)"
+        - "No - it varies per run or per host and should never share a cache entry"
+        - "Not sure"
+    validations:
+      required: true
+  - type: checkboxes
+    id: volunteer
+    attributes:
+      label: Are you volunteering to build it?
+      options:
+        - label: >-
+            I'd like to implement this (I've read the ExecutorTarget doc comment in
+            senro.go and internal/plan/validate.go's executor validation).

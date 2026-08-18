@@ -1,0 +1,7 @@
+{
+  "components": [
+    { "name": "shared", "dir": "libs/shared" },
+    { "name": "billing", "dir": "services/billing", "needs": ["shared"] },
+    { "name": "checkout", "dir": "services/checkout", "needs": ["billing"] }
+  ]
+}

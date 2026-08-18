@@ -1,0 +1,15 @@
+// The root project's build script. It configures every subproject, which is
+// why every project depends on it: a change here changes what all of them
+// build.
+subprojects {
+    apply plugin: 'java-library'
+
+    java {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    repositories {
+        mavenCentral()
+    }
+}

@@ -1,0 +1,22 @@
+{
+  "provider": "gitlab",
+  "event": "Merge Request Hook",
+  "payload": {
+    "object_kind": "merge_request",
+    "object_attributes": {
+      "id": 93,
+      "iid": 16,
+      "action": "update",
+      "oldrev": "e59094b8de0f2f91abbe4760a52d9137260252d8",
+      "source_branch": "feature/booking-validation",
+      "target_branch": "main",
+      "last_commit": {
+        "id": "562e173be03b8ff2efb05345d12df18815438a4b"
+      }
+    },
+    "project": {
+      "path_with_namespace": "flightjs/flight-management",
+      "default_branch": "main"
+    }
+  }
+}

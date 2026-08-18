@@ -1,0 +1,41 @@
+{
+  "provider": "gitea",
+  "event": "push",
+  "payload": {
+    "ref": "refs/heads/main",
+    "before": "6efcf5b7c98f3e7a491675164b7a2e7acac27941",
+    "after": "29be01c073851cf0db0c6a466e396b725a670453",
+    "commits": [
+      {
+        "id": "29be01c073851cf0db0c6a466e396b725a670453",
+        "added": [],
+        "removed": [],
+        "modified": [
+          "aaa"
+        ]
+      },
+      {
+        "id": "29cd95250404bd007c13b03eabe521196bab98a5",
+        "added": [],
+        "removed": [
+          "aa"
+        ],
+        "modified": []
+      },
+      {
+        "id": "93787b87b3134d0d62c7a24c1ea5b1b6fd17ca91",
+        "added": [
+          "aa",
+          "aaa"
+        ],
+        "removed": [],
+        "modified": []
+      }
+    ],
+    "total_commits": 8,
+    "repository": {
+      "full_name": "Test-CI/multi-line-secrets",
+      "default_branch": "main"
+    }
+  }
+}

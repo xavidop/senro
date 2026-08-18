@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>senro</title>
+    <link rel="stylesheet" href="/_ui/app.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <div class="mark" aria-hidden="true"></div>
+      <div class="bar-text">
+        <h1 id="run-name">senro</h1>
+        <p id="run-sub" class="sub">connecting</p>
+      </div>
+      <div class="bar-right">
+        <span id="run-status" class="pill pill-neutral">loading</span>
+        <span id="link-state" class="link-state" title="stream health"></span>
+      </div>
+    </header>
+
+    <main>
+      <section class="panel">
+        <ul class="counts" id="counts"></ul>
+        <!-- Run-scoped controls. Empty until the client decides there is a
+             live run to act on; a finished run offers none. -->
+        <div class="actions" id="run-actions"></div>
+      </section>
+
+      <p class="notice notice-empty" id="notice" role="status" aria-live="polite"></p>
+
+      <div class="split">
+        <section class="panel steps-panel">
+          <h2>Steps</h2>
+          <ol class="steps" id="steps"></ol>
+        </section>
+
+        <section class="panel detail-panel">
+          <h2 id="detail-title">Nothing selected</h2>
+          <!-- Step-scoped controls for the selected step. -->
+          <div class="actions" id="step-actions"></div>
+          <dl class="detail" id="detail"></dl>
+          <div class="log-head">
+            <span id="log-label">Output</span>
+            <div class="log-tabs" id="log-tabs"></div>
+          </div>
+          <pre class="log" id="log"></pre>
+        </section>
+      </div>
+    </main>
+
+    <noscript>
+      <p class="fallback">
+        The senro browser UI is a Go client compiled to WebAssembly and needs
+        scripting enabled. Use <code>senro attach</code> for the terminal UI.
+      </p>
+    </noscript>
+
+    <script src="/_ui/wasm_exec.js"></script>
+    <script src="/_ui/boot.js"></script>
+  </body>
+</html>

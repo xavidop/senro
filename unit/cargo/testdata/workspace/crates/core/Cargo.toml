@@ -1,0 +1,13 @@
+[package]
+name = "core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = """
+The leaf of the chain.
+
+Nothing here depends on anything in the workspace, which is what makes it
+the crate a transitive test starts from.
+"""
+
+[dependencies]

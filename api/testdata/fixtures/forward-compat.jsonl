@@ -1,0 +1,7 @@
+{"v":1,"seq":1,"ts":"2026-08-07T12:00:00Z","type":"run.started","run":"01JQ3","payload":{"pipeline":"./ci","engine_version":"9.9.9","plan_digest":"sha256:ddd","started_at":"2026-08-07T12:00:00Z","mood":"optimistic"}}
+{"v":1,"seq":2,"ts":"2026-08-07T12:00:00Z","type":"quantum.entangled","run":"01JQ3","step":"build","payload":{"spin":"up"}}
+{"v":1,"seq":3,"ts":"2026-08-07T12:00:00Z","type":"step.created","run":"01JQ3","step":"build","payload":{"kind":"exec","quantum":true}}
+{"v":1,"seq":4,"ts":"2026-08-07T12:00:01Z","type":"step.started","run":"01JQ3","step":"build","attempt":1,"payload":{"cmd":["go","build"]}}
+{"v":1,"seq":5,"ts":"2026-08-07T12:00:02Z","type":"analysis.proposed","run":"01JQ3","step":"build","payload":{"proposal":"add -race"}}
+{"v":1,"seq":6,"ts":"2026-08-07T12:00:03Z","type":"step.finished","run":"01JQ3","step":"build","attempt":1,"payload":{"state":"succeeded","duration_ns":0}}
+{"v":1,"seq":7,"ts":"2026-08-07T12:00:03Z","type":"run.finished","run":"01JQ3","payload":{"status":"succeeded","steps":{"succeeded":1},"duration_ns":0}}

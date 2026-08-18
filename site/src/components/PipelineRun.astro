@@ -1,0 +1,602 @@
+---
+// A small, honest replay of an actual senro run, used as the hero's moment
+// instead of decoration. Four steps: `test` and `lint` have no Needs, so
+// they start together; `build` needs both and only starts once they've
+// finished; `deploy` needs `build`. On this loop, `build` hits a transient
+// (infrastructure) failure, retries once, and recovers - never a failing
+// test retried into passing, which is exactly what retry.OnInfra() does and
+// exactly what it refuses to do. States shown (pending, running, failed,
+// recovered, succeeded) are the real terminal states from the state
+// taxonomy (see /docs/failure-handling); nothing here (containers, fan-out,
+// caching) is a feature senro doesn't have yet.
+//
+// Pure CSS, no JS: the unanimated base styles already paint the completed,
+// final frame (test/lint/deploy succeeded, build recovered), so that is
+// what renders with JS disabled. The keyframe loop is added only inside
+// `@media (prefers-reduced-motion: no-preference)`, so a reduced-motion
+// reader gets that same static completed frame permanently, never a frozen
+// mid-run state.
+---
+
+<figure class="pr" aria-label="Diagram of a senro pipeline run: test and lint run in parallel; build waits for both, hits a dropped connection, retries once and recovers; then deploy runs and the pipeline succeeds.">
+  <svg viewBox="0 0 460 188" class="pr__svg" aria-hidden="true">
+    <defs>
+      <path id="pr-edge-test" d="M116 50 C150 50 150 94 180 94" />
+      <path id="pr-edge-lint" d="M116 138 C150 138 150 94 180 94" />
+      <path id="pr-edge-deploy" d="M280 94 L344 94" />
+    </defs>
+
+    <!-- edges (drawn first, tucked under the node pills) -->
+    <path class="pr__edge pr__edge--test" d="M116 50 C150 50 150 94 180 94" />
+    <path class="pr__edge pr__edge--lint" d="M116 138 C150 138 150 94 180 94" />
+    <path class="pr__edge pr__edge--deploy" d="M280 94 L344 94" />
+
+    <!-- travelling signal dots, one per edge, follow the same curve -->
+    <circle class="pr__signal pr__signal--test" r="3.4">
+      <animateMotion dur="12s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.1583;0.1667;1" calcMode="linear">
+        <mpath href="#pr-edge-test" />
+      </animateMotion>
+    </circle>
+    <circle class="pr__signal pr__signal--lint" r="3.4">
+      <animateMotion dur="12s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.05;0.1667;1" calcMode="linear">
+        <mpath href="#pr-edge-lint" />
+      </animateMotion>
+    </circle>
+    <circle class="pr__signal pr__signal--deploy" r="3.4">
+      <animateMotion dur="12s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.4167;0.425;1" calcMode="linear">
+        <mpath href="#pr-edge-deploy" />
+      </animateMotion>
+    </circle>
+
+    <!-- test -->
+    <g class="pr__node pr__node--test">
+      <g class="pr__glow" transform="translate(36,50)"><circle class="pr__glow-dot" r="9" /></g>
+      <rect class="pr__pill" x="16" y="34" width="100" height="32" rx="16" />
+      <circle class="pr__dot" cx="36" cy="50" r="5" />
+      <text class="pr__label" x="52" y="54">test</text>
+    </g>
+
+    <!-- lint -->
+    <g class="pr__node pr__node--lint">
+      <g class="pr__glow" transform="translate(36,138)"><circle class="pr__glow-dot" r="9" /></g>
+      <rect class="pr__pill" x="16" y="122" width="100" height="32" rx="16" />
+      <circle class="pr__dot" cx="36" cy="138" r="5" />
+      <text class="pr__label" x="52" y="142">lint</text>
+    </g>
+
+    <!-- build -->
+    <g class="pr__node pr__node--build">
+      <g class="pr__glow" transform="translate(200,94)"><circle class="pr__glow-dot" r="9" /></g>
+      <rect class="pr__pill" x="180" y="78" width="100" height="32" rx="16" />
+      <circle class="pr__ring" cx="200" cy="94" r="8.5" />
+      <circle class="pr__dot" cx="200" cy="94" r="5" />
+      <text class="pr__label" x="216" y="98">build</text>
+      <text class="pr__retry" x="230" y="72">retrying, infra</text>
+    </g>
+
+    <!-- deploy -->
+    <g class="pr__node pr__node--deploy">
+      <g class="pr__glow" transform="translate(364,94)"><circle class="pr__glow-dot" r="9" /></g>
+      <rect class="pr__pill" x="344" y="78" width="100" height="32" rx="16" />
+      <circle class="pr__dot" cx="364" cy="94" r="5" />
+      <text class="pr__label" x="380" y="98">deploy</text>
+    </g>
+  </svg>
+  <figcaption class="pr__caption">
+    A real run: <code>test</code> and <code>lint</code> start together, <code>build</code> waits for both. Here it
+    hits a dropped connection, retries once, and recovers before <code>deploy</code> runs.
+  </figcaption>
+</figure>
+
+<style>
+  @property --test-color {
+    syntax: "<color>";
+    inherits: true;
+    initial-value: #8b8fa3;
+  }
+  @property --lint-color {
+    syntax: "<color>";
+    inherits: true;
+    initial-value: #8b8fa3;
+  }
+  @property --build-color {
+    syntax: "<color>";
+    inherits: true;
+    initial-value: #8b8fa3;
+  }
+  @property --deploy-color {
+    syntax: "<color>";
+    inherits: true;
+    initial-value: #8b8fa3;
+  }
+  @property --edge-test-color {
+    syntax: "<color>";
+    inherits: true;
+    initial-value: #8b8fa3;
+  }
+  @property --edge-lint-color {
+    syntax: "<color>";
+    inherits: true;
+    initial-value: #8b8fa3;
+  }
+  @property --edge-deploy-color {
+    syntax: "<color>";
+    inherits: true;
+    initial-value: #8b8fa3;
+  }
+
+  .pr {
+    margin: 0;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 1.4rem 1.2rem 1.1rem;
+    box-shadow: 0 30px 60px -34px rgba(38, 38, 47, 0.28);
+  }
+  .pr__svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    overflow: visible;
+  }
+
+  /* --- static structure, always present regardless of motion/JS --- */
+  .pr__pill {
+    fill: var(--bg-2);
+    stroke: var(--line-strong);
+    stroke-width: 1.4;
+    transition: none;
+  }
+  .pr__label {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    fill: var(--ink);
+  }
+  .pr__ring {
+    fill: none;
+    stroke: var(--running);
+    stroke-width: 1.6;
+    opacity: 0;
+  }
+  .pr__retry {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    fill: var(--running);
+    text-anchor: middle;
+    opacity: 0;
+  }
+  .pr__glow-dot {
+    fill: var(--running);
+    opacity: 0.55;
+    transform-origin: center;
+  }
+  .pr__glow {
+    opacity: 0;
+  }
+  .pr__signal {
+    fill: var(--ok);
+    opacity: 0;
+  }
+
+  /* --- base (unanimated) colours: the completed, final frame. This is what
+     ships with JS disabled and what `prefers-reduced-motion: reduce` sees,
+     permanently - never a frozen mid-run frame. Each node group sets its own
+     custom property once; the dot and pill inside inherit it (SVG fill and
+     stroke are ordinary inherited CSS properties), so there is exactly one
+     source of truth per node instead of one per child element. --- */
+  .pr__node--test {
+    --test-color: var(--ok);
+  }
+  .pr__node--lint {
+    --lint-color: var(--ok);
+  }
+  .pr__node--build {
+    --build-color: var(--ok);
+  }
+  .pr__node--deploy {
+    --deploy-color: var(--ok);
+  }
+  .pr__node--test .pr__dot {
+    fill: var(--test-color);
+  }
+  .pr__node--lint .pr__dot {
+    fill: var(--lint-color);
+  }
+  .pr__node--build .pr__dot {
+    fill: var(--build-color);
+  }
+  .pr__node--deploy .pr__dot {
+    fill: var(--deploy-color);
+  }
+  .pr__node--test .pr__pill {
+    stroke: color-mix(in srgb, var(--test-color) 55%, var(--line-strong));
+  }
+  .pr__node--lint .pr__pill {
+    stroke: color-mix(in srgb, var(--lint-color) 55%, var(--line-strong));
+  }
+  .pr__node--build .pr__pill {
+    stroke: color-mix(in srgb, var(--build-color) 55%, var(--line-strong));
+  }
+  .pr__node--deploy .pr__pill {
+    stroke: color-mix(in srgb, var(--deploy-color) 55%, var(--line-strong));
+  }
+  /* build finishes `recovered`, not a plain `succeeded`: the ring stays. */
+  .pr__node--build .pr__ring {
+    opacity: 1;
+  }
+  .pr__edge {
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+  }
+  .pr__edge--test {
+    stroke: var(--edge-test-color, var(--ok));
+    --edge-test-color: var(--ok);
+  }
+  .pr__edge--lint {
+    stroke: var(--edge-lint-color, var(--ok));
+    --edge-lint-color: var(--ok);
+  }
+  .pr__edge--deploy {
+    stroke: var(--edge-deploy-color, var(--ok));
+    --edge-deploy-color: var(--ok);
+  }
+
+  .pr__caption {
+    margin: 1.1rem 0 0;
+    padding-top: 1rem;
+    border-top: 1px solid var(--line);
+    font-size: 0.82rem;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+  .pr__caption code {
+    color: var(--rail-deep);
+  }
+
+  /* --- the loop itself: only when motion is welcome --- */
+  @media (prefers-reduced-motion: no-preference) {
+    .pr__node--test {
+      animation: pr-test-color 12s var(--ease) infinite;
+    }
+    .pr__node--lint {
+      animation: pr-lint-color 12s var(--ease) infinite;
+    }
+    .pr__node--build {
+      animation: pr-build-color 12s var(--ease) infinite;
+    }
+    .pr__node--deploy {
+      animation: pr-deploy-color 12s var(--ease) infinite;
+    }
+    .pr__edge--test {
+      animation: pr-edge-test-color 12s var(--ease) infinite;
+    }
+    .pr__edge--lint {
+      animation: pr-edge-lint-color 12s var(--ease) infinite;
+    }
+    .pr__edge--deploy {
+      animation: pr-edge-deploy-color 12s var(--ease) infinite;
+    }
+    .pr__node--build .pr__ring {
+      animation: pr-build-ring 12s linear infinite;
+    }
+    .pr__node--build .pr__retry {
+      animation: pr-build-retry 12s linear infinite;
+    }
+    .pr__node--test .pr__glow {
+      animation: pr-test-glow 12s linear infinite;
+    }
+    .pr__node--lint .pr__glow {
+      animation: pr-lint-glow 12s linear infinite;
+    }
+    .pr__node--build .pr__glow {
+      animation: pr-build-glow 12s linear infinite;
+    }
+    .pr__node--deploy .pr__glow {
+      animation: pr-deploy-glow 12s linear infinite;
+    }
+    .pr__glow-dot {
+      animation: pr-pulse 1.5s ease-in-out infinite;
+    }
+    .pr__signal--test {
+      animation: pr-signal-test 12s linear infinite;
+    }
+    .pr__signal--lint {
+      animation: pr-signal-lint 12s linear infinite;
+    }
+    .pr__signal--deploy {
+      animation: pr-signal-deploy 12s linear infinite;
+    }
+  }
+
+  /* Fast, continuous pulse for whichever glow is currently gated visible;
+     transform + opacity only, compositor-friendly. */
+  @keyframes pr-pulse {
+    0%,
+    100% {
+      transform: scale(0.75);
+      opacity: 0.5;
+    }
+    50% {
+      transform: scale(1.35);
+      opacity: 0;
+    }
+  }
+
+  /* Node colour timelines. Percent map (of the 12s loop):
+     0%=0s 6.7%=.8s 16.7%=2s 19.2%=2.3s 21.7%=2.6s 30%=3.6s 33.3%=4s
+     41.7%=5s 44.2%=5.3s 52.5%=6.3s 91.7%=11s 100%=12s */
+  @keyframes pr-test-color {
+    0%,
+    6.6% {
+      --test-color: var(--neutral);
+    }
+    6.7%,
+    19.1% {
+      --test-color: var(--running);
+    }
+    19.2%,
+    91.6% {
+      --test-color: var(--ok);
+    }
+    91.7%,
+    100% {
+      --test-color: var(--neutral);
+    }
+  }
+  @keyframes pr-lint-color {
+    0%,
+    6.6% {
+      --lint-color: var(--neutral);
+    }
+    6.7%,
+    16.6% {
+      --lint-color: var(--running);
+    }
+    16.7%,
+    91.6% {
+      --lint-color: var(--ok);
+    }
+    91.7%,
+    100% {
+      --lint-color: var(--neutral);
+    }
+  }
+  @keyframes pr-build-color {
+    0%,
+    21.6% {
+      --build-color: var(--neutral);
+    }
+    21.7%,
+    29.9% {
+      --build-color: var(--running);
+    }
+    30%,
+    33.2% {
+      --build-color: var(--signal);
+    }
+    33.3%,
+    41.6% {
+      --build-color: var(--running);
+    }
+    41.7%,
+    91.6% {
+      --build-color: var(--ok);
+    }
+    91.7%,
+    100% {
+      --build-color: var(--neutral);
+    }
+  }
+  @keyframes pr-deploy-color {
+    0%,
+    44.1% {
+      --deploy-color: var(--neutral);
+    }
+    44.2%,
+    52.4% {
+      --deploy-color: var(--running);
+    }
+    52.5%,
+    91.6% {
+      --deploy-color: var(--ok);
+    }
+    91.7%,
+    100% {
+      --deploy-color: var(--neutral);
+    }
+  }
+
+  @keyframes pr-edge-test-color {
+    0%,
+    19.1% {
+      --edge-test-color: var(--line-strong);
+    }
+    19.2%,
+    91.6% {
+      --edge-test-color: var(--ok);
+    }
+    91.7%,
+    100% {
+      --edge-test-color: var(--line-strong);
+    }
+  }
+  @keyframes pr-edge-lint-color {
+    0%,
+    16.6% {
+      --edge-lint-color: var(--line-strong);
+    }
+    16.7%,
+    91.6% {
+      --edge-lint-color: var(--ok);
+    }
+    91.7%,
+    100% {
+      --edge-lint-color: var(--line-strong);
+    }
+  }
+  @keyframes pr-edge-deploy-color {
+    0%,
+    41.6% {
+      --edge-deploy-color: var(--line-strong);
+    }
+    41.7%,
+    91.6% {
+      --edge-deploy-color: var(--ok);
+    }
+    91.7%,
+    100% {
+      --edge-deploy-color: var(--line-strong);
+    }
+  }
+
+  /* build's recovered ring: appears the moment it recovers, holds, fades */
+  @keyframes pr-build-ring {
+    0%,
+    41.6% {
+      opacity: 0;
+    }
+    41.7%,
+    91.6% {
+      opacity: 1;
+    }
+    91.7%,
+    100% {
+      opacity: 0;
+    }
+  }
+  @keyframes pr-build-retry {
+    0%,
+    33.2% {
+      opacity: 0;
+    }
+    33.4%,
+    41.5% {
+      opacity: 1;
+    }
+    41.7%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* Glow-gate: visible only while that node is actively running (both of
+     build's two attempts). A nested, always-pulsing dot supplies the motion;
+     this just switches its parent group's opacity in and out. */
+  @keyframes pr-test-glow {
+    0%,
+    6.6% {
+      opacity: 0;
+    }
+    6.7%,
+    19.1% {
+      opacity: 1;
+    }
+    19.2%,
+    100% {
+      opacity: 0;
+    }
+  }
+  @keyframes pr-lint-glow {
+    0%,
+    6.6% {
+      opacity: 0;
+    }
+    6.7%,
+    16.6% {
+      opacity: 1;
+    }
+    16.7%,
+    100% {
+      opacity: 0;
+    }
+  }
+  @keyframes pr-build-glow {
+    0%,
+    21.6% {
+      opacity: 0;
+    }
+    21.7%,
+    29.9% {
+      opacity: 1;
+    }
+    30%,
+    33.2% {
+      opacity: 0;
+    }
+    33.3%,
+    41.6% {
+      opacity: 1;
+    }
+    41.7%,
+    100% {
+      opacity: 0;
+    }
+  }
+  @keyframes pr-deploy-glow {
+    0%,
+    44.1% {
+      opacity: 0;
+    }
+    44.2%,
+    52.4% {
+      opacity: 1;
+    }
+    52.5%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* Signal dots: travel once along their edge right as it lights up, via
+     the <animateMotion> on each <circle>; here we only gate opacity so the
+     dot is invisible before/after its brief trip. */
+  @keyframes pr-signal-test {
+    0%,
+    19.1% {
+      opacity: 0;
+    }
+    19.3%,
+    21.5% {
+      opacity: 1;
+    }
+    21.7%,
+    100% {
+      opacity: 0;
+    }
+  }
+  @keyframes pr-signal-lint {
+    0%,
+    16.6% {
+      opacity: 0;
+    }
+    16.8%,
+    21.5% {
+      opacity: 1;
+    }
+    21.7%,
+    100% {
+      opacity: 0;
+    }
+  }
+  @keyframes pr-signal-deploy {
+    0%,
+    41.6% {
+      opacity: 0;
+    }
+    41.8%,
+    44% {
+      opacity: 1;
+    }
+    44.2%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @media (max-width: 460px) {
+    .pr__label {
+      font-size: 12px;
+    }
+  }
+</style>

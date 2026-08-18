@@ -1,0 +1,16 @@
+{
+  "provider": "gitlab",
+  "event": "Tag Push Hook",
+  "payload": {
+    "object_kind": "tag_push",
+    "ref": "refs/tags/v1.0.0",
+    "before": "82b3d5ae55f7080f1e6022629cdb57bfae7cccc7",
+    "after": "0000000000000000000000000000000000000000",
+    "commits": [],
+    "total_commits_count": 0,
+    "project": {
+      "path_with_namespace": "jsmith/example",
+      "default_branch": "master"
+    }
+  }
+}

@@ -1,0 +1,75 @@
+name: 🐛 Bug report
+description: Report a defect in senro's engine, CLI, or an executor
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to file a bug! Please do NOT paste real secret values.
+  - type: input
+    id: version
+    attributes:
+      label: senro version
+      description: Output of `senro version`, or the commit if built from source.
+      placeholder: "v0.3.0, or commit 99f57c7"
+    validations:
+      required: true
+  - type: input
+    id: go-version
+    attributes:
+      label: Go version
+      placeholder: "go version go1.26.0 darwin/arm64"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - engine (plan, scheduling, retry, cache)
+        - attach / TUI
+        - local executor
+        - container executor
+        - workspaces / storage
+        - secrets
+        - CLI (run, attach, cache, ws, func)
+        - docs / examples
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Other (senro targets Linux and macOS only; see the README's Platform support section)
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: A small pipeline (New/Workflow/Step) that reproduces it. Redact secrets.
+      render: go
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / errors
+      description: Relevant output, e.g. from `runs/<id>/events.jsonl` or a step's log. Confirm no secret values are included.
+      render: shell
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have removed all real secret values from this report.
+          required: true

@@ -1,0 +1,373 @@
+/* senro - soft, calm, modern. A muted periwinkle-indigo primary on a warm
+   near-white, generous radii, gentle diffuse shadows, plenty of air. The
+   railway idea stays as a quiet background texture and a small mark, never
+   as hard edges or shouting colour. Status colours (a muted red / amber /
+   green, plus a slate neutral) are reserved for describing a run's actual
+   state - a pill, a legend, the docs - and never used as the site's own
+   headings, borders or accents. Token names are kept stable across the
+   codebase; values below define the light theme, which is the default. */
+
+:root {
+  /* Surfaces: a soft, faintly cool off-white, not stark white or warm cream */
+  --bg: #f6f6fb;
+  --bg-2: #ffffff;
+  --bg-3: #eeeef6;
+  --code-bg: #f2f2f8;
+
+  /* Primary accent: a soft, muted periwinkle - calm, not saturated */
+  --rail: #6d75c7;
+  --rail-hi: #7d85d3;
+  --rail-deep: #4f56a0;
+  --rail-soft: rgba(109, 117, 199, 0.12);
+
+  /* Status colours: for describing a run's state only (pills, legends,
+     docs) - never the site's own headings, borders or accents. Kept muted
+     even here, so nothing shouts. */
+  --signal: #c96f63; /* failed */
+  --signal-soft: rgba(201, 111, 99, 0.14);
+  --ok: #5fa17f; /* passed */
+  --ok-soft: rgba(95, 161, 127, 0.14);
+  --running: #c99a4a; /* running or retrying */
+  --running-soft: rgba(201, 154, 74, 0.15);
+  --neutral: #8b8fa3; /* cached or skipped */
+  --neutral-soft: rgba(139, 143, 163, 0.14);
+
+  /* Text & lines */
+  --ink: #26262f;
+  --muted: #63636f;
+  --muted-2: #9696a2;
+  --line: rgba(38, 38, 47, 0.08);
+  --line-strong: rgba(38, 38, 47, 0.14);
+
+  --font-display: "Plus Jakarta Sans Variable", "Inter Variable", system-ui, sans-serif;
+  --font-body: "Inter Variable", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  --step--1: clamp(0.82rem, 0.79rem + 0.16vw, 0.92rem);
+  --step-0: clamp(1.02rem, 0.98rem + 0.2vw, 1.14rem);
+  --step-1: clamp(1.2rem, 1.11rem + 0.44vw, 1.5rem);
+  --step-2: clamp(1.45rem, 1.28rem + 0.86vw, 1.95rem);
+  --step-3: clamp(1.85rem, 1.56rem + 1.5vw, 2.7rem);
+  --step-4: clamp(2.3rem, 1.85rem + 2.3vw, 3.8rem);
+  --step-5: clamp(2.7rem, 2.05rem + 3.3vw, 4.6rem);
+
+  --maxw: 1160px;
+  --radius: 16px;
+  --radius-sm: 12px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* A soft deep tone, not pure black, for readers whose system prefers dark. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1b25;
+    --bg-2: #232231;
+    --bg-3: #2b2a3a;
+    --code-bg: #201f2c;
+    --rail: #9aa3ea;
+    --rail-hi: #adb5ee;
+    --rail-deep: #c7ccf4;
+    --rail-soft: rgba(154, 163, 234, 0.16);
+    --signal: #dd9086;
+    --signal-soft: rgba(221, 144, 134, 0.16);
+    --ok: #86c4a6;
+    --ok-soft: rgba(134, 196, 166, 0.16);
+    --running: #e0bd7c;
+    --running-soft: rgba(224, 189, 124, 0.16);
+    --neutral: #a7abbc;
+    --neutral-soft: rgba(167, 171, 188, 0.14);
+    --ink: #efeff5;
+    --muted: #b0b0bd;
+    --muted-2: #79798a;
+    --line: rgba(239, 239, 245, 0.09);
+    --line-strong: rgba(239, 239, 245, 0.16);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #1c1b25;
+  --bg-2: #232231;
+  --bg-3: #2b2a3a;
+  --code-bg: #201f2c;
+  --rail: #9aa3ea;
+  --rail-hi: #adb5ee;
+  --rail-deep: #c7ccf4;
+  --rail-soft: rgba(154, 163, 234, 0.16);
+  --signal: #dd9086;
+  --signal-soft: rgba(221, 144, 134, 0.16);
+  --ok: #86c4a6;
+  --ok-soft: rgba(134, 196, 166, 0.16);
+  --running: #e0bd7c;
+  --running-soft: rgba(224, 189, 124, 0.16);
+  --neutral: #a7abbc;
+  --neutral-soft: rgba(167, 171, 188, 0.14);
+  --ink: #efeff5;
+  --muted: #b0b0bd;
+  --muted-2: #79798a;
+  --line: rgba(239, 239, 245, 0.09);
+  --line-strong: rgba(239, 239, 245, 0.16);
+}
+
+:root[data-theme="light"] {
+  --bg: #f6f6fb;
+  --bg-2: #ffffff;
+  --bg-3: #eeeef6;
+  --code-bg: #f2f2f8;
+  --rail: #6d75c7;
+  --rail-hi: #7d85d3;
+  --rail-deep: #4f56a0;
+  --rail-soft: rgba(109, 117, 199, 0.12);
+  --signal: #c96f63;
+  --signal-soft: rgba(201, 111, 99, 0.14);
+  --ok: #5fa17f;
+  --ok-soft: rgba(95, 161, 127, 0.14);
+  --running: #c99a4a;
+  --running-soft: rgba(201, 154, 74, 0.15);
+  --neutral: #8b8fa3;
+  --neutral-soft: rgba(139, 143, 163, 0.14);
+  --ink: #26262f;
+  --muted: #63636f;
+  --muted-2: #9696a2;
+  --line: rgba(38, 38, 47, 0.08);
+  --line-strong: rgba(38, 38, 47, 0.14);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 84px;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: var(--step-0);
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display);
+  font-weight: 650;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+  margin: 0;
+  color: var(--ink);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+p {
+  margin: 0 0 1.1rem;
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+}
+
+.wrap {
+  width: min(100% - 2.5rem, var(--maxw));
+  margin-inline: auto;
+  position: relative;
+  z-index: 1;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--step--1);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--rail-deep);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.eyebrow::before {
+  content: "";
+  width: 22px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--rail);
+  opacity: 0.6;
+}
+
+.section {
+  padding-block: clamp(3rem, 2.2rem + 3.4vw, 5.5rem);
+  position: relative;
+}
+.section__head {
+  max-width: 50ch;
+  margin-bottom: 3rem;
+}
+.section__head h2 {
+  font-size: var(--step-3);
+  margin-top: 0.7rem;
+}
+.section__head p {
+  color: var(--muted);
+  margin-top: 1rem;
+}
+
+/* Buttons: soft, fully rounded, gentle depth */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  font-weight: 500;
+  padding: 0.78rem 1.5rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  transition:
+    transform 0.25s var(--ease),
+    background 0.25s var(--ease),
+    border-color 0.25s var(--ease),
+    box-shadow 0.25s var(--ease);
+  cursor: pointer;
+}
+.btn--primary {
+  background: var(--rail);
+  color: #fff;
+  box-shadow: 0 12px 28px -14px rgba(109, 117, 199, 0.55);
+}
+.btn--primary:hover {
+  transform: translateY(-1px);
+  background: var(--rail-hi);
+  box-shadow: 0 16px 34px -14px rgba(109, 117, 199, 0.6);
+}
+.btn--ghost {
+  border-color: var(--line-strong);
+  color: var(--ink);
+  background: var(--bg-2);
+}
+.btn--ghost:hover {
+  border-color: var(--rail);
+  color: var(--rail-deep);
+  transform: translateY(-1px);
+}
+
+/* Cards: generous radius, a soft diffuse shadow instead of a hard border */
+.card {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.7rem;
+  box-shadow: 0 1px 2px rgba(38, 38, 47, 0.03);
+  transition:
+    box-shadow 0.3s var(--ease),
+    transform 0.3s var(--ease),
+    border-color 0.3s var(--ease);
+}
+.card:hover {
+  border-color: var(--rail-soft);
+  transform: translateY(-2px);
+  box-shadow: 0 20px 44px -28px rgba(79, 86, 160, 0.35);
+}
+
+/* Code blocks */
+pre.code {
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.3rem 1.5rem;
+  overflow-x: auto;
+  max-width: 100%;
+  line-height: 1.75;
+  margin: 0;
+  color: var(--ink);
+}
+pre.code .k {
+  color: var(--rail-deep);
+} /* keyword */
+pre.code .s {
+  color: var(--ok);
+} /* string */
+pre.code .c {
+  color: var(--muted-2);
+  font-style: italic;
+} /* comment */
+pre.code .t {
+  color: var(--rail-deep);
+} /* identifier */
+pre.code .f {
+  color: #9a6fb0;
+} /* function */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  padding: 0.28rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  color: var(--muted);
+  background: var(--bg-2);
+}
+.badge--ok {
+  color: var(--ok);
+  border-color: transparent;
+  background: var(--ok-soft);
+}
+.badge--planned {
+  color: var(--running);
+  border-color: transparent;
+  background: var(--running-soft);
+}
+
+/* Status dots: the same muted red / amber / green / slate a run's own
+   states use, reserved for exactly that - never a heading or a border. */
+.status-dot {
+  display: inline-block;
+  width: 0.55em;
+  height: 0.55em;
+  margin-right: 0.45em;
+  border-radius: 50%;
+  background: var(--neutral);
+}
+.status-dot--failed {
+  background: var(--signal);
+}
+.status-dot--running {
+  background: var(--running);
+}
+.status-dot--passed {
+  background: var(--ok);
+}
+
+:focus-visible {
+  outline: 2px solid var(--rail);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
