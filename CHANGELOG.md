@@ -2,6 +2,13 @@
 
 All notable changes to senro are documented here. This file is generated from Conventional Commits by semantic-release.
 
+## [1.0.3](https://github.com/xavidop/senro/compare/v1.0.2...v1.0.3) (2026-08-18)
+
+
+### Bug Fixes
+
+* docs and test ([db9b0ce](https://github.com/xavidop/senro/commit/db9b0cecdd38ad0d8d161303ee475c6026856e9f))
+
 ## [1.0.2](https://github.com/xavidop/senro/compare/v1.0.1...v1.0.2) (2026-08-18)
 
 
