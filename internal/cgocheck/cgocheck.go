@@ -38,15 +38,26 @@ type listPackage struct {
 	CgoFiles   []string `json:"CgoFiles"`
 	Imports    []string `json:"Imports"`
 	DepOnly    bool     `json:"DepOnly"`
+	Standard   bool     `json:"Standard"`
 }
 
 // Check runs `go list -deps -json` over patterns in dir and reports every
 // package that compiles a cgo file.
 //
 // CGO_ENABLED=1 deliberately: the question is "does this graph CONTAIN
-// cgo", and listing with cgo disabled drops the standard library's
-// conditional cgo files, coming back clean for exactly the packages that
-// are dangerous to cross-compile.
+// cgo", and listing with cgo disabled reports no CgoFiles anywhere, since
+// the go tool moves them to IgnoredGoFiles, so the check would come back
+// clean for every graph and answer nothing.
+//
+// Standard-library packages are then excluded, and that exclusion is the
+// point rather than a softening. net, os/user and their kin carry cgo files
+// AND a pure-Go implementation the toolchain selects under CGO_ENABLED=0,
+// which is exactly how a cross-build is built, so they cross-compile fine.
+// Reporting them made the check refuse every graph that reaches net, which
+// is every graph importing senro (via attach), turning a guard against
+// genuinely unbuildable graphs into a blanket refusal of the feature it
+// guards. A third-party package wrapping a C library has no such fallback
+// and is still reported.
 func Check(ctx context.Context, dir string, patterns ...string) ([]Offender, error) {
 	if len(patterns) == 0 {
 		patterns = []string{"./..."}
@@ -77,7 +88,7 @@ func Check(ctx context.Context, dir string, patterns ...string) ([]Offender, err
 
 	var out []Offender
 	for path, p := range pkgs {
-		if len(p.CgoFiles) == 0 || path == runtimeCgo {
+		if len(p.CgoFiles) == 0 || path == runtimeCgo || p.Standard {
 			continue
 		}
 		out = append(out, Offender{
