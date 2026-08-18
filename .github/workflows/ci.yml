@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          go-version: "1.26.6"
           cache-dependency-path: go.mod
       - name: go build
         run: go build ./...
@@ -69,7 +69,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          go-version: "1.26.6"
           cache-dependency-path: go.mod
       - name: golangci-lint
         # v9 supports golangci-lint v2; the version is pinned for reproducibility
@@ -108,7 +108,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          go-version: "1.26.6"
       # golangci-lint-action installs its own copy for the lint job above,
       # but that copy isn't shared with this job. make all's lint target
       # calls the golangci-lint binary directly, so it needs one on PATH
@@ -149,7 +149,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          go-version: "1.26.6"
           cache-dependency-path: ${{ matrix.module }}/go.mod
       - name: go build
         run: go build ./...
@@ -198,7 +198,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          go-version: "1.26.6"
           cache-dependency-path: go.mod
       - name: go build
         run: go build ./...
@@ -220,7 +220,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          go-version: "1.26.6"
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - name: Scan
