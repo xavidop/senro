@@ -229,7 +229,7 @@ lives in its own module, so senro's own dependency graph carries no AI SDK.
 
 ## Where to go next
 
-- **[A Genkit analyzer](/docs/extend/analyzer-genkit/)**: `contrib/genkitanalyzer`, this interface
+- **[An AI analyzer](/docs/extend/analyzer-genkit/)**: `contrib/genkitanalyzer`, this interface
   backed by a real model.
 - **[Control operations](/docs/attach/control-ops/)**: `analysis.accept` and `analysis.reject`.
 - **[The TUI](/docs/attach/tui/)**: `a` and `A`, and what the footer shows before you press one.

@@ -83,7 +83,7 @@ debugger.
   provider dependency in senro); its proposal applies only when a human or an explicit policy
   accepts it. `contrib/genkitanalyzer` is one you can install, in its own module so senro's graph
   stays free of it. See [Writing a failure analyzer](site/src/pages/docs/extend/analyzer.md) and
-  [A Genkit analyzer](site/src/pages/docs/extend/analyzer-genkit.md).
+  [An AI analyzer](site/src/pages/docs/extend/analyzer-genkit.md).
 - **Honest failure states.** A step ends in one of ten states, never a boolean; `recovered` (flaky
   but passed on retry) is not `succeeded`, and `retry.OnInfra()` retries broken infrastructure but
   never a failing test. See [Failure handling](site/src/pages/docs/steps/states.md).
@@ -93,19 +93,23 @@ debugger.
 
 ## Install
 
-`senro` is pre-1.0 and has not cut a tagged release yet. Once the first release lands:
+The CLI:
+
+```bash
+brew install xavidop/tap/senro
+# or
+go install github.com/xavidop/senro/cmd/senro@latest
+```
+
+The library, which is all a pipeline needs:
 
 ```bash
 go get github.com/xavidop/senro
 ```
 
-To build the CLI from this source today:
-
-```bash
-git clone https://github.com/xavidop/senro
-cd senro
-go build -o senro ./cmd/senro
-```
+Released binaries for linux and darwin on amd64 and arm64, with checksums, SBOMs and SLSA
+provenance, are on the [releases page](https://github.com/xavidop/senro/releases). See
+[Install](site/src/pages/docs/install.md) for verifying a download.
 
 Requires Go 1.26+ on Linux or macOS. Windows is deliberately unsupported; see
 [Platform support](#platform-support).

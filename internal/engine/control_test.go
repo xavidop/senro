@@ -46,6 +46,26 @@ func (c *controlSink) Control() <-chan sink.ControlRequest { return c.ch }
 // fails the test if neither arrives within 5s: a control request must
 // never hang forever, so a real test timeout here (not a t.Fatal reachable
 // only by a bug) is deliberate.
+// sendSettled is send for a request aimed at a step the test has just seen
+// finish. step.finished is emitted by finishStep BEFORE runHandlers, and the
+// scheduler releases its running claim only once runStep returns, so
+// "step_running" is a correct, transient answer in the window between the two
+// even for a step declaring no handlers. Retrying past it keeps the assertion
+// on the answer the test is about, without asserting a scheduler timing the
+// engine never promised. Any other refusal is returned immediately, so a wrong
+// reason still fails the test rather than being retried away.
+func sendSettled(t *testing.T, c *controlSink, req sink.ControlRequest) sink.ControlResponse {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp := send(t, c, req)
+		if resp.Error != "step_running" || time.Now().After(deadline) {
+			return resp
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func send(t *testing.T, c *controlSink, req sink.ControlRequest) sink.ControlResponse {
 	t.Helper()
 	reply := make(chan sink.ControlResponse, 1)
@@ -505,7 +525,7 @@ func TestControlStepRetryRefusesAStepThatHasNotFailed(t *testing.T) {
 	})
 	waitForEvent(t, finished, func(e api.Event) bool { return e.Step == "quick" })
 
-	resp := send(t, csink, sink.ControlRequest{
+	resp := sendSettled(t, csink, sink.ControlRequest{
 		ID: "r1", Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": "quick"},
 	})
 	if resp.OK {
@@ -666,7 +686,7 @@ func TestControlStepRetryEventOnlyCarriesTheValidatedStepArg(t *testing.T) {
 	out, csink, buildFinished := stepRetryFixture(t)
 	waitForEvent(t, buildFinished, func(e api.Event) bool { return e.Attempt == 1 })
 
-	resp := send(t, csink, sink.ControlRequest{
+	resp := sendSettled(t, csink, sink.ControlRequest{
 		ID: "r1", Op: api.OpStepRetry, ClientID: "tester",
 		Args: map[string]string{"step": "build", "aws_secret_access_key": "AKIAFAKEFAKEFAKEFAKE"},
 	})

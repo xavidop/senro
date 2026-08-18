@@ -1,16 +1,20 @@
 ---
 layout: ../../../layouts/DocsLayout.astro
-title: A Genkit analyzer
+title: An AI analyzer
 ---
 
-# A Genkit analyzer
+# An AI analyzer
 
-`contrib/genkitanalyzer` is a real [failure analyzer](/docs/extend/analyzer/) backed by
-[Genkit](https://genkit.dev), Google's open-source AI framework for Go. It explains a failed step
-with one generation call, using the Genkit instance you already configured.
+Have a model explain a failed step: what broke, why, and whether it is worth retrying. senro ships
+one ready to install, so you do not have to write the binding yourself.
+
+`contrib/genkitanalyzer` implements the [failure analyzer](/docs/extend/analyzer/) interface on top
+of [Genkit](https://genkit.dev), Google's open-source AI framework for Go. Genkit is what carries
+the call, which means the model, the provider and the plugins are yours: it works with Gemini,
+Vertex AI, OpenAI, Anthropic, Ollama and anything else Genkit has a plugin for.
 
 Read [Writing a failure analyzer](/docs/extend/analyzer/) first for the interface and the contract.
-This page is the provider binding.
+This page is the ready-made implementation.
 
 ## Install
 

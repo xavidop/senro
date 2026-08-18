@@ -72,9 +72,24 @@ func (s *sandbox) RunTerminal(
 	// See the doc: the parent must not keep this open.
 	_ = slave.Close()
 
+	// The resize pump must be provably finished before the deferred
+	// master.Close() above runs, not merely told to stop: ptyx.SetSize reads
+	// master.Fd(), and os.File guards Read and Write against a concurrent
+	// Close but not Fd, so a resize landing during the close is a data race
+	// and, once the descriptor is reused, an ioctl on somebody else's file.
+	// Signalling alone left that window open, because close(done) does not
+	// wait for the goroutine to leave SetSize. This defer is registered after
+	// the one that closes master, so it runs before it.
 	done := make(chan struct{})
-	defer close(done)
-	go pumpResize(done, master, resize)
+	pumped := make(chan struct{})
+	defer func() {
+		close(done)
+		<-pumped
+	}()
+	go func() {
+		defer close(pumped)
+		pumpResize(done, master, resize)
+	}()
 
 	go func() {
 		// Errors discarded for RunInteractive's reasons: the client vanished
