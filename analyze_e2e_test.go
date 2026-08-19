@@ -339,6 +339,53 @@ func TestAnAnalyzerCannotApplyItsOwnProposal(t *testing.T) {
 	}
 }
 
+// TestAPolicyAppliesAProposalMadeWhileTheStepWasStillFinishing is the
+// regression test for a lost remedy. A step keeps its scheduler claim until
+// its own goroutine returns - which is AFTER its settle-time Always handler
+// - while the proposal that names it is offered much earlier, immediately
+// after the step.finished inside runStep. A policy answering in that window
+// used to have its accepted retry refused with step_running and thrown away:
+// maybeApplyPolicy spends the one application per step BEFORE the request is
+// sent, so nothing ever asked again and the run failed carrying the very
+// failure the analyzer had a remedy for.
+//
+// The slow Always handler is what makes that window wide on purpose, so this
+// fails every time against the old behaviour rather than once per so many CI
+// runs, which is how it actually showed up.
+func TestAPolicyAppliesAProposalMadeWhileTheStepWasStillFinishing(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "attempted")
+	var got collect
+
+	pipe := senro.New("release")
+	l := pipe.Workflow("main")
+	l.Step("fetch", exec.Command("sh", "-c",
+		"if [ -f "+marker+" ]; then echo recovered; exit 0; fi; "+
+			"touch "+marker+"; echo 'connection refused' >&2; exit 1")).
+		Always(senro.Handler("linger", exec.Command("sh", "-c", "sleep 0.5")))
+
+	err := senro.Run(t.Context(), pipe,
+		senro.WithAnalyzer(fakeanalyzer.New(),
+			senro.AnalyzerName("fake"),
+			senro.AcceptWithoutHumanApproval(func(_ api.Failure, p api.Proposal) bool {
+				return p.Remedy == api.RemedyRetry
+			})),
+		senro.WithSink(&got),
+		senro.WithDir(filepath.Join(dir, "run")),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v; the accepted retry was supposed to recover the step, "+
+			"and a step still running its Always handler must not lose it", err)
+	}
+
+	if n := len(got.ofType(api.AnalysisApplied)); n != 1 {
+		t.Errorf("%d analysis.applied events, want 1: the remedy was accepted, so it must be recorded as applied", n)
+	}
+	if n := len(got.ofType(api.StepRetried)); n != 1 {
+		t.Errorf("%d step.retried events, want 1", n)
+	}
+}
+
 // TestAPolicyIsTheOnlyWayAProposalAppliesItself checks the one escape hatch
 // works, and that a run which used it says so in its own ledger.
 //
@@ -554,7 +601,7 @@ func TestAnAttachedClientDecidesAProposal(t *testing.T) {
 		t.Errorf("accepting with no id = %q, want missing_proposal", reason)
 	}
 
-	mustControl(t, ctx, src, api.OpAnalysisAccept, map[string]string{"id": id})
+	mustControlSettled(t, ctx, src, api.OpAnalysisAccept, map[string]string{"id": id})
 
 	// Deciding twice is refused, which is what stops two operators from
 	// retrying one step twice.
@@ -625,6 +672,31 @@ func mustControl(t *testing.T, ctx context.Context, src *source.LiveSource, op s
 	t.Helper()
 	if reason := control(t, ctx, src, op, args); reason != "" {
 		t.Fatalf("%s refused: %s", op, reason)
+	}
+}
+
+// mustControlSettled is mustControl for a request aimed at a step the test
+// has just seen produce a proposal. The proposal is offered from inside
+// runStep, immediately after the step.finished it describes, and the step
+// releases its claim only when its goroutine returns, after its handlers, so
+// "step_running" is a correct, transient answer in that window: it is what an
+// operator would answer by pressing the key again, which is all this does.
+// Any other refusal fails the test immediately rather than being retried
+// away. The engine's own policy path cannot do this - it gets one
+// application per step - and holds the decision instead; see
+// handleAnalysisAccept.
+func mustControlSettled(t *testing.T, ctx context.Context, src *source.LiveSource, op string, args map[string]string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		reason := control(t, ctx, src, op, args)
+		if reason == "" {
+			return
+		}
+		if reason != "step_running" || time.Now().After(deadline) {
+			t.Fatalf("%s refused: %s", op, reason)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

@@ -227,7 +227,9 @@ func TestAShellSessionEndsWhenTheClientDisconnects(t *testing.T) {
 func TestServerCloseTearsDownAHijackedSession(t *testing.T) {
 	ts := newTestServer(t, testServerOpts{})
 	engineSaw := make(chan error, 1)
+	established := make(chan struct{})
 	startFakeEngine(t, ts, func(req sink.ShellRequest) {
+		close(established)
 		_, err := io.Copy(io.Discard, req.Stdin)
 		engineSaw <- err
 		req.Reply <- sink.ShellResponse{ID: req.ID, OK: true, Session: "s1"}
@@ -243,6 +245,18 @@ func TestServerCloseTearsDownAHijackedSession(t *testing.T) {
 	w := shellwire.NewWriter(conn)
 	if err := w.WriteFrame(shellwire.StreamStdin, []byte("idle\n")); err != nil {
 		t.Fatalf("write stdin: %v", err)
+	}
+	// Established means the ENGINE holds the session, which is not what a
+	// returned dial proves: the handler writes the 101 before it submits the
+	// request, and that submission races s.done. Closing the server inside
+	// that window is answered with server_shutting_down and the engine never
+	// receives the request at all - a correct outcome, but a different one
+	// from the leak under test, and the reason this test failed in CI while
+	// passing on an idle machine.
+	select {
+	case <-established:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the engine never received the shell request")
 	}
 
 	closed := make(chan error, 1)

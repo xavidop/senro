@@ -376,7 +376,7 @@ func TestControlStepRetryRunsFailedStepAgain(t *testing.T) {
 		t.Fatalf("first attempt state = %s, want failed", firstBody.State)
 	}
 
-	resp := send(t, csink, sink.ControlRequest{
+	resp := sendSettled(t, csink, sink.ControlRequest{
 		ID: "r1", Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": "build"},
 	})
 	if !resp.OK {
@@ -402,7 +402,7 @@ func TestControlStepRetryPreservesThePriorAttemptsHistory(t *testing.T) {
 	out, csink, buildFinished := stepRetryFixture(t)
 	waitForEvent(t, buildFinished, func(e api.Event) bool { return e.Attempt == 1 })
 
-	resp := send(t, csink, sink.ControlRequest{
+	resp := sendSettled(t, csink, sink.ControlRequest{
 		ID: "r1", Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": "build"},
 	})
 	if !resp.OK {
@@ -760,7 +760,7 @@ func TestControlStepRetryEmitsHandlerSupersededWhenAPriorAlwaysAlreadyRan(t *tes
 		t.Fatal("build's settle-time Always handler never completed")
 	}
 
-	resp := send(t, csink, sink.ControlRequest{
+	resp := sendSettled(t, csink, sink.ControlRequest{
 		ID: "r1", Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": "build"},
 	})
 	if !resp.OK {
@@ -805,7 +805,7 @@ func TestControlStepRetryOmitsHandlerSupersededWhenNoHandlerRan(t *testing.T) {
 	out, csink, buildFinished := stepRetryFixture(t) // "build" declares no handlers
 	waitForEvent(t, buildFinished, func(e api.Event) bool { return e.Attempt == 1 })
 
-	resp := send(t, csink, sink.ControlRequest{
+	resp := sendSettled(t, csink, sink.ControlRequest{
 		ID: "r1", Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": "build"},
 	})
 	if !resp.OK {
@@ -866,7 +866,7 @@ func TestControlStepRetrySequenceEmitsHandlerSupersededOnlyForRealHandlerPasses(
 
 	// First retry: attempt 1's real, just-completed Always pass IS
 	// something to supersede.
-	resp := send(t, csink, sink.ControlRequest{
+	resp := sendSettled(t, csink, sink.ControlRequest{
 		ID: "r1", Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": "build"},
 	})
 	if !resp.OK {
@@ -877,7 +877,7 @@ func TestControlStepRetrySequenceEmitsHandlerSupersededOnlyForRealHandlerPasses(
 	// Second retry: attempt 2 was itself a manual retry, it bypassed
 	// runStep, so it never ran Always. There is nothing pending to
 	// supersede this time.
-	resp = send(t, csink, sink.ControlRequest{
+	resp = sendSettled(t, csink, sink.ControlRequest{
 		ID: "r2", Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": "build"},
 	})
 	if !resp.OK {
@@ -1119,7 +1119,7 @@ func TestControlStepSkipRefusesAStepThatAlreadySettled(t *testing.T) {
 	})
 	waitForEvent(t, siblingDone, func(e api.Event) bool { return e.Step == "sibling" })
 
-	resp := send(t, csink, sink.ControlRequest{
+	resp := sendSettled(t, csink, sink.ControlRequest{
 		ID: "s1", Op: api.OpStepSkip, ClientID: "tester", Args: map[string]string{"step": "sibling"},
 	})
 	if resp.OK {
@@ -1683,7 +1683,7 @@ func TestControlRerunFromReRunsTheStepAndEverythingBelowIt(t *testing.T) {
 	})
 	waitForEvent(t, leafDone, func(e api.Event) bool { return e.Attempt == 1 })
 
-	if resp := send(t, csink, sink.ControlRequest{
+	if resp := sendSettled(t, csink, sink.ControlRequest{
 		ID: "f1", Op: api.OpRunRerunFrom, ClientID: "tester", Args: map[string]string{"step": "root"},
 	}); !resp.OK {
 		t.Fatalf("run.rerun_from response = %+v, want OK", resp)
@@ -1734,7 +1734,7 @@ func TestControlRerunFromContinuesAttemptNumbering(t *testing.T) {
 		Dir: dir, Executor: localexec.New(dir, nil), Sink: csink, MaxParallel: 4, RunID: "01RERUNATT",
 	})
 	waitForEvent(t, leafDone, func(e api.Event) bool { return e.Attempt == 1 })
-	if resp := send(t, csink, sink.ControlRequest{
+	if resp := sendSettled(t, csink, sink.ControlRequest{
 		ID: "f1", Op: api.OpRunRerunFrom, ClientID: "tester", Args: map[string]string{"step": "root"},
 	}); !resp.OK {
 		t.Fatalf("run.rerun_from response = %+v, want OK", resp)
@@ -1791,7 +1791,7 @@ func TestControlRerunFromIsVisibleToTheFold(t *testing.T) {
 		Dir: dir, Executor: localexec.New(dir, nil), Sink: csink, MaxParallel: 4, RunID: "01RERUNFOLD",
 	})
 	waitForEvent(t, leafDone, func(e api.Event) bool { return e.Attempt == 1 })
-	send(t, csink, sink.ControlRequest{
+	sendSettled(t, csink, sink.ControlRequest{
 		ID: "f1", Op: api.OpRunRerunFrom, ClientID: "tester", Args: map[string]string{"step": "root"},
 	})
 	waitForEvent(t, leafDone, func(e api.Event) bool { return e.Attempt == 2 })
@@ -2004,7 +2004,7 @@ func TestControlRerunFromReRunsHandlersAndSupersedesTheOldEvidence(t *testing.T)
 		t.Fatal("root's settle-time Always never completed")
 	}
 
-	if resp := send(t, csink, sink.ControlRequest{
+	if resp := sendSettled(t, csink, sink.ControlRequest{
 		ID: "f1", Op: api.OpRunRerunFrom, ClientID: "tester", Args: map[string]string{"step": "root"},
 	}); !resp.OK {
 		t.Fatalf("run.rerun_from response = %+v, want OK", resp)
@@ -2417,7 +2417,7 @@ func TestControlRunPauseDoesNotVetoAnExplicitStepRetry(t *testing.T) {
 	if resp := send(t, csink, sink.ControlRequest{ID: "p1", Op: api.OpRunPause, ClientID: "tester"}); !resp.OK {
 		t.Fatalf("run.pause = %+v, want OK", resp)
 	}
-	if resp := send(t, csink, sink.ControlRequest{
+	if resp := sendSettled(t, csink, sink.ControlRequest{
 		ID: "r1", Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": "boom"},
 	}); !resp.OK {
 		t.Fatalf("step.retry while paused = %+v, want OK: a pause must not veto an explicit per-step request", resp)

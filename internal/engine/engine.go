@@ -1082,12 +1082,24 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 	if rc.analysis != nil {
 		policyCh = rc.analysis.decisions
 	}
+	// Policy decisions naming a step that had not finished yet. A policy
+	// gets ONE application per step and spends it before the request is
+	// sent, so a decision refused for step_running is an accepted remedy
+	// lost: held here instead and re-served on a later pass, once the step's
+	// goroutine has released its claim. See handleAnalysisAccept.
+	type heldDecision struct {
+		req  sink.ControlRequest
+		step string
+	}
+	var heldPolicy []heldDecision
 	servePolicy := func(req sink.ControlRequest) {
 		// Only the two analysis operations, not the whole op switch: an
 		// auto-accept policy must not become a way to cancel a run.
 		switch req.Op {
 		case api.OpAnalysisAccept:
-			rc.handleAnalysisAccept(handle(), req, true)
+			if step := rc.handleAnalysisAccept(handle(), req, true); step != "" {
+				heldPolicy = append(heldPolicy, heldDecision{req: req, step: step})
+			}
 		case api.OpAnalysisReject:
 			rc.handleAnalysisReject(handle(), req, true)
 		default:
@@ -1096,6 +1108,28 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 	}
 
 	for {
+		// Held policy decisions first, BEFORE this pass reads the graph: a
+		// remedy applied here unsettles its node while `done` and `ready`
+		// are still unwritten, so an accepted retry can never be overtaken
+		// by the same pass declaring the run over. A step still running is
+		// left held, and the goroutine holding it signals on its way out,
+		// so a later pass always comes.
+		if len(heldPolicy) > 0 {
+			mu.Lock()
+			still, ripe := heldPolicy[:0:0], heldPolicy[:0:0]
+			for _, d := range heldPolicy {
+				if running[d.step] {
+					still = append(still, d)
+				} else {
+					ripe = append(ripe, d)
+				}
+			}
+			mu.Unlock()
+			heldPolicy = still
+			for _, d := range ripe {
+				servePolicy(d.req)
+			}
+		}
 		mu.Lock()
 		// Read ONCE per pass and reused below: the idle wait's decision to
 		// watch ctx.Done() must describe the same instant readySet was

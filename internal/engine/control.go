@@ -158,7 +158,9 @@ func (rc *runCore) serveControl(h schedHandle, req sink.ControlRequest) {
 	case api.OpRunRerunFrom:
 		rc.handleRerunFrom(h, req)
 	case api.OpAnalysisAccept:
-		rc.handleAnalysisAccept(h, req, false)
+		// The hold is a policy-only concern (see handleAnalysisAccept): an
+		// attached client is refused with step_running and retries itself.
+		_ = rc.handleAnalysisAccept(h, req, false)
 	case api.OpAnalysisReject:
 		rc.handleAnalysisReject(h, req, false)
 	case api.OpWSSnapshot:
@@ -186,14 +188,40 @@ func (rc *runCore) serveControl(h schedHandle, req sink.ControlRequest) {
 // Event order is deliberate: control.applied, then step.retried, then
 // analysis.applied last, because it alone asserts the remedy was carried
 // out, and by then it has been.
-func (rc *runCore) handleAnalysisAccept(h schedHandle, req sink.ControlRequest, policy bool) {
+//
+// The returned step id is non-empty only for a POLICY decision that arrived
+// while that step was still finishing, and means "ask again later": nothing
+// has been decided, nothing has been replied, and the scheduler re-serves
+// the request once the claim is gone (see schedule's heldPolicy).
+func (rc *runCore) handleAnalysisAccept(h schedHandle, req sink.ControlRequest, policy bool) string {
 	p, ok := rc.resolveProposal(req)
 	if !ok {
-		return
+		return ""
 	}
 	if !p.body.Remedy.Applicable() {
 		refuse(req, reasonNoRemedy)
-		return
+		return ""
+	}
+
+	// Held, not refused, and only for a policy. offerAnalysis runs inside
+	// runStep immediately after finishStep, while the step still holds the
+	// claim its own goroutine releases only on the way out, after its
+	// handlers: an analyzer that answers promptly lands squarely inside
+	// that window. An attached operator refused there presses the key
+	// again, but a policy spends its one application per step BEFORE the
+	// request is ever sent (see maybeApplyPolicy's applied map), so
+	// refusing it loses the accepted retry for good and the run fails
+	// carrying the very failure the analyzer had a remedy for. This was a
+	// real flake: TestAPolicyIsTheOnlyWayAProposalAppliesItself failed in
+	// CI whenever the scheduler reached the decision before the step's
+	// goroutine returned.
+	if policy {
+		h.mu.Lock()
+		busy := h.running[p.step]
+		h.mu.Unlock()
+		if busy {
+			return p.step
+		}
 	}
 
 	// Args is rewritten, never merged: the step handed to the retry path is
@@ -206,11 +234,12 @@ func (rc *runCore) handleAnalysisAccept(h schedHandle, req sink.ControlRequest, 
 		// Refused, and handleStepRetry already said why on req.Reply. The
 		// proposal stays undecided: an operator who tries again later should
 		// find it still there.
-		return
+		return ""
 	}
 
 	rc.analysis.settle(p.id)
 	rc.emitAnalysisDecision(api.AnalysisApplied, p, req, policy, "")
+	return ""
 }
 
 // handleAnalysisReject declines a proposal. It performs nothing, so the
