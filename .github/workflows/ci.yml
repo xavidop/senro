@@ -45,7 +45,14 @@ jobs:
       - name: go test (race, coverage)
         env:
           SENRO_REQUIRE_DOCKER: "1"
-        run: go test -race -count=1 -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
+        # -timeout, because the default is 10 minutes PER PACKAGE and
+        # internal/executor/k8sexec exceeds it under -race: every test there
+        # drives a real kind cluster through the apiserver, the race detector
+        # multiplies that, and the package's own budget is the sum of all of
+        # them rather than the slowest one. It timed out at exactly 10m0s with
+        # a session test still running, which reads like a deadlock and is not
+        # one: that same test passes alone in about two minutes.
+        run: go test -race -count=1 -timeout 30m -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
       - name: Coverage summary
         run: |
           total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}')

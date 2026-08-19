@@ -67,13 +67,16 @@ test: ## go test the module and each contrib module (container executor tests sk
 	$(GO) test ./...
 	$(call contrib,$(GO) test ./...)
 
+# -timeout 30m on both -race targets: go's default is 10 minutes per package
+# and internal/executor/k8sexec exceeds it under the race detector, which
+# reports as a hang rather than as the budget it actually is. See ci.yml.
 test-docker: ## go test -race with SENRO_REQUIRE_DOCKER=1, so a missing Docker daemon fails the container executor's tests instead of silently skipping them
-	SENRO_REQUIRE_DOCKER=1 $(GO) test -race -count=1 ./...
-	$(call contrib,$(GO) test -race -count=1 ./...)
+	SENRO_REQUIRE_DOCKER=1 $(GO) test -race -count=1 -timeout 30m ./...
+	$(call contrib,$(GO) test -race -count=1 -timeout 30m ./...)
 
 race: ## go test -race the module and each contrib module
-	$(GO) test -race -count=1 ./...
-	$(call contrib,$(GO) test -race -count=1 ./...)
+	$(GO) test -race -count=1 -timeout 30m ./...
+	$(call contrib,$(GO) test -race -count=1 -timeout 30m ./...)
 
 vet: ## go vet the module and each contrib module
 	$(GO) vet ./...
