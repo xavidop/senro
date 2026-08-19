@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -63,6 +64,31 @@ func sendSettled(t *testing.T, c *controlSink, req sink.ControlRequest) sink.Con
 			return resp
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// trySend is send for a caller that is NOT the test goroutine. send reports a
+// timeout with t.Fatalf, and a Fatal off the test goroutine is a
+// runtime.Goexit: the caller vanishes without returning, so anything waiting
+// on its result waits for a value that can never arrive. Returning the error
+// instead keeps the report on a goroutine allowed to make it. See
+// TestControlRunCancelRaceIsSafe, which this turned from a ten minute package
+// timeout into a five second assertion.
+func trySend(c *controlSink, req sink.ControlRequest) (sink.ControlResponse, error) {
+	reply := make(chan sink.ControlResponse, 1)
+	req.Reply = reply
+	select {
+	case c.ch <- req:
+	case <-time.After(5 * time.Second):
+		return sink.ControlResponse{}, fmt.Errorf(
+			"control request %+v was never accepted by the scheduler", req)
+	}
+	select {
+	case resp := <-reply:
+		return resp, nil
+	case <-time.After(5 * time.Second):
+		return sink.ControlResponse{}, fmt.Errorf(
+			"control request %+v was never answered by the scheduler", req)
 	}
 }
 
@@ -245,19 +271,42 @@ func TestControlRunCancelRaceIsSafe(t *testing.T) {
 	type outcome struct {
 		clientID string
 		resp     sink.ControlResponse
+		err      error
 	}
 	results := make(chan outcome, 2)
+	// Both requests have to be in flight while the run is still ALIVE, which
+	// is what the barrier below buys. Started without one, the second
+	// goroutine may not be scheduled until the first cancel has already torn
+	// the run down, and a request arriving after Run returns is read by
+	// nobody: the durable refusing reader startRefusingControl installs lives
+	// exactly as long as Run does. On a loaded macOS runner that is what
+	// happened, and because send's timeout reports with t.Fatalf - a
+	// runtime.Goexit off the test goroutine - the sender died without
+	// delivering an outcome and the receive below hung until the package
+	// timeout killed every test in internal/engine. trySend reports the
+	// timeout as a value instead, so the same loss now fails in five seconds
+	// saying which client went unanswered.
+	var ready sync.WaitGroup
+	ready.Add(2)
+	release := make(chan struct{})
 	for _, id := range []string{"client-a", "client-b"} {
 		id := id
 		go func() {
-			resp := send(t, csink, sink.ControlRequest{ID: id, Op: api.OpRunCancel, ClientID: id})
-			results <- outcome{clientID: id, resp: resp}
+			ready.Done()
+			<-release
+			resp, err := trySend(csink, sink.ControlRequest{ID: id, Op: api.OpRunCancel, ClientID: id})
+			results <- outcome{clientID: id, resp: resp, err: err}
 		}()
 	}
+	ready.Wait()
+	close(release)
 
 	var oks, refusals int
 	for i := 0; i < 2; i++ {
 		o := <-results
+		if o.err != nil {
+			t.Fatalf("%s: %v", o.clientID, o.err)
+		}
 		if o.resp.OK {
 			oks++
 		} else {
