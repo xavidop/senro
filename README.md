@@ -82,8 +82,8 @@ debugger.
 - **Failure analysis, gated.** Hand a failed step to your own analyzer (your SDK, your model, no
   provider dependency in senro); its proposal applies only when a human or an explicit policy
   accepts it. `contrib/genkitanalyzer` is one you can install, in its own module so senro's graph
-  stays free of it. See [Writing a failure analyzer](site/src/pages/docs/extend/analyzer.md) and
-  [An AI analyzer](site/src/pages/docs/extend/analyzer-genkit.md).
+  stays free of it. See [Writing a failure analyzer](site/src/pages/docs/analyzers/custom.md) and
+  [An AI analyzer](site/src/pages/docs/analyzers/genkit.md).
 - **Honest failure states.** A step ends in one of ten states, never a boolean; `recovered` (flaky
   but passed on retry) is not `succeeded`, and `retry.OnInfra()` retries broken infrastructure but
   never a failing test. See [Failure handling](site/src/pages/docs/steps/states.md).
@@ -203,11 +203,11 @@ serves it locally with Node 22 via nvm). It is the primary reference for what is
   [Notifications](site/src/pages/docs/notifications.md),
   [Shared cache](site/src/pages/docs/data/shared-cache.md), [CLI](site/src/pages/docs/cli/index.md),
   [Reading a failed run](site/src/pages/docs/reference/debugging.md)
-- **Extend:** [Write a unit graph](site/src/pages/docs/extend/unit-graph.md),
-  [a trigger source](site/src/pages/docs/extend/trigger-source.md),
-  [a notifier](site/src/pages/docs/extend/notifier.md),
+- **Extend:** [Write a unit graph](site/src/pages/docs/monorepo/unit-graphs/custom.md),
+  [a trigger source](site/src/pages/docs/triggers/custom.md),
+  [a notifier](site/src/pages/docs/notifications/custom.md),
   [a trace exporter](site/src/pages/docs/extend/exporter.md),
-  [a failure analyzer](site/src/pages/docs/extend/analyzer.md)
+  [a failure analyzer](site/src/pages/docs/analyzers/custom.md)
 
 Runnable examples live in [examples/](examples/), each a small `main` package with a doc comment
 saying what it demonstrates. An [agent skill](skills/senro/) ships in-repo for AI coding tools.

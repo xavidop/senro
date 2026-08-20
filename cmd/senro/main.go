@@ -55,6 +55,15 @@ Usage:
       NOTHING RUNS WITHOUT --rerun: the premise is that a Pure() claim may be
       false, so its safety corollary is not assumed either.
 
+  senro rerun [--run RUN] [--step STEP] [--regenerate]
+      Re-execute the plan a previous run recorded, from its plan.json rather
+      than by rebuilding the pipeline, so it repeats a run instead of
+      re-discovering one. Unchanged steps are served from the action cache,
+      and a generator replays the subgraph it recorded. --step re-runs one
+      step and everything below it; --regenerate asks generators for a fresh
+      subgraph, which is a separate verb because that run may do different
+      work than the one it repeats.
+
   senro ws ls [RUN] [NAME]
       List a run's workspaces with their digests and sizes. With a workspace
       name, list its files from the stored index, without downloading the
@@ -130,6 +139,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdCache(args[1:], stdout, stderr)
 	case "verify":
 		return cmdVerify(args[1:], stdout, stderr)
+	case "rerun":
+		return cmdRerun(args[1:], stdout, stderr)
 	case "ws":
 		return cmdWS(args[1:], stdout, stderr)
 	case "shell":

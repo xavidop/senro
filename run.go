@@ -57,6 +57,10 @@ type runConfig struct {
 	funcPkg      string
 	hasFuncPkg   bool
 	analyze      *engine.AnalyzeOptions
+	maxDepth     int
+	maxNodes     int
+	regenerate   bool
+	only         map[string]bool
 }
 
 // Params are a run's parameters: the small, flat, string-valued facts a run
@@ -123,6 +127,56 @@ func WithLocalClass(class string) Option {
 // that sharing is the entire point of a cache.
 func WithCacheDir(dir string) Option {
 	return func(c *runConfig) { c.cacheDir = dir }
+}
+
+// WithMaxDepth bounds how deep generators may NEST: a generated step can
+// itself be a generator, and without a bound that recurses until the machine
+// gives out. Zero, the default, means three.
+//
+// Raise it for a pipeline that genuinely discovers work in layers; lower it
+// to one to allow generation but forbid a generator producing generators.
+func WithMaxDepth(n int) Option {
+	return func(c *runConfig) { c.maxDepth = n }
+}
+
+// WithRegenerate makes generator steps ignore the action cache, so each one
+// runs and produces a FRESH fragment instead of replaying the recorded one.
+//
+// Reach for it when the world has changed and the recorded graph describes a
+// fleet that no longer exists. It is a separate switch, and not the default,
+// because silently re-deriving a graph during what looked like a retry is a
+// genuinely confusing failure: the run would do different work than the one
+// it claims to repeat.
+func WithRegenerate() Option {
+	return func(c *runConfig) { c.regenerate = true }
+}
+
+// WithOnlySteps restricts the run to these steps. Everything else is skipped
+// with a reason, exactly as an unmet When condition is.
+//
+// The set is taken literally: senro does not add dependents for you, because
+// "and everything below it" and "only this" are both things a caller
+// legitimately wants and only the caller knows which.
+func WithOnlySteps(ids ...string) Option {
+	return func(c *runConfig) {
+		if c.only == nil {
+			c.only = make(map[string]bool, len(ids))
+		}
+		for _, id := range ids {
+			c.only[id] = true
+		}
+	}
+}
+
+// WithMaxNodes bounds how many nodes the whole run may hold, the plan's own
+// included, and every splice is checked against it. Zero, the default, means
+// five thousand.
+//
+// Run-wide rather than per-fragment: a hundred generators producing fifty
+// nodes each is the same runaway as one producing five thousand, and only a
+// run-wide count sees it.
+func WithMaxNodes(n int) Option {
+	return func(c *runConfig) { c.maxNodes = n }
 }
 
 // WithTraceContext continues an inbound W3C trace, making this run a child
@@ -361,7 +415,7 @@ func Run(ctx context.Context, pipe *Pipeline, opts ...Option) error {
 	if err != nil {
 		return err
 	}
-	return runPlan(ctx, p, pipe.Name(), opts...)
+	return runPlan(ctx, p, pipe.Name(), pipe.generators(), opts...)
 }
 
 // StepChild runs this process as a remote step child, if that is what a
@@ -426,13 +480,13 @@ func RunPlan(ctx context.Context, p *Plan, opts ...Option) error {
 	if handled, err := StepChild(ctx); handled {
 		return err
 	}
-	return runPlan(ctx, p, "", opts...)
+	return runPlan(ctx, p, "", &generatorRegistry{}, opts...)
 }
 
 // runPlan is Run and RunPlan's shared body. pipeline is the name run.started
 // publishes, which only Run has: it is the one entry point holding the
 // *Pipeline the name belongs to.
-func runPlan(ctx context.Context, p *Plan, pipeline string, opts ...Option) error {
+func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegistry, opts ...Option) error {
 	var cfg runConfig
 	for _, opt := range opts {
 		opt(&cfg)
@@ -585,6 +639,18 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, opts ...Option) erro
 		Storage:   store,
 		Secrets:   secretSet,
 		Params:    runParams(match, cfg.params),
+
+		// Go generators, carried from the pipeline because a closure cannot
+		// be in a plan. Nil for a run started from a plan on disk.
+		Generators: gens.lookup,
+
+		// Zero means the engine's own defaults; see DefaultMaxDepth and
+		// DefaultMaxNodes.
+		MaxDepth: cfg.maxDepth,
+		MaxNodes: cfg.maxNodes,
+
+		Regenerate: cfg.regenerate,
+		Only:       cfg.only,
 
 		// Not validated here: engine.Options.TraceParent takes the raw
 		// header, so exactly one place in senro decides what a valid

@@ -99,7 +99,7 @@ crontab lines pointing at one binary need to select different work. senro does n
 - **`Semver(constraint)`**: a tag that is a semantic version satisfying the constraint.
 - **`Params{...}`**: not a filter. Parameters a matched trigger contributes to the run.
 - **`Matcher{...}`**: a question of your own. See
-  [Writing a trigger source](/docs/extend/trigger-source/).
+  [Writing a trigger source](/docs/triggers/custom/).
 
 `Branches` and `Paths` use senro's one glob syntax, the same one workspace excludes and `Inputs`
 use: `*` and `?` match within a path segment, `**` spans segments, and a pattern with no `/` is the
@@ -205,5 +205,5 @@ dispatcher -addr :8080 -secret-file /etc/senro/webhook-secret \
 ## Where to go next
 
 - **[The event file](/docs/triggers/events/)**: the envelope, the providers and their traps.
-- **[Writing a trigger source](/docs/extend/trigger-source/)**: a provider and a matcher of your own.
+- **[Writing a trigger source](/docs/triggers/custom/)**: a provider and a matcher of your own.
 - **[Affected sets](/docs/monorepo/affected/)**: what consumes the mode and base a match carries.

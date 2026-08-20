@@ -106,6 +106,16 @@ type analysis struct {
 	lost     int
 	accepted int
 	answered int
+	// deciding counts answers that have not finished becoming decisions.
+	//
+	// answered rises when the ANALYZER returns, which is strictly before the
+	// policy has been asked and before any decision reaches the scheduler. A
+	// run whose last step just failed would otherwise see every offer
+	// answered, drain a still-empty decision channel, declare itself done and
+	// stop reading, and the accepted retry would arrive with nobody
+	// listening. Held from the same critical section that raises answered, so
+	// there is no instant where a pending decision is invisible.
+	deciding int
 
 	// applied names every step a policy has already auto-applied a
 	// proposal for, and bounds the whole unsupervised path: without it a
@@ -190,7 +200,15 @@ func (a *analysis) analyzeOne(f api.Failure) {
 	// that returned an error has answered.
 	a.mu.Lock()
 	a.answered++
+	a.deciding++
 	a.mu.Unlock()
+	// Every path below, the early returns included, has finished deciding by
+	// the time it returns.
+	defer func() {
+		a.mu.Lock()
+		a.deciding--
+		a.mu.Unlock()
+	}()
 
 	if err != nil {
 		// An analyzer's failure is never an event: "somebody's API
@@ -320,7 +338,7 @@ func (a *analysis) waitQuiet() {
 	deadline := time.Now().Add(a.opts.Grace)
 	for time.Now().Before(deadline) {
 		a.mu.Lock()
-		quiet := a.accepted == a.answered
+		quiet := a.accepted == a.answered && a.deciding == 0
 		a.mu.Unlock()
 		if quiet {
 			return

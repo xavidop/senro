@@ -905,3 +905,48 @@ func TestAPolicyAppliesAtMostOneProposalPerStep(t *testing.T) {
 		t.Errorf("%d analysis.proposed events, want 2: the bound is on applying, not on explaining", n)
 	}
 }
+
+// TestAPolicyThatTakesItsTimeStillHasItsRetryApplied is the second half of a
+// lost remedy, and a different window from the one
+// TestAPolicyAppliesAProposalMadeWhileTheStepWasStillFinishing covers.
+//
+// The analyzer is counted as having ANSWERED the moment it returns, which is
+// before the policy has been asked and before the decision reaches the
+// scheduler. A run whose last step just failed then sees "every offer
+// answered", drains a decision channel that is still empty, declares itself
+// done and stops reading. The accepted retry arrives microseconds later with
+// nobody listening.
+//
+// The sleeping policy makes that window wide on purpose. Without the fix this
+// fails every time; with it the run waits for the decision it is still owed.
+func TestAPolicyThatTakesItsTimeStillHasItsRetryApplied(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "attempted")
+	var got collect
+
+	pipe := senro.New("release")
+	l := pipe.Workflow("main")
+	l.Step("fetch", exec.Command("sh", "-c",
+		"if [ -f "+marker+" ]; then echo recovered; exit 0; fi; "+
+			"touch "+marker+"; echo 'connection refused' >&2; exit 1"))
+
+	err := senro.Run(t.Context(), pipe,
+		senro.WithAnalyzer(fakeanalyzer.New(),
+			senro.AnalyzerName("fake"),
+			senro.AcceptWithoutHumanApproval(func(_ api.Failure, p api.Proposal) bool {
+				// A real policy calls something: a rules engine, an owner
+				// lookup, an approval service. Any of them can take longer
+				// than the scheduler needs to decide the run is over.
+				time.Sleep(250 * time.Millisecond)
+				return p.Remedy == api.RemedyRetry
+			})),
+		senro.WithSink(&got),
+		senro.WithDir(filepath.Join(dir, "run")),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v; a policy that answered slowly still answered, and its retry must be applied", err)
+	}
+	if n := len(got.ofType(api.AnalysisApplied)); n != 1 {
+		t.Errorf("%d analysis.applied events, want 1", n)
+	}
+}

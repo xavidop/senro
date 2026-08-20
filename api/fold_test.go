@@ -652,3 +652,29 @@ func TestRunStateJSONIsUnchangedWithoutAPause(t *testing.T) {
 		t.Errorf("RunInfo of an unpaused run = %s, want no paused key at all", got)
 	}
 }
+
+// A generated subgraph arrives mid-run, so a renderer learns of its nodes
+// from this event rather than from the plan it was handed at the start.
+// Folding it exactly like an expansion is deliberate: the TUI and the web UI
+// already render groups that appear during a run, so an incrementally growing
+// graph costs one fold case instead of the renderer rewrite design §2.8.3
+// warns about.
+func TestApplyGeneratedSubgraph(t *testing.T) {
+	s := api.NewRunState()
+	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.PlanGenerated, Step: "deploy/discover"},
+		api.PlanGeneratedBody{
+			Generator: "deploy/discover",
+			Children:  []string{"deploy/discover/apply-a", "deploy/discover/apply-b"},
+			Nodes:     2,
+			Edges:     1,
+			Digest:    "sha256:7c1a",
+		}))
+
+	if s.Steps["deploy/discover/apply-a"] == nil {
+		t.Fatal("a generated subgraph must materialise its children, the way an expansion does")
+	}
+	if got := s.Steps["deploy/discover/apply-a"].Group; got != "deploy/discover" {
+		t.Errorf("Group = %q, want %q: a generated node belongs to the generator that produced it",
+			got, "deploy/discover")
+	}
+}

@@ -46,6 +46,20 @@ type GroupSpec struct {
 	MaxParallel int `json:"max_parallel,omitempty"`
 }
 
+// GenerateSpec declares that a step's own output produces a plan fragment,
+// spliced into the graph that is already running when the step succeeds.
+//
+// It carries no function: a Go generator is a closure on the coordinator and
+// cannot be serialized, so the plan records only THAT a step generates and
+// the closure reaches the engine out of band. That is enough, because a
+// re-run replays the recorded fragment rather than re-invoking the generator
+// (design §2.8.1), which is also what lets a generator be nondeterministic.
+type GenerateSpec struct {
+	// Path is the file the step writes its fragment to, for the
+	// GenerateFromJSON form. Empty for a Go generator.
+	Path string `json:"path,omitempty"`
+}
+
 // FuncSpec is a registered Go function and the parameters it is called with.
 //
 // Params is canonical JSON (CanonicalParams: keys sorted at every level,
@@ -258,13 +272,17 @@ type Node struct {
 	// Func is a registered function and its parameters, set for a "func"
 	// node and nil for an "exec" node; nodeShape refuses a node carrying
 	// both or neither for its declared Kind.
-	Func            *FuncSpec  `json:"func,omitempty"`
-	WorkDir         string     `json:"workdir,omitempty"`
-	Env             []string   `json:"env,omitempty"`
-	Needs           []string   `json:"needs,omitempty"`
-	ContinueOnError bool       `json:"continue_on_error,omitempty"`
-	Retry           *RetrySpec `json:"retry,omitempty"`
-	TimeoutMS       int64      `json:"timeout_ms,omitempty"`
+	Func *FuncSpec `json:"func,omitempty"`
+	// Generate is set for a step whose output produces a plan fragment, and
+	// nil for every ordinary step: omitempty keeps a plan that declares no
+	// generator at exactly the digest it has always had.
+	Generate        *GenerateSpec `json:"generate,omitempty"`
+	WorkDir         string        `json:"workdir,omitempty"`
+	Env             []string      `json:"env,omitempty"`
+	Needs           []string      `json:"needs,omitempty"`
+	ContinueOnError bool          `json:"continue_on_error,omitempty"`
+	Retry           *RetrySpec    `json:"retry,omitempty"`
+	TimeoutMS       int64         `json:"timeout_ms,omitempty"`
 
 	// Executor is where this node runs, or nil for the coordinator. A
 	// handler inherits its parent step's executor; Validate refuses one

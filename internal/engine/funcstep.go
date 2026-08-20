@@ -37,7 +37,7 @@ import (
 func (rc *runCore) invoke(
 	ctx context.Context, n *plan.Node, sb executor.Sandbox, c executor.Cmd,
 	mounts []executor.Mount, secretPaths map[string]string, attempt int,
-	stdout, stderr io.Writer,
+	stdout, stderr io.Writer, opts Options,
 ) (int, error) {
 	if n.Kind != "func" {
 		return sb.Run(ctx, c, stdout, stderr)
@@ -54,6 +54,9 @@ func (rc *runCore) invoke(
 		runID:   rc.runID, stepID: n.ID, attempt: attempt,
 		mounts: mounts, secrets: secretPaths,
 		stdout: stdout, stderr: stderr,
+		subgraph: func(sctx context.Context, b []byte) error {
+			return rc.runSubgraph(sctx, n, opts, b)
+		},
 	}
 	if err := funcs.Invoke(fc, n.Func.Name, n.Func.Params); err != nil {
 		// A panic's stack is evidence, and the one place a person looks for a
@@ -87,6 +90,21 @@ type funcCtx struct {
 
 	once   sync.Once
 	logger *slog.Logger
+
+	// subgraph is set only for a LOCAL func step: it is the engine this
+	// function may run a graph on. Nil elsewhere, and RunSubgraph says so by
+	// name rather than failing somewhere further in.
+	subgraph func(context.Context, []byte) error
+}
+
+// RunSubgraph implements funcs.SubgraphRunner. See runSubgraph.
+func (c *funcCtx) RunSubgraph(ctx context.Context, fragment []byte) error {
+	if c.subgraph == nil {
+		return fmt.Errorf(
+			"senro: step %q cannot run a subgraph: it is not running on the coordinator, "+
+				"and the engine a subgraph needs is there", c.stepID)
+	}
+	return c.subgraph(ctx, fragment)
 }
 
 func (c *funcCtx) RunID() string  { return c.runID }

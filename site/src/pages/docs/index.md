@@ -70,7 +70,21 @@ stream you can attach to.
 | [Per-unit ordering](/docs/monorepo/needs-each/) | Per-unit edges versus the workflow barrier |
 | [Partitioning](/docs/monorepo/partition/) | `Partition`, `TemplateShard`, the duration history |
 | [Affected](/docs/monorepo/affected/) | Running only what a change affects |
-| [Unit graphs](/docs/monorepo/unit-graphs/) | The eight graphs, and which support `Affected` |
+
+## Unit graphs
+
+| Page | What it covers |
+|---|---|
+| [Choosing a graph](/docs/monorepo/unit-graphs/) | The eight graphs, and which support `Affected` |
+| [`glob`](/docs/monorepo/unit-graphs/glob/) | One unit per directory matching a pattern |
+| [`gowork`](/docs/monorepo/unit-graphs/gowork/) | Go modules and packages, via `go list` |
+| [`cargo`](/docs/monorepo/unit-graphs/cargo/) | Rust crates, from the manifests |
+| [`jswork`](/docs/monorepo/unit-graphs/jswork/) | npm, pnpm, Yarn and Bun workspace packages |
+| [`maven`](/docs/monorepo/unit-graphs/maven/) | Maven reactor projects |
+| [`gradle`](/docs/monorepo/unit-graphs/gradle/) | Gradle projects, from the declarative subset |
+| [`pyproject`](/docs/monorepo/unit-graphs/pyproject/) | Python distributions, and why `Affected` is refused |
+| [`bazel`](/docs/monorepo/unit-graphs/bazel/) | Bazel packages, with and without running bazel |
+| [Write your own](/docs/monorepo/unit-graphs/custom/) | `UnitGraph` and `UnitAffector` |
 
 ## Secrets
 
@@ -90,24 +104,47 @@ stream you can attach to.
 | [The shell](/docs/attach/shell/) | `senro shell` on a live step, `--tty` |
 | [Security](/docs/attach/security/) | The boundary, tokens, TLS, platform support |
 
-## Automate
+## Triggers
 
 | Page | What it covers |
 |---|---|
-| [Triggers](/docs/triggers/) | Wiring `WithTrigger`, and the three outcomes |
-| [Trigger events](/docs/triggers/events/) | The event file, the providers, per-provider traps |
-| [Notifications](/docs/notifications/) | Built-in destinations, and how to wire one |
+| [Running on an event](/docs/triggers/) | Wiring `WithTrigger`, the matchers, the three outcomes |
+| [The event file](/docs/triggers/events/) | The envelope every source is delivered through |
+| [GitHub](/docs/triggers/github/) | `push`, `pull_request`, and tags arriving as pushes |
+| [GitLab](/docs/triggers/gitlab/) | Push, tag push, merge request, and GitLab's own action words |
+| [Bitbucket](/docs/triggers/bitbucket/) | `repo:push`, `pullrequest:*`, and the missing file lists |
+| [Gitea](/docs/triggers/gitea/) | `push`, `pull_request`, `create`, and the double tag |
+| [Schedule & manual](/docs/triggers/manual/) | The neutral shape, for cron and for a button |
+| [Write your own](/docs/triggers/custom/) | `trigger.Provider` and `trigger.Matcher` |
+
+## Notifications
+
+| Page | What it covers |
+|---|---|
+| [Sending a result out](/docs/notifications/) | The destinations, every option, delivery and retries |
+| [Slack](/docs/notifications/slack/) | A line in a channel, and what widening it costs |
+| [Webhook](/docs/notifications/webhook/) | Raw events as JSON, and verifying a signature |
+| [GitHub Checks](/docs/notifications/github-checks/) | A check run on the commit, with annotations |
+| [Write your own](/docs/notifications/custom/) | `notify.Renderer` and `notify.Requester` |
+
+## Failure analyzers
+
+| Page | What it covers |
+|---|---|
+| [What an analyzer does](/docs/analyzers/) | Explaining a failed step, and the approval gate |
+| [The AI analyzer](/docs/analyzers/genkit/) | `contrib/genkitanalyzer`, with the model of your choice |
+| [Write your own](/docs/analyzers/custom/) | `Analyzer`, `api.Failure` and `api.Proposal` |
 
 ## Extend
 
 | Page | What it covers |
 |---|---|
 | [Extension points](/docs/extend/) | Every extension point, one line each |
-| [A unit graph](/docs/extend/unit-graph/) | Implement `UnitGraph` / `UnitAffector` |
-| [A trigger source](/docs/extend/trigger-source/) | Implement `trigger.Provider` |
-| [A notifier](/docs/extend/notifier/) | Implement a `Renderer` / `Requester` |
 | [A trace exporter](/docs/extend/exporter/) | A trace exporter as a `Sink` |
-| [A failure analyzer](/docs/extend/analyzer/) | Implement `Analyzer`, and the proposal gate |
+| [A unit graph](/docs/monorepo/unit-graphs/custom/) | Implement `UnitGraph` / `UnitAffector` |
+| [A trigger source](/docs/triggers/custom/) | Implement `trigger.Provider` |
+| [A notifier](/docs/notifications/custom/) | Implement a `Renderer` / `Requester` |
+| [A failure analyzer](/docs/analyzers/custom/) | Implement `Analyzer`, and the proposal gate |
 
 ## Reference
 

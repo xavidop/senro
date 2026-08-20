@@ -1357,6 +1357,9 @@ func toNode(sb *StepBuilder, path map[*StepBuilder]bool) (plan.Node, error) {
 	if sb.timeout > 0 {
 		n.TimeoutMS = sb.timeout.Milliseconds()
 	}
+	if sb.generate != nil {
+		n.Generate = &plan.GenerateSpec{Path: sb.generate.path}
+	}
 	n.Pure = sb.pure
 	n.NoSnapshot = sb.noSnapshot
 	n.CacheEnv = append([]string(nil), sb.cacheEnv...)
@@ -1438,9 +1441,15 @@ func toMountSpec(stepID string, m Mount) (plan.MountSpec, error) {
 type ScopeKind string
 
 const (
-	// ScopeStep is ephemeral and discarded. Declared so a pipeline asking
-	// for it gets a clear refusal rather than a silent promotion to
-	// ScopeRun; Build rejects it in this version.
+	// ScopeStep is one fresh directory PER STEP, shared with nobody and
+	// discarded with the run.
+	//
+	// It buys isolation a run-scoped workspace cannot: every step mounting a
+	// ScopeRun workspace mounts the same directory, so a step sees what its
+	// siblings left there and can stamp on what they are still using. Reach
+	// for this when a step wants a clean tree to work in and nothing
+	// downstream reads what it produced. Nothing is snapshotted from one, for
+	// the same reason: there is no later step to hand it to.
 	ScopeStep ScopeKind = "step"
 	// ScopeRun is shared across the steps of one run. The common case, and
 	// the default.
@@ -1686,6 +1695,10 @@ type StepBuilder struct {
 	onFailure []*StepBuilder
 	always    []*StepBuilder
 
+	// generate is set by Generates and nil for every ordinary step; toNode
+	// lowers it into plan.Node.Generate.
+	generate *Generator
+
 	mounts     []Mount
 	pure       bool
 	inputs     []artifact.Selector
@@ -1702,6 +1715,15 @@ type secretEnv struct {
 	env   string
 	field string
 }
+
+// ID is the step's declared identifier.
+//
+// Exists for building a fragment in a loop, where a step depends on the
+// sibling it just created (see Fragment.Step). Without it the id is written
+// twice, once to declare and once to depend on, and the second copy is where
+// a typo lives: a mistyped need is caught at splice time, mid-run, rather
+// than by the compiler.
+func (s *StepBuilder) ID() string { return s.id }
 
 // Needs declares upstream STEPS that must finish first: the step-level
 // dependency, naming step ids, distinct from the package-level Needs, which

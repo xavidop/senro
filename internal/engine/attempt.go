@@ -82,6 +82,13 @@ func (rc *runCore) runStep(ctx context.Context, n *plan.Node, opts Options, logs
 			// its handlers still run.
 			return rc.finishStep(n, stepStart, first, api.StateFailed, 0, err.Error(), false)
 		}
+		if dec.hit && rc.forcedRegen(n) {
+			// Refused on purpose, and recorded as a miss with its own
+			// reason, so `cache explain` does not report a hit that was
+			// never served.
+			dec.hit = false
+			dec.reason = "regenerate"
+		}
 		if dec.hit {
 			if rc.serveFromCache(ctx, n, opts, logs, dec) {
 				rc.recordDecision(opts.Dir, n, dec)
@@ -217,11 +224,25 @@ func (rc *runCore) runStep(ctx context.Context, n *plan.Node, opts Options, logs
 		finalState = api.StateRecovered
 	}
 
+	// A generator splices what it produced BEFORE this step settles: its
+	// dependents gain the fragment's boundary as new needs, and that is only
+	// safe while they are provably still pending, which they are until
+	// states[n.ID] is written after runStep returns. Before cacheSave too, so
+	// the entry a generator saves can carry the fragment it produced.
+	var fragment string
+	if finalState == api.StateSucceeded && n.Generate != nil {
+		var err error
+		if fragment, err = rc.splice(ctx, n, opts); err != nil {
+			finalState = api.StateFailed
+			res.err = err
+		}
+	}
+
 	// Saved only on an outright success, never StateRecovered: a step that
 	// failed before passing is not evidence its declared inputs describe
 	// it, and saving would serve the one lucky attempt to every future run.
 	if rc.cacheable(n) && finalState == api.StateSucceeded {
-		if err := rc.cacheSave(ctx, n, opts, logs, dec, res, attempt, time.Since(stepStart)); err != nil {
+		if err := rc.cacheSave(ctx, n, opts, logs, dec, res, attempt, time.Since(stepStart), fragment); err != nil {
 			// A step that ran correctly and could not be stored still ran
 			// correctly: the next run misses, a slower build rather than a
 			// broken one.
@@ -457,7 +478,7 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 
 	exit, runErr := rc.invoke(attemptCtx, n, sb,
 		executor.Cmd{Args: n.Cmd, Env: cmdEnv, Dir: cmdDirFor(n.WorkDir, mounts)},
-		mounts, secretPaths, attempt, stdoutRW, stderrRW)
+		mounts, secretPaths, attempt, stdoutRW, stderrRW, opts)
 
 	// Flush both streams before anything else, so every step.log.appended
 	// marker precedes this attempt's step.finished, and a partial match's

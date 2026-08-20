@@ -21,8 +21,8 @@ verify.Expand("test", gowork.Modules()).
 	})
 ```
 
-It needs a graph that knows dependencies. Five of the eight shipped graphs do (`gowork`, `cargo`,
-`jswork`, `maven`, `gradle`); `glob`, `pyproject` and `bazel` do not, and `Affected` over one of
+It needs a graph that knows dependencies. Six do: `gowork`, `cargo`, `jswork`, `maven`, `gradle`,
+and `bazel.Query()`. `glob`, `pyproject` and `bazel.Packages()` do not, and `Affected` over one of
 those is **refused at build time** rather than quietly running everything. See
 [The shipped unit graphs](/docs/monorepo/unit-graphs/).
 
@@ -146,7 +146,6 @@ node the plan contains.
 
 ## What is not here
 
-- **An affected set from a Bazel workspace.** `bazel.Packages` discovers packages and stops there.
 - **Anything that guesses.** senro will not resolve a ref, compute a merge base or shell out to
   `git` to work out what a run is probably about. It consumes the base the event recorded, or it
   builds everything.
@@ -159,5 +158,5 @@ node the plan contains.
 - **[Trigger events](/docs/triggers/events/)**: the event file and the per-provider traps.
 - **[Reading a failed run](/docs/reference/debugging/)**: `run.json` records the mode and base
   consumed.
-- **[Implement a unit graph](/docs/extend/unit-graph/)**: teach senro a layout no shipped graph
+- **[Implement a unit graph](/docs/monorepo/unit-graphs/custom/)**: teach senro a layout no shipped graph
   fits.

@@ -70,27 +70,52 @@ would change it for every concurrent step.
 | `container.Image(ref)` | Runs in the container, from a read-only bind of your pipeline binary |
 | `k8s.Pod(...)` | Runs in the pod. senro sends your pipeline binary in over the apiserver's `exec` subresource and re-enters it there |
 
-On the coordinator, the function gets the same kind of sandbox a command gets: its own mounts,
-secrets and log files.
+### On the coordinator
 
-Off the coordinator, `ctx.Workspace` and `ctx.Secret` report paths **over there**, and your `main`
-needs no line about any of it. Staging, cross-compiling and the `CGO_ENABLED=0` constraint that
-comes with it are covered in [Func steps off the coordinator](/docs/executors/func-remote/). Run
-`senro func check [--dir DIR] [packages...]` to find out whether your module can be cross-compiled
-at all; see [CLI](/docs/cli/workspaces/).
+The function runs in this process, in the same kind of sandbox a command gets: its own mounts,
+secrets and log files. Nothing is copied anywhere.
 
-**In a pod the image must carry `sh` and `tar`**, exactly as carrying a workspace does: the binary
-arrives as a `tar` into a container that is holding open for it. One shape is refused, at `Build()`:
+### Anywhere else: senro sends your binary
 
-```
-plan: step "deploy" is a func step on a target that delegates secrets, and the two cannot both
-hold: delegation delivers secret "Kubeconfig" to the pod as SENRO_SECRET_KUBECONFIG_SOURCE, a
-source URI for the step's own COMMAND to resolve, while a function reads ctx.Secret("Kubeconfig")
-```
+A Go function's body only exists inside your compiled binary. A `Plan` is JSON and cannot describe
+it, so running one on an SSH host means **moving the binary, not the plan**.
 
-A **func handler** on any non-local step is refused for a related reason: a handler inherits its
-parent's executor and declares none of its own, so there is nothing to key the staging to. Use an
-`exec` handler for cleanup on the target. See [Handlers](/docs/steps/handlers/).
+That is exactly what senro does, and you write no code for it:
+
+1. It puts a copy of your pipeline binary on the target: over SSH, as a read-only bind into a
+   container, or in through the apiserver's `exec` subresource for a pod.
+2. It re-enters that copy as a child process, telling it which registered function to call and
+   with which params.
+3. Your function runs there. `ctx.Workspace(...)` and `ctx.Secret(...)` return paths **on the
+   target**, not on your machine, so the same function body works either way.
+
+Three things to know before you rely on it:
+
+- **Your module has to cross-compile.** The binary sent to a Linux host has to be built for it,
+  which in practice means `CGO_ENABLED=0`. Run `senro func check [--dir DIR] [packages...]` to
+  find out whether yours can be, before a run tells you on a Friday. See
+  [CLI](/docs/cli/workspaces/).
+- **A pod's image must carry `sh` and `tar`**, exactly as carrying a workspace does: the binary
+  arrives as a `tar` into a container that is holding open for it. A `FROM scratch` image cannot
+  receive one.
+- **A func step cannot run on a target that delegates secrets.** Delegation hands the step's own
+  *command* a source URI to resolve, while a function calls `ctx.Secret(...)` and expects a file.
+  Both cannot hold at once, so `Build()` refuses it:
+
+  ```
+  plan: step "deploy" is a func step on a target that delegates secrets, and the two cannot both
+  hold: delegation delivers secret "Kubeconfig" to the pod as SENRO_SECRET_KUBECONFIG_SOURCE, a
+  source URI for the step's own COMMAND to resolve, while a function reads ctx.Secret("Kubeconfig")
+  ```
+
+The staging, its cost and its caching are covered in
+[Func steps off the coordinator](/docs/executors/func-remote/).
+
+### Not as a handler, off the coordinator
+
+A [handler](/docs/steps/handlers/) inherits its parent step's executor and declares none of its
+own, so there is nothing to key the binary staging to. A `senro.Func` handler on a non-local step
+is refused at `Build()`. Use an `exec` handler for cleanup on the target.
 
 ## Panics and timeouts
 

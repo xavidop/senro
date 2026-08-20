@@ -59,30 +59,6 @@ reference, and `references/secrets-channels.md`, the channel table.
   `ws pull`, `ws diff`, `logs fetch`, `func check`) and its exit codes: the skill's
   `references/cli.md`.
 
-## What it deliberately leaves out
-
-<!-- This list is duplicated, in different prose, at skills/senro/SKILL.md
-     ("Not built yet"). Nothing compares them, so a feature that ships must be
-     removed from BOTH. Every entry is a claim of absence, and a claim of
-     absence survives the merge that disproves it: two branches editing around
-     the same sentence do not conflict. -->
-
-senro is pre-1.0, and the skill says so rather than describing a feature that isn't in this
-build. It explicitly does not teach, and tells an agent not to invent an API for:
-
-- Generated subgraphs and `RunSubgraph`: expansion happens at plan time, so a fan-out over a list
-  only a running step could produce is not expressible.
-- An affected set over a Bazel workspace: of the eight graphs, all but `glob`, `pyproject` and
-  `bazel` can compute one.
-- A shell from the browser UI. `senro ui` offers cancel, pause, resume, retry, skip, rerun-from
-  and breakpoints, and serves a live run only; `senro shell` stays in `senro attach`, on purpose.
-- A remote tier for the scratch cache (the content store and the action cache have one, over an
-  S3-compatible bucket or an OCI registry, and the skill teaches it).
-- `senro shell` on a run that has already finished.
-- `ScopeStep` workspaces (declared, and rejected by `Build`).
-
-Some of this is being built right now; the skill describes what's merged, not what's in progress.
-
 ## llms.txt
 
 If your agent does not use skills, point it at the docs directly: this site publishes the

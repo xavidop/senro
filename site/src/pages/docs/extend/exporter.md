@@ -218,5 +218,5 @@ mistake worth catching.
 ## Where to go next
 
 - **[The event stream](/docs/reference/event-stream/)**: every event type and payload, which is what you are folding.
-- **[Writing a notifier](/docs/extend/notifier/)**: another extension point built on the same sink.
+- **[Writing a notifier](/docs/notifications/custom/)**: another extension point built on the same sink.
 - **[Embedding](/docs/reference/embedding/)**: where `WithTraceContext` earns its keep.

@@ -73,10 +73,25 @@ const groups = [
     items: [
       { slug: "monorepo", title: "Overview" },
       { slug: "monorepo/fan-out", title: "Fan-out" },
+      { slug: "monorepo/generators", title: "Generated subgraphs" },
       { slug: "monorepo/needs-each", title: "Per-unit edges" },
       { slug: "monorepo/partition", title: "Sharding" },
       { slug: "monorepo/affected", title: "Affected units" },
-      { slug: "monorepo/unit-graphs", title: "Unit graphs" },
+    ],
+  },
+  {
+    label: "Unit graphs",
+    items: [
+      { slug: "monorepo/unit-graphs", title: "Choosing a graph" },
+      { slug: "monorepo/unit-graphs/glob", title: "glob: any directory" },
+      { slug: "monorepo/unit-graphs/gowork", title: "gowork: Go" },
+      { slug: "monorepo/unit-graphs/cargo", title: "cargo: Rust" },
+      { slug: "monorepo/unit-graphs/jswork", title: "jswork: JavaScript" },
+      { slug: "monorepo/unit-graphs/maven", title: "maven: Java" },
+      { slug: "monorepo/unit-graphs/gradle", title: "gradle: Java" },
+      { slug: "monorepo/unit-graphs/pyproject", title: "pyproject: Python" },
+      { slug: "monorepo/unit-graphs/bazel", title: "bazel" },
+      { slug: "monorepo/unit-graphs/custom", title: "Write your own" },
     ],
   },
   {
@@ -98,23 +113,41 @@ const groups = [
     ],
   },
   {
-    label: "Automate",
+    label: "Triggers",
     items: [
-      { slug: "triggers", title: "Triggers" },
-      { slug: "triggers/events", title: "Events & providers" },
-      { slug: "notifications", title: "Notifications" },
+      { slug: "triggers", title: "Running on an event" },
+      { slug: "triggers/events", title: "The event file" },
+      { slug: "triggers/github", title: "GitHub" },
+      { slug: "triggers/gitlab", title: "GitLab" },
+      { slug: "triggers/bitbucket", title: "Bitbucket" },
+      { slug: "triggers/gitea", title: "Gitea" },
+      { slug: "triggers/manual", title: "Schedule & manual" },
+      { slug: "triggers/custom", title: "Write your own" },
+    ],
+  },
+  {
+    label: "Notifications",
+    items: [
+      { slug: "notifications", title: "Sending a result out" },
+      { slug: "notifications/slack", title: "Slack" },
+      { slug: "notifications/webhook", title: "Webhook" },
+      { slug: "notifications/github-checks", title: "GitHub Checks" },
+      { slug: "notifications/custom", title: "Write your own" },
+    ],
+  },
+  {
+    label: "Failure analyzers",
+    items: [
+      { slug: "analyzers", title: "What an analyzer does" },
+      { slug: "analyzers/genkit", title: "The AI analyzer" },
+      { slug: "analyzers/custom", title: "Write your own" },
     ],
   },
   {
     label: "Extend",
     items: [
       { slug: "extend", title: "Extension points" },
-      { slug: "extend/unit-graph", title: "A unit graph" },
-      { slug: "extend/trigger-source", title: "A trigger source" },
-      { slug: "extend/notifier", title: "A notifier" },
       { slug: "extend/exporter", title: "A trace exporter" },
-      { slug: "extend/analyzer", title: "A failure analyzer" },
-      { slug: "extend/analyzer-genkit", title: "An AI analyzer" },
     ],
   },
   {
@@ -123,6 +156,7 @@ const groups = [
       { slug: "cli", title: "All commands" },
       { slug: "cli/run", title: "run, attach, shell, ui" },
       { slug: "cli/cache", title: "cache & verify" },
+      { slug: "cli/rerun", title: "rerun" },
       { slug: "cli/workspaces", title: "ws, logs & func" },
     ],
   },
@@ -314,21 +348,43 @@ const next = idx >= 0 && idx < flat.length - 1 ? flat[idx + 1] : null;
   .doc > :first-child {
     margin-top: 0;
   }
+  /* Headings set their own bottom margin. The global reset zeroes every
+     heading margin, which left a h2 sitting directly on the paragraph under
+     it with only the line-height between them: the heading read as part of
+     the sentence rather than as a label above it. */
   .doc h1 {
     font-size: var(--step-4);
-    margin-bottom: 0.4rem;
+    margin-bottom: 1rem;
   }
   .doc h2 {
     font-size: var(--step-2);
-    margin-top: 2.6rem;
-    padding-top: 1.3rem;
+    margin-top: 3.2rem;
+    padding-top: 1.5rem;
+    margin-bottom: 1.15rem;
     border-top: 1px solid var(--line);
     scroll-margin-top: 84px;
   }
   .doc h3 {
     font-size: var(--step-1);
-    margin-top: 1.8rem;
+    margin-top: 2.4rem;
+    margin-bottom: 0.85rem;
     scroll-margin-top: 84px;
+  }
+  .doc h4 {
+    font-size: var(--step-0);
+    margin-top: 1.9rem;
+    margin-bottom: 0.7rem;
+    scroll-margin-top: 84px;
+  }
+  /* A heading immediately followed by a table or a code block needs the same
+     gap; those elements carry their own margin, so collapse it into one. */
+  .doc h2 + table,
+  .doc h3 + table,
+  .doc h4 + table,
+  .doc h2 + pre,
+  .doc h3 + pre,
+  .doc h4 + pre {
+    margin-top: 0;
   }
   .doc p {
     color: var(--muted);
@@ -856,8 +912,27 @@ const next = idx >= 0 && idx < flat.length - 1 ? flat[idx + 1] : null;
     };
   }
 
+  // A diagram's source is hidden (transparent) until the renderer has run, so
+  // anything that stops the renderer leaves a blank gap where the diagram
+  // should be, with nothing on the page saying so. revealSources puts the raw
+  // diagram text back if we never get as far as rendering: worse-looking than
+  // a diagram, far better than an empty hole.
+  function revealSources() {
+    document.querySelectorAll("pre.mermaid:not([data-processed])").forEach((pre) => {
+      (pre as HTMLElement).style.color = "inherit";
+    });
+  }
+
   if (document.querySelector("pre.mermaid")) {
-    const mermaid = (await import("mermaid")).default;
+    try {
+      await renderDiagrams((await import("mermaid")).default);
+    } catch (err) {
+      console.error("mermaid failed to load", err);
+      revealSources();
+    }
+  }
+
+  async function renderDiagrams(mermaid) {
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: "strict",
@@ -880,6 +955,7 @@ const next = idx >= 0 && idx < flat.length - 1 ? flat[idx + 1] : null;
       await mermaid.run({ querySelector: "pre.mermaid" });
     } catch (err) {
       console.error("mermaid render failed", err);
+      revealSources();
     }
     // Outside the catch on purpose. mermaid.run rejects on the first diagram
     // that fails, so wiring zoom inside the try meant one bad diagram cost

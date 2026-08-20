@@ -339,9 +339,10 @@ saved under a key nothing can rewrite. Two remote steps may share one freely.
 `(*WorkflowBuilder).Expand(id, graph)` adds one step per unit a graph discovers,
 from one template called once per unit. Eight graphs ship under
 `github.com/xavidop/senro/unit`: `glob` (paths), `gowork` (the Go toolchain),
-`cargo`, `jswork`, `maven`, `gradle`, `pyproject`, `bazel`. Five also compute an
-affected set (`gowork`, `cargo`, `jswork`, `maven`, `gradle`); `glob`,
-`pyproject` and `bazel` deliberately cannot, and `Affected` over one of those is
+`cargo`, `jswork`, `maven`, `gradle`, `pyproject`, `bazel`. Six compute an
+affected set: `gowork`, `cargo`, `jswork`, `maven`, `gradle`, and
+`bazel.Query()` (which RUNS bazel to get the edges). `glob`, `pyproject` and
+`bazel.Packages()` deliberately cannot, and `Affected` over one of those is
 refused at build time rather than quietly running everything.
 
 ```go
@@ -364,10 +365,11 @@ verify.Expand("lint", glob.Dirs("apps/*")).
 - Each child id is deterministic (`lint[unit=apps/web]`), built from the unit
   and sorted: the same repository always builds the same children.
 - Expansion happens at build time, not run time: three matching directories vs
-  four are different pipelines. **Not built yet** (never assume them in an
-  example): a step's own output generating brand-new nodes mid-run, and
-  `RunSubgraph`. Also no `FailFast`, deliberately: senro already reports every
-  failing sibling individually.
+  four are different pipelines. For a list only a running step can produce, use
+  a GENERATOR (`Generates`), which splices nodes into the running graph. For
+  control flow that is not a graph at all (a loop with a stopping condition),
+  a registered function calls `senro.RunSubgraph`. No `FailFast`,
+  deliberately: senro already reports every failing sibling individually.
 
 ## Per-unit edges between two fan-outs
 
@@ -740,83 +742,4 @@ senro ui [--pid <pid> | --run <id> | --addr <host:port>] [--tls] [--port N]
 - `senro ui` serves a browser view of a LIVE run on loopback, prints a one-time
   link, and blocks until interrupted; the page is a Go client compiled to
   WebAssembly folding events with the same `api.RunState.Apply` the TUI uses. It
-  offers the TUI's control operations and deliberately not `senro shell` (see
-  "Not built yet"). See `references/cli.md` for every flag.
-
-## Not built yet
-
-<!-- This list is duplicated, in different prose, at
-     site/src/pages/docs/reference/skill.md ("What it deliberately leaves out").
-     Nothing compares them, so a feature that ships must be removed from BOTH.
-     Every entry here is a claim of absence, and a claim of absence survives
-     the merge that disproves it: two branches editing around the same
-     sentence do not conflict. -->
-
-Say this plainly when it's relevant, rather than letting a generated example
-imply otherwise. Everything is driven from one coordinator process, which
-executes steps locally, in containers, as pods, or over SSH. The following are
-designed but **do not exist in this build**.
-
-- Generated subgraphs and `RunSubgraph`: a step's own output creating new nodes
-  at run time. Expansion happens at plan time, so a fan-out over a list only a
-  running step could produce is not expressible. `NeedsEach` and `Partition` are
-  built and documented above; do use them.
-- An affected set over a Bazel workspace. Of the eight graphs (`glob`, `gowork`,
-  `cargo`, `jswork`, `maven`, `gradle`, `pyproject`, `bazel`), all but `glob`,
-  `pyproject` and `bazel` compute one, and those three say so rather than
-  guessing. `bazel.Packages` finds one unit per Bazel package by reading the
-  tree, no bazel installed, nothing run; a `BUILD` file's edges live in Starlark
-  nothing static can read, and `bazel query` was rejected: it needs bazel,
-  starts a server, and fetches and executes repository rules while resolving.
-- A shell from the browser UI. `senro ui` does offer cancel, pause, resume,
-  retry, skip, rerun-from and breakpoints; `senro shell` stays in
-  `senro attach`, a standing decision, not a gap. `senro ui` also serves a live
-  run only, since a finished one has no attach server.
-- A remote tier for the **scratch** cache. The content-addressed store and
-  action cache have one, over an S3-compatible bucket or OCI registry:
-  `senro.WithRemoteCache`, or `SENRO_REMOTE_CACHE=s3://bucket` or
-  `SENRO_REMOTE_CACHE=oci://registry/repository`; an unreachable store degrades
-  the run to local disk and emits `cache.degraded`, never failing the run. The
-  scratch cache stays local, and NOT because its key is machine-specific: a key
-  renders from repository content alone, so another machine computes the same
-  one. It stays local because an entry is one whole-tree tarball, often
-  gigabytes, whose key churns on every lock-file edit; because a key carries no
-  repository namespace, so one project's `RestoreKeys` prefix would match
-  another's on a shared bucket; and because the prefix fallback picks the
-  newest match by local mtime, which the OCI backend could not answer anyway
-  (it deliberately cannot list tags).
-- `senro shell` on a finished run. The command exists and works on every
-  executor while a run is live; a finished run offers `senro ws pull`.
-- `ScopeStep` workspaces (`senro.ScopeStep` is declared and rejected by `Build`:
-  a step-scoped workspace has no consumer; nothing outlives the step that would
-  read it).
-
-Do not write an example using any of the above as if it worked. If asked for
-one, say it isn't built yet rather than inventing the API it would have.
-
-## When helping a user
-
-- `senro.Run` takes the `*Pipeline`, not a `*Plan`; don't `.Build()` and pass
-  the plan to `Run`. That's what `RunPlan` is for.
-- Default to `retry.OnInfra()`; add `OnExitCode` or `OnLogMatch` only when a
-  failure genuinely can't be identified structurally.
-- A `Pure()` step with no `Inputs` fails at `Build`, not at run time:
-  deliberate, not a bug to work around.
-- Never put a secret's resolved value in an env var, `WorkDir`, a glob pattern,
-  or a mount name: senro refuses the run outright. The fix is `SecretEnv` (a
-  file) or `CacheEnv` (a digest, never the value).
-- `RO` on a mount is enforced on the container and Kubernetes executors,
-  detection-after-the-fact on local and ssh. Say which executor before promising
-  either behaviour.
-- A `Func` step runs on every executor: the coordinator, an ssh host, a
-  container and a pod. In a pod the binary is sent in over the `exec`
-  subresource once per pod and the image needs `sh` and `tar`, so pair
-  `senro.Func` with `senro.On(k8s.Pod(...))` freely, except on a target with
-  `k8s.DelegateSecrets()`, which `Build` refuses for a func step that declares
-  a secret (delegation hands the pod a source URI for a COMMAND to resolve, and
-  a function reads `ctx.Secret(name)`). A `Func` as an `OnFailure`/`Always`
-  handler is coordinator-only, including under `ssh.Host`, `container.Image`
-  and `k8s.Pod`.
-- A pruned `When` step is `skipped_condition`, which keeps the run green;
-  `skipped_upstream_failed` is what an actual failure's dependents get and makes
-  the run `partial`.
+  offers the TUI's control operations. See `references/cli.md` for every flag.

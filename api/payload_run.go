@@ -90,6 +90,27 @@ type PlanExpandedBody struct {
 	Skipped int `json:"skipped"`
 }
 
+// PlanGeneratedBody is the payload of a plan.generated event: one generator's
+// fragment, spliced into the graph that was already running.
+//
+// Children are recorded in full for the reason PlanExpandedBody records them
+// in full: a reader reconstitutes the set without re-deriving it, and here
+// there is no plan.json to fall back on, because a generated node cannot be
+// in the file written before the run.
+//
+// Digest names the fragment's bytes in the CAS. It is what makes a
+// nondeterministic generator reproducible: a re-run replays the recorded
+// fragment rather than calling the generator again (design §2.8.1).
+type PlanGeneratedBody struct {
+	Generator string   `json:"generator"`
+	Children  []string `json:"children"`
+	// Nodes and Edges are the generator's own tally, recorded for provenance.
+	// Renderers derive totals from len(Children), not from these.
+	Nodes  int    `json:"nodes"`
+	Edges  int    `json:"edges"`
+	Digest string `json:"digest"`
+}
+
 // PlanExpansionSkippedBody is the payload of a plan.expansion_skipped event,
 // emitted when an expansion produced no children at all.
 type PlanExpansionSkippedBody struct {

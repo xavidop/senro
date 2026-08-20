@@ -48,17 +48,41 @@ flowchart LR
   lint & test & build --> ship
 ```
 
-## A plan has no workflow layer
+## Workflows disappear when you build
 
-`Build()` lowers each workflow-level barrier onto step edges like the ones above. What runs is a
-flat graph of steps, which is why step ids are unique across the whole pipeline.
+Workflows are for **you**, not for the engine. `Build()` turns every workflow-level barrier into
+ordinary step edges and throws the grouping away. What actually runs is one flat graph of steps.
 
-Two consequences worth knowing:
+So this:
 
-- **Grouping is free.** A pipeline of one workflow builds into exactly the plan its steps alone
-  describe, and moving steps between workflows does not change the plan's digest, which is what an
-  action cache is keyed on.
-- **Adding a workflow-level `Needs` is not free.** It adds real edges, so it does change the digest.
+```go
+setup := p.Workflow("setup")
+setup.Step("install", ...)
+
+verify := p.Workflow("verify", senro.Needs("setup"))
+verify.Step("lint", ...)
+verify.Step("test", ...)
+```
+
+builds into exactly the same plan as this:
+
+```go
+one := p.Workflow("everything")
+one.Step("install", ...)
+one.Step("lint", ...).Needs("install")
+one.Step("test", ...).Needs("install")
+```
+
+Two things follow from that:
+
+- **Reorganizing your workflows is free.** Moving a step from one workflow to another, splitting
+  one workflow into three, or renaming them changes nothing about the plan, so nothing about its
+  digest, so nothing about your [cache](/docs/data/caching/). Group them however reads best.
+- **Adding a workflow-level `Needs` is not free.** It adds real edges between real steps, so it
+  does change the plan and does invalidate cache entries downstream of it.
+
+It is also why **step ids must be unique across the whole pipeline**: once the grouping is gone,
+`verify`'s `test` and `build`'s `test` would be the same node.
 
 ## `Needs` on a step
 
@@ -72,23 +96,68 @@ Two consequences worth knowing:
 
 ## What `Build()` refuses
 
-| What you wrote | What `Build()` says |
-|---|---|
-| Two steps that need each other | `plan: dependency cycle: a -> b -> a` |
-| The same step id in two workflows | `senro: step id "test" is declared in both workflow "build" and workflow "verify"; step ids are unique across the whole pipeline` |
-| `Needs` naming a step that does not exist | The dangling id, named |
-| `senro.Needs` naming something that is not a declared workflow | The asking workflow and the name it asked for |
-| `Needs` on a handler | `plan: handler "notify" of step "s" must not declare Needs` |
+All five are caught before a single step runs.
+
+**A cycle.** Two steps waiting for each other can never both start.
+
+```go
+verify.Step("a", ...).Needs("b")
+verify.Step("b", ...).Needs("a")
+// plan: dependency cycle: a -> b -> a
+```
+
+**A duplicate step id.** Because [workflows disappear](#workflows-disappear-when-you-build), two
+steps called `test` are one node with two definitions.
+
+```
+senro: step id "test" is declared in both workflow "build" and workflow "verify";
+step ids are unique across the whole pipeline
+```
+
+**A `Needs` naming a step that does not exist.** Usually a typo, and the error names the dangling
+id. Silently ignoring it would mean the step runs immediately instead of waiting.
+
+**`senro.Needs` naming something that is not a workflow.** The workflow-level `Needs` takes
+**workflow names**; passing it a *step* id is the single most common mistake with this API:
+
+```go
+setup := p.Workflow("setup")
+setup.Step("install", ...)
+
+verify := p.Workflow("verify", senro.Needs("install"))   // "install" is a STEP, not a workflow
+```
+
+```
+senro: workflow "verify" needs workflow "install", which pipeline "ci" does not declare.
+senro.Needs names workflows, not steps; use (*senro.StepBuilder).Needs for a dependency on
+a step
+```
+
+Write `senro.Needs("setup")` to wait for the whole workflow, or move the dependency down to the
+step: `verify.Step("lint", ...).Needs("install")`.
+
+**A `Needs` on a handler.** A [handler](/docs/steps/handlers/) is the cleanup or diagnostic step
+you attach with `OnFailure` or `Always`. It is not a node in the graph: it runs when its parent
+step settles, and nothing else can wait for it or be waited on by it. So there is nothing for a
+`Needs` on one to mean:
+
+```go
+senro.Handler("notify", ...).Needs("build")
+// plan: handler "notify" of step "s" must not declare Needs
+```
 
 ## Ordering a fan-out
 
-An expansion generates many steps at once, and has its own two shapes:
+A **fan-out** (or expansion) is one `Expand` call that generates many steps at once, one per app,
+module or package in your repository. It is the [monorepo](/docs/monorepo/) feature; skip this
+section if you are not using it.
 
-- **`(*ExpandBuilder).Needs(ids ...string)`** orders the whole fan-out after a step: every child
-  waits. See [Fan-out](/docs/monorepo/fan-out/).
-- **`(*ExpandBuilder).NeedsEach(expansions ...string)`** is one edge per unit, so
-  `test[unit=api]` waits on `build[unit=api]` and nothing else. See
-  [Per-unit edges](/docs/monorepo/needs-each/).
+An expansion is one declaration but many steps, so it gets two ways to be ordered:
+
+| | |
+|---|---|
+| `(*ExpandBuilder).Needs(ids...)` | The whole fan-out waits for those steps. Every generated child waits. See [Fan-out](/docs/monorepo/fan-out/). |
+| `(*ExpandBuilder).NeedsEach(expansions...)` | One edge **per unit**: `test[unit=api]` waits on `build[unit=api]` and nothing else, so `api` can finish testing while `web` is still building. See [Per-unit edges](/docs/monorepo/needs-each/). |
 
 ## Where to go next
 

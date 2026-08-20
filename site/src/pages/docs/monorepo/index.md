@@ -58,7 +58,7 @@ table, and the trap for each ecosystem, are in
 [The shipped unit graphs](/docs/monorepo/unit-graphs/).
 
 If no shipped graph fits your layout, a graph is a type in your own module with the right methods:
-see [Implement a unit graph](/docs/extend/unit-graph/).
+see [Implement a unit graph](/docs/monorepo/unit-graphs/custom/).
 
 ## Where to go next
 

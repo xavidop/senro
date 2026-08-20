@@ -631,8 +631,10 @@ Step("compile", exec.Command("go","build","-o","out/app","./cmd/app")).
 
 Three scopes:
 
-- `ScopeStep`: ephemeral, discarded. Declared and refused: a step-scoped workspace has no consumer,
-  since nothing outlives the step that would read it.
+- `ScopeStep`: one fresh directory per STEP, shared with nobody and discarded with the run. It buys
+  the isolation `ScopeRun` cannot: every step mounting a run-scoped workspace mounts the same
+  directory, so a step sees what its siblings left there and can stamp on what they are still
+  using. Nothing is snapshotted from one, because no later step reads it.
 - `ScopeRun`: shared across steps within a run. The common case and the default.
 - `ScopePersistent`: survives runs (e.g. a dependency cache or a checked-out monorepo you don't want
   to re-clone). Requires explicit `MaxAge`/`MaxSize` or it becomes the mutable global state that
@@ -1517,24 +1519,27 @@ reproduction command to hand back to the human. That last one is more useful tha
 > the parent's `./...`, so the root module's graph is exactly what it was. It takes the
 > `*genkit.Genkit` the caller configured, constructs none, reads no key and picks no provider, and
 > decides `api.Proposal.Remedy` from the `api.Failure` senro recorded rather than from the model's
-> prose. Documented at `/docs/extend/analyzer-genkit/`. The cost of the split is that a nested module
+> prose. Documented at `/docs/analyzers/genkit/`. The cost of the split is that a nested module
 > is invisible to every root-level command, so `Makefile`, `.github/workflows/ci.yml` and
 > `.github/dependabot.yml` each name it a second time.
 
 **Later**
 
-- Generated subgraphs (§2.8): `Generates`, fragment recording and replay, node budgets, `rerun
-  --regenerate`. Needs the cache and the incremental-DAG renderer to exist first, and `When` plus `Expand`
-  will have absorbed most of the demand by then.
-- `RunSubgraph` (§2.9), if loops-with-stopping-conditions turn out to be real rather than hypothetical.
-- `Observed` input declaration.
+- `Observed` input declaration (§3.4). The only genuinely unbuilt item here, and the one with real
+  cost: learning a step's read set needs kernel-level file monitoring (fanotify or an overlay), it
+  is platform-specific, and an approximation that guesses wrong writes a cache key that omits an
+  input, which is a wrong build served as a hit. Worth doing properly or not at all.
+- Remote coordinator / multi-tenant mode. Resist this until the single-binary story is genuinely good.
+
+**Decided, not missing.** These are not scheduled and are not gaps:
+
 - PVC backing for a Kubernetes workspace. `ScopePersistent` shipped without it and needs none: the
   workspace is a directory on the coordinator and the k8s executor stages it into the pod like any
   other, so a PVC would buy transfer rather than persistence, at the price of owning a cluster
   object's lifecycle and implementing "one run at a time" a second time against it. See
   `internal/executor/k8sexec`'s package doc.
-- Nested expansion beyond depth 2.
-- Remote coordinator / multi-tenant mode. Resist this until the single-binary story is genuinely good.
+- Nested expansion beyond depth 2. Superseded: a GENERATOR expresses it, and generator nesting is
+  bounded by `MaxDepth` rather than by a fixed depth in the expander (§2.8.2).
 
 ---
 

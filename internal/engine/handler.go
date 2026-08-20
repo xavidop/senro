@@ -278,7 +278,7 @@ func (rc *runCore) execHandler(ctx context.Context, parent, h *plan.Node, logSte
 	// TestAFuncHandlerReachesTheParentsWorkspace).
 	exit, runErr := rc.invoke(handlerCtx, h, sb,
 		executor.Cmd{Args: h.Cmd, Env: cmdEnv, Dir: cmdDirFor(workDir, mounts)},
-		mounts, secretPaths, 1, stdoutRW, stderrRW)
+		mounts, secretPaths, 1, stdoutRW, stderrRW, opts)
 
 	// Flush both, unconditionally: Close does not flush a held-back partial
 	// match, so skipping this would silently drop up to Set.max bytes of

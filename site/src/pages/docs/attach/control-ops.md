@@ -56,7 +56,7 @@ be a frame. The [stream's](/docs/attach/#snapshot-then-subscribe) resume paramet
 | `run.rerun_from` | `step` | Re-runs a step and everything downstream of it, in a run that is still live. See below |
 | `run.pause` | none | Stops the run dispatching anything new. See below |
 | `run.resume` | none | Lets it dispatch again |
-| `analysis.accept` | `id` | Accepts a [failure analyzer](/docs/extend/analyzer/)'s proposal and performs its remedy |
+| `analysis.accept` | `id` | Accepts a [failure analyzer](/docs/analyzers/custom/)'s proposal and performs its remedy |
 | `analysis.reject` | `id` | Rejects it; nothing is performed |
 | `ws.snapshot` | `step` | Captures that step's workspaces now, for inspection. See [Forcing a snapshot](#forcing-a-snapshot) |
 

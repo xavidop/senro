@@ -33,6 +33,18 @@ func (rc *runCore) cacheable(n *plan.Node) bool {
 	return n.Pure && rc.cache != nil && rc.ws != nil
 }
 
+// forcedRegen reports whether --regenerate should refuse this step's cache
+// hit. Only a generator: its hit is precisely what replays the recorded
+// graph, and asking for a new one is what the switch means.
+//
+// It refuses the HIT and not the whole cache interaction, deliberately. The
+// key is still built and the step still saves, so a regenerated fragment
+// becomes the recording the next run replays. Making the step uncacheable
+// instead would ask the generator again and then throw the answer away.
+func (rc *runCore) forcedRegen(n *plan.Node) bool {
+	return rc.regenerate && n.Generate != nil
+}
+
 // cacheLookup builds n's key, consults the store, and records the decision.
 // The key is built HERE, immediately before the step would run, not at plan
 // time: the workspace and input digests are only knowable once upstream
@@ -228,7 +240,7 @@ func (rc *runCore) serveFromCache(
 	// run ON TOP of it rather than from what a genuine miss starts from.
 	// Checked with Has, not Get: nothing about this run has changed yet
 	// when the decision to degrade is made.
-	if err := rc.hitIsReproducible(ctx, opts, dec.result); err != nil {
+	if err := rc.hitIsReproducible(ctx, opts, n, dec.result); err != nil {
 		return rc.degradeToMiss(ctx, n, dec, err)
 	}
 
@@ -276,6 +288,16 @@ func (rc *runCore) serveFromCache(
 	// that). replayLog closed its writer, so the files are final; attempt
 	// 1, matching what replayLog writes under.
 	rc.archiveAttempt(logs, n.ID, 1)
+
+	// Last, and before this step settles: the generator did not run, so its
+	// subgraph exists only as the recording made when it did. Without this a
+	// cache hit would silently drop every node the generator once produced
+	// and the run would carry on against a graph missing the work it was for.
+	if n.Generate != nil {
+		if err := rc.spliceRecorded(ctx, n, dec.result.Fragment, opts); err != nil {
+			return rc.degradeToMiss(ctx, n, dec, err)
+		}
+	}
 	return true
 }
 
@@ -285,7 +307,16 @@ func (rc *runCore) serveFromCache(
 // ReasonEntryIncomplete and Dir.Lookup). Has, not Get: this runs before the
 // hit is committed to, and must not start pulling bytes for an entry that
 // may still turn out incomplete.
-func (rc *runCore) hitIsReproducible(ctx context.Context, opts Options, res *cache.Result) error {
+func (rc *runCore) hitIsReproducible(ctx context.Context, opts Options, n *plan.Node, res *cache.Result) error {
+	// A generator's entry must carry the subgraph it produced. Checked here,
+	// with the presence checks, so an entry that cannot restore it degrades
+	// BEFORE anything observable happens rather than halfway through a
+	// restore. An entry written by a senro older than generated subgraphs
+	// looks exactly like this, and serving it would drop the generated work
+	// silently.
+	if n.Generate != nil && res.Fragment == "" {
+		return fmt.Errorf("step %q is a generator and its entry records no plan fragment", n.ID)
+	}
 	for _, w := range res.Workspaces {
 		if err := requirePresent(ctx, opts, "workspace", w.Name, w.Digest); err != nil {
 			return err
@@ -298,6 +329,11 @@ func (rc *runCore) hitIsReproducible(ctx context.Context, opts Options, res *cac
 	}
 	for _, l := range res.Logs {
 		if err := requirePresent(ctx, opts, "log", l.Stream, l.Digest); err != nil {
+			return err
+		}
+	}
+	if res.Fragment != "" {
+		if err := requirePresent(ctx, opts, "fragment", "plan fragment", cas.Digest(res.Fragment)); err != nil {
 			return err
 		}
 	}
@@ -405,7 +441,7 @@ func (rc *runCore) replayLog(
 // is served to every future run with the same key.
 func (rc *runCore) cacheSave(
 	ctx context.Context, n *plan.Node, opts Options, logs *eventlog.LogSet,
-	dec cacheDecision, res attemptResult, attempt int, dur time.Duration,
+	dec cacheDecision, res attemptResult, attempt int, dur time.Duration, fragment string,
 ) error {
 	result := &cache.Result{
 		ExitCode:    res.exitCode,
@@ -413,6 +449,10 @@ func (rc *runCore) cacheSave(
 		RunID:       rc.runID,
 		Hermeticity: cache.HermeticityTrusted,
 		SavedAt:     time.Now().UTC(),
+		// Empty for every step that is not a generator. A generator's entry
+		// carries it so a hit can restore the subgraph instead of asking the
+		// generator again (design §2.8.1).
+		Fragment: fragment,
 	}
 
 	for _, s := range res.snapshots {

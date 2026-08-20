@@ -73,7 +73,7 @@ finished run from there.
 | `p` | Pause the whole run (`run.pause`). Nothing new is dispatched; whatever is running finishes |
 | `P` | Resume it (`run.resume`) |
 | `s` | Open a [shell](/docs/attach/shell/) on the focused step: its workspaces, read-only, on its own executor. The TUI releases the terminal until you leave with `^D` |
-| `a` | Approve the [analyzer](/docs/extend/analyzer/)'s proposal for the focused step (`analysis.accept`). The engine performs the remedy it named, and records who approved it |
+| `a` | Approve the [analyzer](/docs/analyzers/custom/)'s proposal for the focused step (`analysis.accept`). The engine performs the remedy it named, and records who approved it |
 | `A` | Reject that proposal instead (`analysis.reject`). Nothing is performed |
 | `c` / `Ctrl-C` | Cancel the run (`run.cancel`) |
 | `pgup` | Load older log history for the focused step |

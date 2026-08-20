@@ -101,6 +101,24 @@ func (s *RunState) Apply(e Event) error {
 			st.Group = b.Parent
 		}
 
+	case PlanGenerated:
+		var b PlanGeneratedBody
+		if err := e.Decode(&b); err != nil {
+			return err
+		}
+		s.Expansions[b.Generator] = &ExpansionState{
+			Parent:   b.Generator,
+			Children: b.Children,
+			Count:    b.Nodes,
+		}
+		// Materialised for the reason an expansion's children are: a renderer
+		// can show the generated nodes the moment they exist, before any
+		// per-child step.created arrives.
+		for _, id := range b.Children {
+			st := s.step(id)
+			st.Group = b.Generator
+		}
+
 	case StepCreated:
 		var b StepCreatedBody
 		if err := e.Decode(&b); err != nil {

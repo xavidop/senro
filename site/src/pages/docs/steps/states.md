@@ -36,21 +36,51 @@ something. See [Retries](/docs/steps/retries/).
 
 ## `skipped_condition` is not `skipped_upstream_failed`
 
-senro distinguishes two ways a step can stop its dependents, and the difference is whether anything
-broke.
+A step can end up not running for two very different reasons, and senro records which.
 
-| | Something failed | Nothing failed |
+### Something broke → `skipped_upstream_failed`
+
+```go
+verify.Step("build", exec.Command("make", "build"))
+verify.Step("test", exec.Command("make", "test")).Needs("build")
+```
+
+`build` fails. `test` never runs, and settles as **`skipped_upstream_failed`**. The run ends
+`failed`, because something did.
+
+### Nothing broke → `skipped_condition`
+
+```go
+deploy := p.Workflow("deploy", senro.When(senro.Branch("main")))
+deploy.Step("apply", exec.Command("./deploy.sh"))
+deploy.Step("smoke", exec.Command("./smoke.sh")).Needs("apply")
+```
+
+On a pull request, `apply` is gated off and settles as **`skipped_condition`**. `smoke` settles
+the same way. The run ends **`succeeded`**, because nothing failed: your deploy was not supposed
+to run on a pull request, and it did not.
+
+That is the whole point of the distinction. **A pull request's run stays green when its
+main-only deploy does not fire.**
+
+### Side by side
+
+| | Something broke | Nothing broke |
 |---|---|---|
-| **Cause** | An upstream step `failed`, `timed_out` or `panicked` | An upstream step was gated off by `When`, or skipped by an operator |
-| **Dependents settle as** | `skipped_upstream_failed` | `skipped_condition` or `skipped_manual`, the same state as the cause |
-| **Run rolls up as** | `partial`, or `failed` | Clean: `succeeded` |
-| **`ContinueOnError`** | Applies: the author's explicit "run anyway" | Does not apply |
+| **What happened upstream** | A step `failed`, `timed_out` or `panicked` | A step was gated off by `When`, or skipped by an operator with `step.skip` |
+| **Dependents end as** | `skipped_upstream_failed` | The **same** state as the cause: `skipped_condition` or `skipped_manual` |
+| **The run ends** | `partial` or `failed` | `succeeded` |
+| **Does `ContinueOnError` rescue them?** | **Yes.** That is what it is for. | **No.** |
 
-`ContinueOnError` promises a dependent survives a *failure*, not that it runs against output that
-was never produced. That is why it has nothing to say about the right-hand column.
+### Why `ContinueOnError` only helps on the left
 
-The practical consequence: a pull request's run stays green when its `Branch("main")`-gated deploy
-does not fire. See [Conditions](/docs/steps/conditions/) and
+`ContinueOnError` says "run my dependents even though I failed, against what I did produce". It is
+about surviving a *failure*.
+
+A `skipped_condition` step produced nothing at all, because it never ran. There is no output to
+run against, and nothing was blamed, so there is nothing for `ContinueOnError` to excuse.
+
+See [Conditions](/docs/steps/conditions/) and
 [Control operations](/docs/attach/control-ops/).
 
 ## How far a failure travels

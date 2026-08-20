@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -187,6 +188,11 @@ func newWSManager(
 // workspace silently treated as run-scoped.
 const scopePersistent = "persistent"
 
+// scopeStep is plan.WorkspaceSpec.Scope for a workspace realised once per
+// STEP: a fresh directory nobody else mounts, discarded with the run. Spelled
+// once, for the reason scopePersistent is.
+const scopeStep = "step"
+
 // path is a workspace's directory for this run. For a persistent workspace
 // that is the leased directory, the same path on every run and outside the
 // run directory entirely; this is the one place that decides which. A
@@ -366,6 +372,26 @@ func (rc *runCore) emitEviction(ev persist.Eviction, when string) {
 // mounts are skipped here and handled separately, because their lifetime and
 // their semantics are different: a scratch cache is best-effort and never an
 // input to a cache key.
+// pathFor is path for one STEP: the same directory for every scope but
+// "step", which gets one of its own per step.
+//
+// Step id and not merely a counter, so a directory left behind by a failed
+// run says which step owned it, and so a handler inheriting its parent's
+// mounts lands in the parent's tree rather than a new one.
+func (m *wsManager) pathFor(name, stepID string) string {
+	if m.specs[name].Scope != scopeStep {
+		return m.path(name)
+	}
+	return filepath.Join(m.dir, name, stepDirName(stepID))
+}
+
+// stepDirName turns a step id into one path segment: ids are hierarchical and
+// contain "/", which would otherwise make a step-scoped workspace a tree
+// shaped like the pipeline.
+func stepDirName(id string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(id, "/", "_"), string(filepath.Separator), "_")
+}
+
 func (m *wsManager) mounts(n *plan.Node) ([]executor.Mount, error) {
 	var out []executor.Mount
 	m.mu.Lock()
@@ -378,10 +404,22 @@ func (m *wsManager) mounts(n *plan.Node) ([]executor.Mount, error) {
 		if !ok {
 			return nil, fmt.Errorf("engine: step %q mounts unknown workspace %q", n.ID, ms.Workspace)
 		}
+		path := m.pathFor(ms.Workspace, n.ID)
+		if spec.Scope == scopeStep {
+			// Created here rather than at run start: there is one per step,
+			// and the set of steps is not known up front once a generator can
+			// add some.
+			if err := os.MkdirAll(path, 0o755); err != nil {
+				return nil, fmt.Errorf("engine: create step workspace %q for %q: %w",
+					ms.Workspace, n.ID, err)
+			}
+		}
 		out = append(out, executor.Mount{
-			Name:             ms.Workspace,
-			Digest:           string(m.state[ms.Workspace]),
-			Path:             m.path(ms.Workspace),
+			Name: ms.Workspace,
+			// A step-scoped workspace carries no shared digest: m.state is
+			// keyed by NAME, and one step's tree is not another's.
+			Digest:           stepScopedDigest(m, spec, ms.Workspace),
+			Path:             path,
 			At:               ms.At,
 			RO:               ms.Mode == "ro",
 			Exclude:          spec.Exclude,
@@ -722,7 +760,7 @@ func (m *wsManager) inputWorkspace(n *plan.Node) (name string, ok bool) {
 // Validate refuses Outputs there).
 func (m *wsManager) inputRoot(n *plan.Node) string {
 	if name, ok := m.inputWorkspace(n); ok {
-		return m.path(name)
+		return m.pathFor(name, n.ID)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -1003,6 +1041,14 @@ func (rc *runCore) snapshotMounts(
 			// one.
 			continue
 		}
+		if rc.ws.specs[mt.Name].Scope == scopeStep {
+			// A step-scoped tree has no reader: it belongs to this step and
+			// is discarded with the run, so there is no later step to hand a
+			// digest to and nothing a cache entry could usefully restore.
+			// Skipped for the reason a claim-backed workspace is: no digest
+			// here would be a fact anyone uses.
+			continue
+		}
 		snap, err := sb.Snapshot(ctx, mt.Name)
 		if err != nil {
 			return out, fmt.Errorf("engine: step %q: %w", n.ID, err)
@@ -1061,4 +1107,14 @@ func lockerFor(executors map[string]executor.Executor) func(string) persist.Lock
 		}
 		return nil
 	}
+}
+
+// stepScopedDigest is the digest a mount carries: none for a step-scoped
+// workspace, whose tree is its step's alone, and the run's shared state for
+// every other scope.
+func stepScopedDigest(m *wsManager, spec plan.WorkspaceSpec, name string) string {
+	if spec.Scope == scopeStep {
+		return ""
+	}
+	return string(m.state[name])
 }

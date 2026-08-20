@@ -62,6 +62,21 @@ type Ctx interface {
 	Logger() *slog.Logger
 }
 
+// SubgraphRunner is the optional capability behind senro.RunSubgraph: a
+// function running a graph of its own rather than describing one.
+//
+// Optional, and asserted for rather than part of Ctx, because not every Ctx
+// can offer it. A func step running on a remote host is a staged binary on
+// the far side of a transport (internal/stepchild); the engine that would
+// execute a subgraph is back on the coordinator, and pretending otherwise
+// would fail at a distance from the call.
+//
+// The fragment arrives as its public wire form, because this package cannot
+// import the one that defines the builder without a cycle.
+type SubgraphRunner interface {
+	RunSubgraph(ctx context.Context, fragment []byte) error
+}
+
 // Func is a registered function in the form the registry holds: parameters
 // arrive as JSON, because that is what a plan can carry. senro.RegisterFunc
 // is the typed front door that decodes them.

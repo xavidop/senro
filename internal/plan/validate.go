@@ -586,6 +586,10 @@ func validateClaims(n *Node, ws map[string]WorkspaceSpec) error {
 // senro.MaxSize), which is what an author types, one bound at a time.
 func validateWorkspaceScope(w WorkspaceSpec) error {
 	switch w.Scope {
+	case "step":
+		// One fresh directory per step, shared with nobody and discarded
+		// with the run. The isolation a run-scoped workspace cannot give: a
+		// step mounting one cannot see, or stamp on, what a sibling is doing.
 	case "run":
 		// The default and the ordinary case.
 	case "persistent":
@@ -604,9 +608,8 @@ func validateWorkspaceScope(w WorkspaceSpec) error {
 		return nil
 	default:
 		return fmt.Errorf(
-			"plan: workspace %q has scope %q; the scopes are senro.ScopeRun and "+
-				"senro.ScopePersistent (ScopeStep is declared and refused: a step-scoped "+
-				"workspace has no consumer, since nothing outlives the step that would read it)",
+			"plan: workspace %q has scope %q; the scopes are senro.ScopeStep, "+
+				"senro.ScopeRun and senro.ScopePersistent",
 			w.Name, w.Scope)
 	}
 	if w.MaxAgeMS != 0 || w.MaxSizeBytes != 0 {

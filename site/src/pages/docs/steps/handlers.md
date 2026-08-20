@@ -70,8 +70,6 @@ parent's image with the same bind mount.
 **A handler with no `WorkDir` starts in the directory the step started in**, which is what lets the
 unqualified `cat build.log` find the file.
 
-Three boundaries are worth knowing:
-
 - **The view is read-only.** The step's `ws.snapshot` digest was recorded while its sandbox was
   still open, and nothing snapshots again afterwards, so a handler write would move bytes the ledger
   already describes. The container executor enforces this as a read-only bind mount; the local

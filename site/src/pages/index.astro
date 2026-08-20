@@ -150,7 +150,7 @@ const features = [
   {
     title: "Failure analysis, gated",
     body: "Hand a failed step to an analyzer you wrote, with any model behind it. Its proposal applies only when a person or an explicit policy accepts it, never on its own.",
-    href: "docs/extend/analyzer/",
+    href: "docs/analyzers/",
     link: "Analyzers",
   },
 ];
@@ -165,10 +165,8 @@ const features = [
         <p class="eyebrow">線路 senro, railway track</p>
         <h1>A pipeline engine, defined in Go.</h1>
         <p class="hero__lede">
-          Write a pipeline as ordinary Go code, run it locally, in containers, on Kubernetes or
-          over SSH, and watch it live from a second terminal or a browser while it works.
-          <strong>senro is a pipeline engine first:</strong> CI/CD is the obvious first thing to
-          build with it, not the limit of what it's for.
+          Write your pipeline as ordinary Go code. Run it locally, in containers, on Kubernetes or
+          over SSH, and watch it live from a second terminal while it works.
         </p>
         <div class="hero__actions">
           <a class="btn btn--primary" href={`${base}docs/quickstart/`}>Get started</a>
@@ -217,6 +215,10 @@ const features = [
           programming, asked for in a format with no functions, no types, no tests, and no
           debugger. Teams end up either fighting the YAML or routing around it with shell scripts
           the YAML merely calls, which just moves the real logic out of the tool meant to run it.
+        </p>
+        <p>
+          senro is a pipeline engine first. CI/CD is the obvious first thing to build with it, not
+          the limit of what it's for.
         </p>
       </div>
       <p class="why__body">
@@ -331,10 +333,14 @@ const features = [
 </Layout>
 
 <style>
+  /* The hero is sized so the install line is on screen without scrolling on a
+     laptop: at 1440x800 the whole block, `go get` included, lands inside the
+     first viewport. That is the one thing a first-time visitor is looking for,
+     so it must not sit below the fold. */
   .hero {
     position: relative;
     overflow: hidden;
-    padding-top: clamp(3rem, 2rem + 4vw, 6rem);
+    padding-top: clamp(1.75rem, 1.2rem + 1.8vw, 3rem);
   }
   .hero__grid {
     display: grid;
@@ -346,13 +352,14 @@ const features = [
     max-width: 620px;
   }
   .hero h1 {
-    font-size: var(--step-5);
-    margin: 1rem 0 1.2rem;
+    font-size: var(--step-4);
+    margin: 0.8rem 0 1rem;
   }
   .hero__lede {
     font-size: var(--step-1);
     color: var(--muted);
-    max-width: 62ch;
+    max-width: 54ch;
+    margin-bottom: 0;
   }
   .hero__lede code {
     color: var(--rail-deep);
@@ -364,10 +371,10 @@ const features = [
     display: flex;
     flex-wrap: wrap;
     gap: 0.8rem;
-    margin: 2rem 0 1.6rem;
+    margin: 1.5rem 0 1.1rem;
   }
   .hero__install {
-    margin: 1.4rem 0 0;
+    margin: 1rem 0 0;
     font-family: var(--font-mono);
     font-size: 0.9rem;
     color: var(--muted-2);
@@ -391,7 +398,7 @@ const features = [
     display: inline-flex;
     gap: 0.2rem;
     padding: 0.25rem;
-    margin: 0.4rem 0 0;
+    margin: 0.1rem 0 0;
     border: 1px solid var(--line-strong);
     border-radius: 999px;
     background: var(--bg-2);

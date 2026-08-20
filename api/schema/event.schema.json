@@ -23,7 +23,7 @@
       "description": "Event type. The enum below is informative, not exhaustive: newer engines emit types absent from this list and clients must ignore them.",
       "examples": [
         "run.started", "run.finished",
-        "plan.resolved", "plan.expanded", "plan.expansion_skipped",
+        "plan.resolved", "plan.expanded", "plan.expansion_skipped", "plan.generated",
         "step.created", "step.started", "step.finished", "step.retried", "step.log.appended",
         "cache.hit", "cache.miss", "cache.saved", "cache.degraded",
         "ws.snapshot", "ws.restored", "ws.evicted",

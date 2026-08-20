@@ -64,18 +64,6 @@ The difference from a failure is the run's result:
 
 See [Step states](/docs/steps/states/) for the whole taxonomy.
 
-## `When` versus `Affected`
-
-Both narrow a run, at different times and with different evidence:
-
-| | `When` | `Affected` |
-|---|---|---|
-| **Decides** | At run start | At `Build()` |
-| **Result** | The step is in the plan and settles `skipped_condition` | The step is never in the plan at all |
-| **Reads** | Run parameters and the coordinator's environment | Which units a change reaches |
-
-See [Affected](/docs/monorepo/affected/).
-
 ## Where to go next
 
 - **[Step states](/docs/steps/states/)**: `skipped_condition` and how it propagates.

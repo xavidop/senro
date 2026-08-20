@@ -99,17 +99,11 @@ Windows is not a supported target, deliberately: attach's security boundary is a
 peer-credential check with no Windows equivalent implemented, and senro fails to build for it. See
 [Attach security](/docs/attach/security/#platform-support) for the detail.
 
-## Versioning
+## Optional extras
 
-senro is one module and one tag: the whole repository, `api` included, ships under one `vX.Y.Z`,
-so `go get github.com/xavidop/senro@v1.2.3` pins everything at once. Releases are automated from
-Conventional Commits.
-
-The exception is `contrib/`, where each directory is a module of its own with its own version. The
-[Genkit analyzer](/docs/extend/analyzer-genkit/) is installed separately:
+The [AI failure analyzer](/docs/analyzers/genkit/) lives in its own module, so senro itself never
+pulls in an AI SDK. Install it only if you want it:
 
 ```bash
 go get github.com/xavidop/senro/contrib/genkitanalyzer
 ```
-
-[Concepts](/docs/concepts/) lists what is designed but not built.

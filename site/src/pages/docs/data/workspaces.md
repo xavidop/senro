@@ -42,7 +42,7 @@ verify.Step("test", exec.Command("go", "test", "./...")).
 | --- | --- |
 | `senro.ScopeRun` | The default. One directory for this run, shared by every step that mounts it, gone when the run ends |
 | `senro.ScopePersistent` | One directory on this machine that outlives the run. Requires bounds; see [Persistent workspaces](/docs/data/persistent/) |
-| `senro.ScopeStep` | **Refused** at `Build()`: nothing would outlive the step that would read it |
+| `senro.ScopeStep` | One fresh directory **per step**, shared with nobody and discarded with the run. Nothing is snapshotted from one, because no later step reads it |
 
 `MaxAge` or `MaxSize` on any scope other than `ScopePersistent` is refused too, because nothing
 would ever apply them.

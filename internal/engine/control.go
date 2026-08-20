@@ -116,9 +116,14 @@ type breakpoint struct {
 // semaphore pair, the wait group a dispatched retry must join, signal, and
 // what runAttempt needs (logs, opts).
 type schedHandle struct {
-	ctx         context.Context
-	p           *plan.Plan
-	byID        map[string]*plan.Node
+	ctx  context.Context
+	byID map[string]*plan.Node
+	// live points at schedule's own node set rather than copying it: a
+	// fragment spliced by a generator grows that set, and a schedHandle is
+	// rebuilt per request, so a copied slice header would leave a control
+	// request reasoning about the graph as it was before the last splice.
+	// Read under mu, like the maps beside it.
+	live        *[]*plan.Node
 	mu          *sync.Mutex
 	states      map[string]api.State
 	running     map[string]bool
@@ -399,7 +404,7 @@ func (rc *runCore) emitStepRetried(id string, attempt int, reason string) {
 // transitively, in plan order. Plan order, not discovery order, so a
 // rerun's events land in a deterministic sequence, exactly as schedule
 // sorts the ids of nodes that settle in one pass.
-func dependentsClosure(nodes []plan.Node, root string) []string {
+func dependentsClosure(nodes []*plan.Node, root string) []string {
 	in := map[string]bool{root: true}
 	// Repeated passes rather than a reverse index plus a queue: a node's
 	// dependents can appear before it in p.Nodes, so one pass can miss a
@@ -460,7 +465,7 @@ func (rc *runCore) handleRerunFrom(h schedHandle, req sink.ControlRequest) {
 	if !ok {
 		return
 	}
-	closure := dependentsClosure(h.p.Nodes, n.ID)
+	closure := dependentsClosure(*h.live, n.ID)
 
 	// One critical section for the check and every unsettle: validating
 	// under one lock and mutating under another would let a closure step

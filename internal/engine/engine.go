@@ -171,6 +171,44 @@ type Options struct {
 	// the free path: no goroutine, no queue, one nil check when a step
 	// settles failed. See analyze.go.
 	Analyze *AnalyzeOptions
+	// Generators resolves the Go generator for a step id, or returns nil.
+	//
+	// A lookup rather than a map because the set is not known when the run
+	// starts: a generated node can ITSELF declare a Go generator, and that
+	// node does not exist until the fragment declaring it has been produced.
+	// senro registers those as it goes, behind its own lock. A step declaring
+	// the JSON form needs no entry.
+	Generators func(stepID string) GenerateFunc
+
+	// MaxDepth bounds generator NESTING. A generated node may itself be a
+	// generator, and without a limit that is a fork bomb holding whatever
+	// credential the pipeline was given (design §2.8.2). Zero means
+	// DefaultMaxDepth.
+	MaxDepth int
+
+	// Regenerate makes a GENERATOR step ignore the action cache, so it runs
+	// and produces a fresh fragment instead of replaying its recorded one.
+	//
+	// A separate switch rather than a general cache bypass: replay is the
+	// default precisely because silently re-deriving a graph during what the
+	// operator thinks is a retry is a confusing failure, and asking for a new
+	// graph should be something they said out loud.
+	Regenerate bool
+
+	// Only restricts execution to these step ids; every other node is skipped
+	// with a reason, through the same machinery a When condition uses. Empty
+	// means the whole plan.
+	//
+	// The caller decides what "and its dependents" means and passes the whole
+	// set: the engine does not guess a closure from one id.
+	Only map[string]bool
+
+	// MaxNodes bounds how many nodes this run may hold in total, the plan's
+	// own included, and every splice is checked against it. Run-wide rather
+	// than per-fragment on purpose: a hundred generators producing fifty
+	// nodes each is the same runaway as one producing five thousand, and only
+	// a run-wide count sees it. Zero means DefaultMaxNodes.
+	MaxNodes int
 }
 
 // Run executes p to completion: it opens the run's ledger and log set under
@@ -307,6 +345,7 @@ func Run(ctx context.Context, p *plan.Plan, opts Options) (api.RunStatus, error)
 	rc := &runCore{
 		ledger: ledger, sink: opts.Sink, runID: opts.RunID, cancel: cancel,
 		oc: newOutcomes(len(p.Nodes)), ws: ws,
+		only: opts.Only, regenerate: opts.Regenerate,
 		redact: red, secrets: opts.Secrets,
 		execs: opts.Executors, defaultExec: opts.Executor,
 		groups:   buildGroupIndex(p),
@@ -657,6 +696,31 @@ type runCore struct {
 	// been abandoned (see shutdown.go's outcomes).
 	oc *outcomes
 
+	// live and byID are schedule's node set, shared with runStep so a
+	// generator can splice into the graph that is already running. Both are
+	// guarded by oc.mu, the same lock the scheduler reads them under. Set
+	// once by schedule before any step goroutine starts.
+	live *[]*plan.Node
+	byID map[string]*plan.Node
+
+	// genDepth and genParent record where a generated node came from: how
+	// deep its generator chain runs, and which generator produced it. Ids are
+	// hierarchical but must NOT be parsed to recover this, because a
+	// generator's own id can already contain a slash; recording it is exact.
+	// Guarded by oc.mu.
+	genDepth  map[string]int
+	genParent map[string]string
+
+	// subgraphSeq numbers senro.RunSubgraph invocations, so a function
+	// calling it in a loop gets one directory and one event range per call
+	// rather than all of them writing over each other.
+	subgraphSeq atomic.Int64
+
+	// only is Options.Only, read by pruned. Empty means the whole plan.
+	only map[string]bool
+	// regenerate is Options.Regenerate, read by cacheable.
+	regenerate bool
+
 	// ws owns this run's workspace directories; nil when the plan needs no
 	// storage and Options.Storage was nil, which Run's planNeedsStorage
 	// check keeps in agreement, so readers only guard against nil.
@@ -973,10 +1037,26 @@ func (rc *runCore) Fatal() error {
 // rc.oc.states directly is safe only on paths that have already waited for
 // every goroutine.
 func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, logs *eventlog.LogSet, controlStop <-chan struct{}) (map[string]api.State, error) {
+	// live is the node set this run SCHEDULES, which is not the same thing as
+	// the plan: a generator splices nodes into it while the run is going
+	// (design §2.8). It holds pointers, and generated nodes are allocated one
+	// at a time, because appending to p.Nodes would reallocate its backing
+	// array and leave every *plan.Node already handed to a running step
+	// pointing into the old one. Appending POINTERS cannot do that, which
+	// makes the hazard impossible to express rather than merely avoided.
+	//
+	// p.Nodes itself is left alone and stays the static, pre-generation plan.
+	// That is what plan.json on disk describes, and a p.Nodes that grew during
+	// the run would disagree with the file that claims to record it.
 	byID := make(map[string]*plan.Node, len(p.Nodes))
+	live := make([]*plan.Node, 0, len(p.Nodes))
 	for i := range p.Nodes {
 		byID[p.Nodes[i].ID] = &p.Nodes[i]
+		live = append(live, &p.Nodes[i])
 	}
+
+	rc.live = &live
+	rc.byID = byID
 
 	mu := &rc.oc.mu
 	states := rc.oc.states
@@ -1062,7 +1142,7 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 	paused := false
 	handle := func() schedHandle {
 		return schedHandle{
-			ctx: ctx, p: p, byID: byID, mu: mu, states: states, running: running,
+			ctx: ctx, byID: byID, live: &live, mu: mu, states: states, running: running,
 			breakpoints: breakpoints, paused: &paused,
 			wg: &wg, acquire: acquire, release: release, signal: signal,
 			logs: logs, opts: opts,
@@ -1139,7 +1219,7 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 		// TestControlRunPauseStillNoticesAnExternalCancel ending at exactly
 		// grace/2).
 		runCancelled := ctx.Err() != nil
-		ready, settled, reasons, held := readySet(p.Nodes, byID, states, running, runCancelled, rc.pruned, breakpoints)
+		ready, settled, reasons, held := readySet(live, byID, states, running, runCancelled, rc.pruned, breakpoints)
 		if paused {
 			// A paused run dispatches nothing new: ready nodes are DROPPED,
 			// stay pending, and are reclassified after the resume. Dropped
@@ -1162,7 +1242,7 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 		// Re-reading `running` in a later critical section was a real
 		// defect: a healthy plan got aborted as "dependency cycle or
 		// dangling need" when the last in-flight step completed in the gap.
-		done := len(states) == len(p.Nodes)
+		done := len(states) == len(live)
 		idle := len(ready) == 0 && len(settled) == 0
 		// held and paused separate "nothing can ever happen" from "nothing
 		// can happen until a client says so": a run held at a breakpoint,
@@ -1175,7 +1255,7 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 		// non-running node once ctx is done, so a cancelled run reaches
 		// `done` without needing stuck.
 		stuck := idle && len(running) == 0 && len(held) == 0 && !paused
-		unresolved := len(p.Nodes) - len(states)
+		unresolved := len(live) - len(states)
 		mu.Unlock()
 
 		if len(settled) > 0 {
@@ -1221,7 +1301,7 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 			return states, fmt.Errorf(
 				"engine: scheduler stuck: %d of %d nodes never became ready or "+
 					"cancelled (a dependency cycle or dangling need slipped past validation)",
-				unresolved, len(p.Nodes))
+				unresolved, len(live))
 		}
 		if idle {
 			// Nothing changed this pass: wait for an in-flight step to
@@ -1363,7 +1443,7 @@ var skipPropagation = map[api.State]string{
 // genuinely about to be dispatched, and never for a node that was not going
 // to run anyway.
 func readySet(
-	nodes []plan.Node,
+	nodes []*plan.Node,
 	byID map[string]*plan.Node,
 	states map[string]api.State,
 	running map[string]bool,
@@ -1374,7 +1454,7 @@ func readySet(
 	settled = make(map[string]api.State)
 	reasons = make(map[string]string)
 	for i := range nodes {
-		n := &nodes[i]
+		n := nodes[i]
 		if _, terminal := states[n.ID]; terminal {
 			continue
 		}

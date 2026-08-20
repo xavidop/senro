@@ -40,6 +40,11 @@ func checkConditions(p *plan.Plan) error {
 // the reason a node did not run reads in the same order a person reads the
 // graph.
 func (rc *runCore) pruned(n *plan.Node) (bool, string) {
+	// The selection first, and before any condition: a step nobody asked for
+	// is out of this run whatever its conditions would have said.
+	if len(rc.only) > 0 && !rc.only[n.ID] {
+		return true, "not selected for this run"
+	}
 	if len(n.When) == 0 {
 		return false, ""
 	}

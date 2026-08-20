@@ -948,17 +948,14 @@ func TestAPureStepWithNoInputsIsRejected(t *testing.T) {
 	}
 }
 
-func TestScopeStepIsStillRefused(t *testing.T) {
+func TestScopeStepBuildsNow(t *testing.T) {
 	pipe := senro.New("ci")
 	l := pipe.Workflow("main")
 	ws := senro.Workspace("w", senro.Scope(senro.ScopeStep))
-	l.Step("s", exec.Command("true")).Mount(ws.At("/w", senro.RW))
-	_, err := pipe.Build()
-	if err == nil {
-		t.Fatal("ScopeStep was accepted; it is still declared-and-refused")
-	}
-	if !strings.Contains(err.Error(), "step") {
-		t.Errorf("error %q must name the scope it refused", err)
+	l.Step("s", exec.Command("true")).WorkDir("/w").Mount(ws.At("/w", senro.RW))
+
+	if _, err := pipe.Build(); err != nil {
+		t.Fatalf("ScopeStep must build: %v", err)
 	}
 }
 

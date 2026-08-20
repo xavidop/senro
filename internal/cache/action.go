@@ -52,6 +52,14 @@ type Result struct {
 	// Bytes is the total uncompressed size stored for this entry: what
 	// cache.saved reports and the GC budgets against.
 	Bytes int64 `json:"bytes"`
+	// Fragment is the CAS digest of the plan fragment a GENERATOR step
+	// produced, and empty for every other step.
+	//
+	// Storing the digest rather than the fragment keeps an entry small and
+	// lets two generators that produced the same graph share one blob. It is
+	// what makes a nondeterministic generator reproducible: a hit restores
+	// this recording instead of asking the generator again (design §2.8.1).
+	Fragment string `json:"fragment,omitempty"`
 }
 
 // Entry is a key and its result, stored together. Storing the key rather

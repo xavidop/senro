@@ -24,6 +24,7 @@ const (
 
 	PlanResolved         Type = "plan.resolved"
 	PlanExpanded         Type = "plan.expanded"
+	PlanGenerated        Type = "plan.generated"
 	PlanExpansionSkipped Type = "plan.expansion_skipped"
 
 	StepCreated     Type = "step.created"
@@ -180,8 +181,6 @@ const (
 // that emitting them later is an additive change rather than a schema
 // revision.
 const (
-	PlanGenerated Type = "plan.generated"
-
 	// ClientAttached and ClientDetached are reserved rather than declared
 	// because they cannot yet be emitted from where they occur: the attach
 	// server (internal/attachsrv) observes connections, but only the
@@ -202,7 +201,8 @@ const (
 var declaredTypes = map[Type]bool{
 	RunStarted: true, RunFinished: true,
 	PlanResolved: true, PlanExpanded: true, PlanExpansionSkipped: true,
-	StepCreated: true, StepStarted: true, StepFinished: true,
+	PlanGenerated: true,
+	StepCreated:   true, StepStarted: true, StepFinished: true,
 	StepRetried: true, StepLogAppended: true,
 	CacheHit: true, CacheMiss: true, CacheSaved: true, CacheDegraded: true,
 	WSSnapshot: true, WSRestored: true, WSEvicted: true, BinaryStaged: true,
@@ -220,7 +220,6 @@ var declaredTypes = map[Type]bool{
 // this build should treat a newer engine's early adoption of one as
 // unsurprising, not unknown.
 var reservedTypes = map[Type]bool{
-	PlanGenerated:  true,
 	ClientAttached: true, ClientDetached: true,
 }
 

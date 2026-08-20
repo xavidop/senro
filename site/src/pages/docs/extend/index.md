@@ -10,16 +10,19 @@ register, no plugin loader, and nothing under `internal/` to import.
 
 ## The five extension points
 
+Each one lives next to the built-ins it extends, so you can check whether something already does
+the job before writing anything.
+
 | You want to | Implement | Page |
 | --- | --- | --- |
-| Fan out over a layout no shipped graph reads | `senro.UnitGraph`, `senro.UnitAffector` | [Unit graph](/docs/extend/unit-graph/) |
-| Trigger on an event source senro does not parse | `trigger.Provider`, `trigger.Matcher` | [Trigger source](/docs/extend/trigger-source/) |
-| Send a run's result somewhere senro has no destination for | `notify.Renderer`, `notify.Requester` | [Notifier](/docs/extend/notifier/) |
-| Turn the event stream into traces, metrics or anything else | `senro.Sink` | [Trace exporter](/docs/extend/exporter/) |
-| Have a program explain a failed step | `senro.Analyzer` | [Failure analyzer](/docs/extend/analyzer/) |
+| Fan out over a layout no [shipped graph](/docs/monorepo/unit-graphs/) reads | `senro.UnitGraph`, `senro.UnitAffector` | [Write a unit graph](/docs/monorepo/unit-graphs/custom/) |
+| Trigger on an event source [senro does not parse](/docs/triggers/events/) | `trigger.Provider`, `trigger.Matcher` | [Write a trigger source](/docs/triggers/custom/) |
+| Send a run's result somewhere [senro has no destination for](/docs/notifications/) | `notify.Renderer`, `notify.Requester` | [Write a destination](/docs/notifications/custom/) |
+| Turn the event stream into traces, metrics or anything else | `senro.Sink` | [Write a trace exporter](/docs/extend/exporter/) |
+| Have a program [explain a failed step](/docs/analyzers/) | `senro.Analyzer` | [Write an analyzer](/docs/analyzers/custom/) |
 
 Each page ends with a worked example. The analyzer has two: a provider-free one you can run with no
-key, and [`contrib/genkitanalyzer`](/docs/extend/analyzer-genkit/), a shipping package backed by a
+key, and [`contrib/genkitanalyzer`](/docs/analyzers/genkit/), a shipping package backed by a
 real model that you install rather than copy.
 
 ## What they have in common
@@ -49,7 +52,7 @@ These are extension points too, but they are small enough to be documented where
 | `change.Source` | Where "what changed" comes from, when it is not a trigger | [Affected sets](/docs/monorepo/affected/) |
 | `senro.DurationHistory` | How long each unit took last time, which is what `Partition` balances by | [Partitioning](/docs/monorepo/partition/) |
 | `senro.Flusher`, `senro.Reporter` | Optional interfaces a `Sink` may also implement | [Trace exporter](/docs/extend/exporter/) |
-| `notify.ResponseReader` | A `Requester` that needs to read the response it got | [Notifier](/docs/extend/notifier/) |
+| `notify.ResponseReader` | A `Requester` that needs to read the response it got | [Notifier](/docs/notifications/custom/) |
 
 ## What is deliberately not a seam
 
@@ -58,7 +61,7 @@ These are extension points too, but they are small enough to be documented where
 - **`trigger.Option`.** Its method is unexported and `trigger.Matcher` is the way in, because the
   set of questions a trigger can ask has to stay the set senro can render into a run's record.
 - **`api.Remedy`.** An analyzer's remedy comes from a closed vocabulary of one, so the most an
-  unsupervised run can do is retry a step. See [Failure analyzer](/docs/extend/analyzer/).
+  unsupervised run can do is retry a step. See [Failure analyzer](/docs/analyzers/custom/).
 
 ## Where to go next
 

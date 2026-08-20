@@ -97,8 +97,9 @@ plan before the first step starts.
 
 ## What `Expand` doesn't do (yet)
 
-- A step's own output producing new nodes mid-run, and `RunSubgraph`, are designed but **not
-  built**.
+- A step's own output producing new nodes mid-run is a **generator**, not an expansion: see
+  [Generated subgraphs](/docs/monorepo/generators/). For control flow that is not a graph at all,
+  a function can run one itself with `senro.RunSubgraph`.
 - There is deliberately no `FailFast` for an expansion. senro reports every failing sibling
   individually rather than cancelling the rest of a fan-out when one child fails.
 

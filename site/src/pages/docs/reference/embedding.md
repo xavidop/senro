@@ -84,7 +84,7 @@ Both take the same options:
 | `WithRemoteCache(rc)` | Tiers the content store and the action cache over an S3-compatible bucket or an OCI registry repository. `senro.RemoteCacheFromEnv()` reads the same settings from `SENRO_REMOTE_CACHE` and its companions; an explicit option wins. See [Shared cache](/docs/data/shared-cache/). |
 | `WithFuncBuild(pkg)` | Names the Go package this program was built from, so a `Func` step on a target of another platform can be cross-compiled for it. `senro run` sets it for you. See [A Func step off the coordinator](/docs/executors/func-remote/). |
 | `WithTraceContext(tp, ts)` | Adopts an inbound W3C trace, so the run's events land under the CI job or webhook delivery that started it rather than beginning a trace of their own. See [Writing a trace exporter](/docs/extend/exporter/). |
-| `WithAnalyzer(a, opts...)` | Hands `Run` an analyzer of your own, offered every step that fails. Nothing it proposes is applied without a human approving it. See [Writing an analyzer](/docs/extend/analyzer/). |
+| `WithAnalyzer(a, opts...)` | Hands `Run` an analyzer of your own, offered every step that fails. Nothing it proposes is applied without a human approving it. See [Writing an analyzer](/docs/analyzers/custom/). |
 
 `Run` with no options costs exactly what the engine costs: **no attach server, and not one extra
 goroutine.** A run directory and ID still exist either way, generated the same way `attach.Listen`

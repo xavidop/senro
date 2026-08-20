@@ -66,6 +66,29 @@ function remarkBaseLinks() {
   };
 }
 
+// movedPages keeps the URLs published before the "write your own X" pages were
+// moved next to the built-ins they extend.
+//
+// The target is base-prefixed by hand, unlike the key. Astro rewrites `base`
+// into the file layout (so the key stays root-relative and the emitted page
+// lands where the base serves it) but NOT into a redirect's target, so a bare
+// "/docs/analyzers/custom" sends a GitHub Pages visitor to <origin>/docs/...
+// when the site lives at <origin>/senro/docs/... . The link checker cannot see
+// it either: it strips the base off every href before resolving, so both forms
+// resolve to the same dist file and the broken one passes. This is the same
+// hazard remarkBaseLinks exists for on Markdown links.
+const moved = {
+  "/docs/extend/analyzer": "/docs/analyzers/custom",
+  "/docs/extend/analyzer-genkit": "/docs/analyzers/genkit",
+  "/docs/extend/notifier": "/docs/notifications/custom",
+  "/docs/extend/trigger-source": "/docs/triggers/custom",
+  "/docs/extend/unit-graph": "/docs/monorepo/unit-graphs/custom",
+};
+const basePrefix = base.replace(/\/$/, "");
+const movedPages = Object.fromEntries(
+  Object.entries(moved).map(([from, to]) => [from, basePrefix + to]),
+);
+
 export default defineConfig({
   // The origin the site is actually served from. Canonical links, the
   // sitemap and robots.txt's Sitemap line are all derived from it, so a
@@ -88,7 +111,26 @@ export default defineConfig({
   // /llms.txt (index) and /llms-full.txt (all docs as one Markdown file) are
   // native static endpoints under src/pages, so they render in dev and build
   // alike. See src/lib/docs-content.ts.
+  // The four "write your own X" pages and the two analyzer pages used to live
+  // under /docs/extend/. They now sit next to the built-ins they extend, so a
+  // reader arrives at the shipped destinations, providers, graphs and analyzers
+  // first and at the interface second. These keep every link published before
+  // that move working.
+  redirects: movedPages,
   integrations: [sitemap()],
+  // mermaid is imported dynamically, from a client script that only runs on
+  // pages carrying a diagram. Vite therefore does not see it during its
+  // initial dependency scan and pre-bundles it lazily, on the first page that
+  // asks - and that re-optimization invalidates the module graph mid-request,
+  // so the very import that triggered it fails with
+  // "504 (Outdated Optimize Dep)" and the diagram never renders. Naming it
+  // here pre-bundles it up front, so the dynamic import always hits a warm,
+  // stable dep and diagrams render on first load.
+  vite: {
+    optimizeDeps: {
+      include: ["mermaid"],
+    },
+  },
   markdown: {
     remarkPlugins: [remarkMermaid, remarkBaseLinks],
     shikiConfig: {
