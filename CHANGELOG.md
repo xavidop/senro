@@ -2,6 +2,13 @@
 
 All notable changes to senro are documented here. This file is generated from Conventional Commits by semantic-release.
 
+# [1.2.0](https://github.com/xavidop/senro/compare/v1.1.0...v1.2.0) (2026-08-21)
+
+
+### Features
+
+* go func as a handler and trigger servers ([18f00bb](https://github.com/xavidop/senro/commit/18f00bb7f5720e56dbcdbf6329b7d001fe37e5b5))
+
 # [1.1.0](https://github.com/xavidop/senro/compare/v1.0.6...v1.1.0) (2026-08-20)
 
 
