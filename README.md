@@ -23,10 +23,9 @@ configure. Your Go code builds an immutable graph of workflows and steps, `senro
 a plan, executes it, and exposes one append-only event stream that a terminal UI, a browser page,
 or a script can attach to, live, to watch and steer the run.
 
-CI/CD is the most familiar thing to build with it: a pipeline that tests, builds and deploys reads
-exactly like a CI job. It is not the boundary. A data pipeline, a batch job, an infrastructure
-rollout, or a release script is built the same way: steps with dependencies, retries, failure
-handlers, and one event stream.
+CI/CD is the most familiar thing to build with it, but not the boundary: a data pipeline, a batch
+job, an infrastructure rollout or a release script is built the same way, out of steps with
+dependencies, retries, failure handlers, and one event stream.
 
 ## Why
 
@@ -40,8 +39,10 @@ debugger.
 
 ## Features
 
-- **Pipelines as code.** `New`, `Workflow`, `Step`, `Needs`, `Retry`, `Timeout`, `OnFailure`,
-  `Always`: typed, composable, testable. See [Pipelines](site/src/pages/docs/steps/index.md).
+- **Pipelines as code.** `Workflow`, `Step`, `Needs`, `Retry`, `Timeout`, `OnFailure`, `Always`,
+  and `When` conditions that prune the graph per branch or run parameter: typed, composable,
+  testable. See [Pipelines](site/src/pages/docs/steps/index.md) and
+  [Conditions](site/src/pages/docs/steps/conditions.md).
 - **Definition, plan, execution.** `Build()` resolves your code into an immutable, validated
   `Plan`; the engine executes the plan, never your code directly. That is what makes a run
   inspectable, replayable and attachable. See [Concepts](site/src/pages/docs/concepts.md).
@@ -49,9 +50,9 @@ debugger.
   to WebAssembly), or plain streaming lines, all folding the same event stream, live over a socket
   or replayed from disk with the same client. See [Attach](site/src/pages/docs/attach/index.md).
 - **Control, not just watch.** Cancel, pause and resume a run; retry, skip and re-run from a step;
-  set breakpoints; open an interactive shell inside a live step's sandbox, with a real terminal
-  where the executor can host one. See [Control operations](site/src/pages/docs/attach/control-ops.md)
-  and [The shell](site/src/pages/docs/attach/shell.md).
+  set breakpoints; open an interactive shell inside a live step's sandbox. See
+  [Control operations](site/src/pages/docs/attach/control-ops.md) and
+  [The shell](site/src/pages/docs/attach/shell.md).
 - **Four executors.** Local processes, containers on a local Docker daemon, one pod per step on
   Kubernetes, and processes on a remote host over your own SSH configuration. Chosen per workflow
   with `senro.On(...)`. See [Kubernetes](site/src/pages/docs/executors/kubernetes.md) and
@@ -64,11 +65,19 @@ debugger.
   `gowork`, `cargo`, `jswork`, `maven`, `gradle`, `pyproject`, `bazel`), with per-unit edges
   (`NeedsEach`), duration-balanced sharding (`Partition`), and change-scoped runs (`Affected`).
   See [Fan-out](site/src/pages/docs/monorepo/fan-out.md) and [Monorepos](site/src/pages/docs/monorepo/index.md).
+- **Graphs decided at runtime.** When the list only exists once something has run, `Generates`
+  returns a `Fragment` the engine splices into the plan, so each item becomes a real step with its
+  own log, state, cache entry and retry, instead of a shell loop senro cannot see into. See
+  [Generate a subgraph](site/src/pages/docs/monorepo/generators.md).
 - **Caching that tells the truth.** Named workspaces snapshotted between steps (and, with bounds,
   between runs), an opt-in `Pure()` action cache keyed off declared inputs, a best-effort scratch
   cache, and a shared remote tier over an S3-compatible bucket or an OCI registry so a fleet
   starts warm. `senro verify --recheck-pure` audits purity claims empirically. See
   [Shared cache](site/src/pages/docs/data/shared-cache.md).
+- **Runs that outlive the runner.** With the shared cache on, each step's output and the sealed
+  event ledger are archived as the run goes; `senro logs fetch <id>` brings a destroyed CI
+  runner's failed build back to read locally. See
+  [Archiving a run](site/src/pages/docs/data/archiving.md).
 - **Secrets that stay out of logs.** Values are delivered as files, never argv or environment
   values; output is redacted, unsafe channels are refused outright before anything runs. Built on
   [mamori](https://github.com/xavidop/mamori). See [Secrets](site/src/pages/docs/secrets/index.md).
@@ -193,7 +202,9 @@ serves it locally with Node 22 via nvm). It is the primary reference for what is
   [Getting started](site/src/pages/docs/quickstart.md),
   [Concepts](site/src/pages/docs/concepts.md)
 - **Build:** [Pipelines](site/src/pages/docs/steps/index.md),
+  [Conditions](site/src/pages/docs/steps/conditions.md),
   [Fan-out](site/src/pages/docs/monorepo/fan-out.md), [Monorepos](site/src/pages/docs/monorepo/index.md),
+  [Subgraphs](site/src/pages/docs/monorepo/generators.md),
   [Failure handling](site/src/pages/docs/steps/states.md),
   [Secrets](site/src/pages/docs/secrets/index.md), [Kubernetes](site/src/pages/docs/executors/kubernetes.md),
   [SSH](site/src/pages/docs/executors/ssh.md)
@@ -203,7 +214,8 @@ serves it locally with Node 22 via nvm). It is the primary reference for what is
 - **Use:** [Embedding](site/src/pages/docs/reference/embedding.md),
   [Triggers](site/src/pages/docs/triggers/index.md),
   [Notifications](site/src/pages/docs/notifications.md),
-  [Shared cache](site/src/pages/docs/data/shared-cache.md), [CLI](site/src/pages/docs/cli/index.md),
+  [Shared cache](site/src/pages/docs/data/shared-cache.md),
+  [Archiving](site/src/pages/docs/data/archiving.md), [CLI](site/src/pages/docs/cli/index.md),
   [Reading a failed run](site/src/pages/docs/reference/debugging.md)
 - **Extend:** [Write a unit graph](site/src/pages/docs/monorepo/unit-graphs/custom.md),
   [a trigger source](site/src/pages/docs/triggers/custom.md),
@@ -234,6 +246,5 @@ what the container, Kubernetes and SSH executors' tests need, and how releases a
 ## About
 
 `senro` is built by [Xavier Portilla Edo](https://github.com/xavidop), and mirrors the structure,
-tooling and release process of his other Go project,
-[`mamori`](https://github.com/xavidop/mamori) (typed, watchable configuration and secrets for Go),
-which senro's own secrets support is built directly on top of.
+tooling and release process of [`mamori`](https://github.com/xavidop/mamori) (typed, watchable
+configuration and secrets for Go), which senro's secrets support is built on.
