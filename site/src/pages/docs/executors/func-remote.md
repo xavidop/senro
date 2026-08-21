@@ -106,7 +106,9 @@ does not outlive the pod and senro owns no cluster object to keep a copy in, so 
 attempt** and `reused` is always `false`; a genuinely large pipeline binary is the one thing that makes
 this executor a worse home for a func step than an ssh host. `k8s.DelegateSecrets()` is refused for a
 func step that declares a secret: delegation is a source URI for a *command* to resolve, and a function
-reads `ctx.Secret(name)`.
+reads `ctx.Secret(name)`. See
+[why the two cannot mix](/docs/steps/functions/#why-delegated-secrets-and-func-steps-cannot-mix) for
+the two ways out.
 
 ## What your function sees
 
@@ -211,11 +213,27 @@ binary you built for the host yourself.
 | The step settled as `panicked` | A function panicked, exactly as on the coordinator; the stack is in its stderr log, and panics are not retried ([States](/docs/steps/states/)) |
 | A function wants to report infrastructure | Wrap the executor's infra sentinel; `retry.OnInfra()` matches it after the round trip |
 
+## Func handlers come along
+
+A [handler](/docs/steps/handlers/) declares no executor of its own and runs wherever its parent
+ran, and a `senro.Func` handler is staged and re-entered on that target exactly as a func step is.
+
+```go
+deploy.Step("apply", exec.Command("./deploy.sh")).
+	OnFailure(senro.Handler("collect", senro.Func("ci/collect", CollectParams{})))
+```
+
+- It **reuses the binary the parent step already staged**, so a handler costs no second transfer.
+  `binary.staged` still fires for it, with `reused: true`, because a run that is paying a transfer
+  per step should be visible as one.
+- `ctx.Failure()` tells it what broke, carried over the wire with the rest of the step state. See
+  [Failure handlers](/docs/steps/handlers/#a-handler-can-be-a-go-function).
+- The one refusal left: a func handler that declares a **delegated** secret, for the same reason a
+  func step cannot. Delegation hands the pod a source URI for the step's own *command* to resolve,
+  and a function has no environment to read it from.
+
 ## What is not here
 
-- **Func *handlers* on any non-local step.** A handler inherits its parent's executor and declares none
-  of its own, so there is nothing to key the staging to; use an `exec` handler for cleanup on the target
-  ([Handlers](/docs/steps/handlers/)).
 - **Windows targets.** Refused by name: a staged binary runs through a POSIX shell, is `chmod`ded
   `0700` and reaped with `rm -rf`, none of which reaches a Windows host.
 - **Garbage collection**, so the ssh staging directory grows by one binary per release.

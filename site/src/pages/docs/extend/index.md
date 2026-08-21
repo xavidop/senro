@@ -49,6 +49,7 @@ These are extension points too, but they are small enough to be documented where
 | Seam | What it is | Where |
 | --- | --- | --- |
 | `senro.RegisterFunc` | A Go function as a step kind, instead of a command | [Function steps](/docs/steps/functions/) |
+| `retry.RegisterPredicate` | A Go function deciding whether a failed attempt is worth retrying, under a name a plan can record | [Retries](/docs/steps/retries/#deciding-in-go-retryregisterpredicate) |
 | `change.Source` | Where "what changed" comes from, when it is not a trigger | [Affected sets](/docs/monorepo/affected/) |
 | `senro.DurationHistory` | How long each unit took last time, which is what `Partition` balances by | [Partitioning](/docs/monorepo/partition/) |
 | `senro.Flusher`, `senro.Reporter` | Optional interfaces a `Sink` may also implement | [Trace exporter](/docs/extend/exporter/) |

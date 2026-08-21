@@ -199,11 +199,7 @@
 // No second control master per host, so sshd's MaxSessions caps how many of
 // a run's steps share one connection; anything over maxMuxSessions opens its
 // own. No bastion support beyond the operator's own ProxyJump, which is the
-// point of shelling out. No func HANDLERS: plan.Validate refuses a func OnFailure
-// or Always handler whose parent runs anywhere but the coordinator, because
-// a handler inherits its parent's executor and there is nothing to key its
-// staging to; func STEPS do run here, over staging.go's StageBinary and
-// internal/binprov. No host-facts cache across runs. No
+// point of shelling out. No host-facts cache across runs. No
 // `senro ssh gc`: the reaper removes what a coordinator's death leaves. No
 // incremental or resumable workspace transfer, and no disk-space
 // precondition before one.

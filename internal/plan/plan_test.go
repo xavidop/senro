@@ -1577,50 +1577,41 @@ func TestValidateAcceptsAFuncStepOnADelegatingTargetWithNoSecrets(t *testing.T) 
 	}
 }
 
-// TestValidateRefusesAFuncHandlerOnANonLocalStep guards a real trap: a
-// handler's own Executor is always nil (Validate refuses one), so
-// nodeShape's container-func refusal never fires for a handler, yet the
-// handler inherits its PARENT's executor at run time. Without this check a
-// func handler on a container step was accepted at Build and then ran on
-// the coordinator with a container-only secret path it could never open.
-// Caught here because nodeShape alone cannot see the parent.
-func TestValidateRefusesAFuncHandlerOnANonLocalStep(t *testing.T) {
-	p := &plan.Plan{Version: 1, Nodes: []plan.Node{{
-		ID: "deploy", Kind: "exec", Cmd: []string{"helm"},
-		Executor: &plan.ExecutorSpec{Kind: plan.ExecutorContainer, Image: "alpine:3"},
-		OnFailure: []plan.Node{{
-			ID: "notify", Kind: "func", Func: &plan.FuncSpec{Name: "notify/slack"},
-		}},
-	}}}
-	err := p.Validate()
-	if err == nil {
-		t.Fatal("Validate accepted a func handler on a step whose parent runs on the container executor")
-	}
-	if !strings.Contains(err.Error(), "notify") {
-		t.Fatalf("the refusal does not name the handler: %v", err)
-	}
-	if !strings.Contains(err.Error(), "func HANDLERS on the coordinator only") {
-		t.Fatalf("the refusal does not say func handlers run on the coordinator only: %v", err)
+// TestValidateAcceptsAFuncHandlerOnANonLocalStep is the positive form of a
+// rule this build used to have. A handler declares no executor of its own
+// and inherits its parent's, and the engine now resolves that target once
+// at the call site (engine.invocation) and stages the binary against it, so
+// a func handler runs wherever its parent ran: on an ssh host, in a
+// container, in a pod. Cleanup and evidence collection belong on the
+// machine that broke, not on the coordinator.
+func TestValidateAcceptsAFuncHandlerOnANonLocalStep(t *testing.T) {
+	for _, ex := range []*plan.ExecutorSpec{
+		{Kind: plan.ExecutorContainer, Image: "alpine:3"},
+		{Kind: plan.ExecutorSSH, Host: "build@ci-1"},
+	} {
+		onFailure := &plan.Plan{Version: 1, Nodes: []plan.Node{{
+			ID: "deploy", Kind: "exec", Cmd: []string{"helm"}, Executor: ex,
+			OnFailure: []plan.Node{{
+				ID: "notify", Kind: "func", Func: &plan.FuncSpec{Name: "notify/slack"},
+			}},
+		}}}
+		if err := onFailure.Validate(); err != nil {
+			t.Errorf("Validate refused a func OnFailure handler on the %q executor: %v", ex.Kind, err)
+		}
+
+		// The Always list gets the same treatment: nothing here is
+		// specific to OnFailure.
+		always := &plan.Plan{Version: 1, Nodes: []plan.Node{{
+			ID: "deploy", Kind: "exec", Cmd: []string{"helm"}, Executor: ex,
+			Always: []plan.Node{{
+				ID: "cleanup", Kind: "func", Func: &plan.FuncSpec{Name: "notify/slack"},
+			}},
+		}}}
+		if err := always.Validate(); err != nil {
+			t.Errorf("Validate refused a func Always handler on the %q executor: %v", ex.Kind, err)
+		}
 	}
 
-	// The Always handler list gets the exact same rule: nothing about this
-	// check is specific to OnFailure.
-	always := &plan.Plan{Version: 1, Nodes: []plan.Node{{
-		ID: "deploy", Kind: "exec", Cmd: []string{"helm"},
-		Executor: &plan.ExecutorSpec{Kind: plan.ExecutorContainer, Image: "alpine:3"},
-		Always: []plan.Node{{
-			ID: "cleanup", Kind: "func", Func: &plan.FuncSpec{Name: "notify/slack"},
-		}},
-	}}}
-	if err := always.Validate(); err == nil {
-		t.Fatal("Validate accepted a func Always handler on a container step")
-	}
-
-	// The symmetric positive: a func handler on a LOCAL (or unspecified,
-	// which defaults to local) step's parent is exactly what
-	// TestAFuncHandlerRunsToo already exercises end to end, and must keep
-	// working: this check must not refuse every func handler, only the
-	// ones whose parent cannot actually host them.
 	local := &plan.Plan{Version: 1, Nodes: []plan.Node{{
 		ID: "deploy", Kind: "exec", Cmd: []string{"helm"},
 		OnFailure: []plan.Node{{
@@ -1629,6 +1620,51 @@ func TestValidateRefusesAFuncHandlerOnANonLocalStep(t *testing.T) {
 	}}}
 	if err := local.Validate(); err != nil {
 		t.Fatalf("Validate refused a func handler on a local step: %v", err)
+	}
+}
+
+// The one shape that still cannot hold, and the reason validateHandlers
+// still reads the parent's executor: delegation hands the pod each secret's
+// SOURCE for the step's own COMMAND to resolve, and a function has no
+// environment to read it from. nodeShape's identical check looks at the
+// handler's own (always nil) executor, so without the parent-aware one a
+// func handler here would read "" for every credential.
+func TestValidateRefusesAFuncHandlerNeedingADelegatedSecret(t *testing.T) {
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{{
+		ID: "deploy", Kind: "exec", Cmd: []string{"helm"},
+		Executor: &plan.ExecutorSpec{
+			Kind: plan.ExecutorK8s, Namespace: "ci", ServiceAccount: "senro-ci",
+			Image:           "ghcr.io/acme/runner@sha256:" + strings.Repeat("a", 64),
+			DelegateSecrets: true,
+		},
+		OnFailure: []plan.Node{{
+			ID: "notify", Kind: "func", Func: &plan.FuncSpec{Name: "notify/slack"},
+			Secrets: []plan.SecretSpec{{Name: "Kubeconfig"}},
+		}},
+	}}}
+	err := p.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted a func handler asking for a delegated secret")
+	}
+	if !strings.Contains(err.Error(), "Kubeconfig") {
+		t.Fatalf("the refusal does not name the secret: %v", err)
+	}
+
+	// A func handler on the SAME delegating target that asks for no secret
+	// is fine: the rule is about the channel, not about the executor.
+	none := &plan.Plan{Version: 1, Nodes: []plan.Node{{
+		ID: "deploy", Kind: "exec", Cmd: []string{"helm"},
+		Executor: &plan.ExecutorSpec{
+			Kind: plan.ExecutorK8s, Namespace: "ci", ServiceAccount: "senro-ci",
+			Image:           "ghcr.io/acme/runner@sha256:" + strings.Repeat("a", 64),
+			DelegateSecrets: true,
+		},
+		OnFailure: []plan.Node{{
+			ID: "notify", Kind: "func", Func: &plan.FuncSpec{Name: "notify/slack"},
+		}},
+	}}}
+	if err := none.Validate(); err != nil {
+		t.Fatalf("Validate refused a func handler that declares no secret: %v", err)
 	}
 }
 

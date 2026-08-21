@@ -115,25 +115,60 @@ func parseEnvelope(b []byte, providers []Provider) (*Event, error) {
 	if err := json.Unmarshal(b, &env); err != nil {
 		return nil, fmt.Errorf("the event is not JSON this build understands: %w", err)
 	}
-	switch {
-	case env.Provider == "":
+	if env.Provider == "" {
 		return nil, errNoProvider
-	case env.Event == "":
-		return nil, fmt.Errorf("the event names provider %q but no event type", env.Provider)
-	case len(env.Payload) == 0:
-		return nil, fmt.Errorf("the %s %q event carries no payload", env.Provider, env.Event)
+	}
+	return dispatch(env.Provider, env.Event, env.Payload, custom)
+}
+
+// Parse builds an Event from a source's own name, its own name for what
+// happened, and its raw body, for a caller that already has the three
+// separately: an HTTP handler holding a request's headers and body, most of
+// all.
+//
+//	ev, err := trigger.Parse("github", r.Header.Get("X-GitHub-Event"), body)
+//
+// It is what ReadEvent does once the envelope is unwrapped, so the two agree
+// about everything by construction. A server does not have to build an
+// envelope only for this package to take it apart again; see FromRequest,
+// which is this with the header names and the signature check filled in.
+//
+// providers are event sources of the caller's own, joining the built-ins,
+// exactly as for LoadEvent. That is how a custom Provider is reached from a
+// server: name it here, since a source senro has never seen has no header
+// FromRequest could recognise it by.
+func Parse(provider, event string, payload []byte, providers ...Provider) (*Event, error) {
+	custom, err := indexProviders(providers)
+	if err != nil {
+		return nil, err
+	}
+	if provider == "" {
+		return nil, errNoProvider
+	}
+	return dispatch(provider, event, payload, custom)
+}
+
+// dispatch routes one already-separated delivery to the provider that owns
+// it. The single funnel every entry point goes through, so a guarantee
+// Provider documents cannot hold on one path and not another.
+func dispatch(provider, event string, payload []byte, custom map[string]Provider) (*Event, error) {
+	switch {
+	case event == "":
+		return nil, fmt.Errorf("the event names provider %q but no event type", provider)
+	case len(payload) == 0:
+		return nil, fmt.Errorf("the %s %q event carries no payload", provider, event)
 	}
 	// Built-ins first (indexProviders already refused their names), and both
 	// go through fromProvider: one funnel, so every guarantee Provider
 	// documents is held against senro's own parsers too.
-	p := builtIn(env.Provider)
+	p := builtIn(provider)
 	if p == nil {
-		p = custom[env.Provider]
+		p = custom[provider]
 	}
 	if p == nil {
-		return nil, fmt.Errorf("unknown provider %q: %s", env.Provider, knownProviders(custom))
+		return nil, fmt.Errorf("unknown provider %q: %s", provider, knownProviders(custom))
 	}
-	return fromProvider(p, env.Event, env.Payload)
+	return fromProvider(p, event, payload)
 }
 
 // neutralPayload is the provider-neutral shape. Deliberately not Event

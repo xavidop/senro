@@ -60,10 +60,29 @@ flowchart LR
 | No trigger matched | `trigger.ErrNoMatch` | 78 (`EX_CONFIG`) |
 | The wiring is wrong | an ordinary error | 1 |
 
-The third row matters. `OnTag(trigger.Semver("~>1.0"))` is a constraint that does not parse, and
-`OnPullRequest(trigger.Paths("services/**"))` is a question a `pull_request` payload carries no
-answer to. Both are loud errors, because a pipeline that silently never runs is one nobody notices
-is broken.
+The third row is the one worth understanding, because it is what keeps the second row honest:
+
+- **No trigger matched** means the filters worked and the answer was no. This event is simply not
+  one you asked to run for, such as a push to a branch other than `main`.
+- **The wiring is wrong** means senro could not work out an answer at all, and refuses to report
+  that as a no.
+
+Two ways to land in the third row:
+
+```go
+trigger.OnTag(trigger.Semver("~>1.0"))
+// error: Semver("~>1.0"): ...   "~>1.0" is not a constraint senro can parse, so there is
+// nothing to compare a tag against. Write ">=1.0.0" or "^1.0.0".
+
+trigger.OnPullRequest(trigger.Paths("services/**"))
+// error: Paths was asked of a pull_request event that carries no changed-file list, so it can
+// be neither true nor false. A GitHub pull_request payload does not include one; fetching it is
+// a separate API call. Put the list in the event's "files" field if you have it.
+```
+
+senro could have called either one "no match" and exited 78. Then the pipeline would never run,
+every event would look like a clean skip, and nobody would find out until someone asked why the
+last release was never built. An ordinary error and exit 1 is loud on the first event instead.
 
 **A no-match is genuinely inert.** No run directory, no `events.jsonl`, no partial state. `Run`
 decides before it has opened the cache or started a goroutine, so being fired for every push to
@@ -204,6 +223,8 @@ dispatcher -addr :8080 -secret-file /etc/senro/webhook-secret \
 
 ## Where to go next
 
+- **[Run it as a server](/docs/triggers/server/)**: your pipeline binary as the webhook endpoint,
+  with no event file in between.
 - **[The event file](/docs/triggers/events/)**: the envelope, the providers and their traps.
 - **[Writing a trigger source](/docs/triggers/custom/)**: a provider and a matcher of your own.
 - **[Affected sets](/docs/monorepo/affected/)**: what consumes the mode and base a match carries.

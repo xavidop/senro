@@ -146,6 +146,32 @@ type State struct {
 	// two machines' clocks agreeing is not something a build tool assumes.
 	// Zero means the step declared no timeout.
 	TimeoutMS int64 `json:"timeout_ms,omitempty"`
+
+	// Failure is set only when this child is a HANDLER, and is what
+	// ctx.Failure() reports on the far side. Nil for an ordinary step, which
+	// is what makes the ok half of that call meaningful rather than a zero
+	// value that reads like a step called "" that exited 0.
+	//
+	// It is the same evidence an Exec handler reads out of SENRO_FAILURE_*,
+	// carried here rather than in the environment because a step child reads
+	// its whole world off stdin.
+	Failure *Failure `json:"failure,omitempty"`
+}
+
+// Failure is the parent step's outcome, as a func handler sees it.
+//
+// State is a plain string rather than api.State: this package is the wire
+// format and holds no opinion about the vocabulary, and the child converts
+// on the way into funcs.Failure. A state this build does not recognise
+// therefore travels intact instead of being dropped at the boundary.
+type Failure struct {
+	Run      string `json:"run"`
+	Step     string `json:"step"`
+	Attempt  int    `json:"attempt"`
+	State    string `json:"state"`
+	ExitCode int    `json:"exit_code,omitempty"`
+	Error    string `json:"error,omitempty"`
+	LogTail  string `json:"log_tail,omitempty"`
 }
 
 // Writer frames writes onto one stream, serialising them so two of the

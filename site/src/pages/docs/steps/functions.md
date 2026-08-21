@@ -57,6 +57,7 @@ defining package.
 | `ctx.Stdout()`, `ctx.Stderr()` | The step's log streams, redacted and recorded exactly as a command's output is. Writing to `os.Stdout` instead reaches the coordinator's terminal and no log file |
 | `ctx.Logger()` | Structured lines to `Stderr` |
 | `ctx.RunID()`, `ctx.StepID()`, `ctx.Attempt()` | This invocation's identity in the event stream. `Attempt()` is `1` on the first try, which is what an idempotency key needs to know before retrying against a remote API |
+| `ctx.Failure()` | `(senro.StepFailure, bool)`: what this function is cleaning up after, when it is running as a [handler](/docs/steps/handlers/). `ok` is false for an ordinary step |
 
 **`Ctx` carries no working directory**, because the coordinator's is process-global: changing it
 would change it for every concurrent step.
@@ -98,24 +99,91 @@ Three things to know before you rely on it:
 - **A pod's image must carry `sh` and `tar`**, exactly as carrying a workspace does: the binary
   arrives as a `tar` into a container that is holding open for it. A `FROM scratch` image cannot
   receive one.
-- **A func step cannot run on a target that delegates secrets.** Delegation hands the step's own
-  *command* a source URI to resolve, while a function calls `ctx.Secret(...)` and expects a file.
-  Both cannot hold at once, so `Build()` refuses it:
-
-  ```
-  plan: step "deploy" is a func step on a target that delegates secrets, and the two cannot both
-  hold: delegation delivers secret "Kubeconfig" to the pod as SENRO_SECRET_KUBECONFIG_SOURCE, a
-  source URI for the step's own COMMAND to resolve, while a function reads ctx.Secret("Kubeconfig")
-  ```
+- **A func step cannot run on a target that delegates secrets.** The two deliver different things,
+  and only one of them is something a Go function can read. See
+  [below](#why-delegated-secrets-and-func-steps-cannot-mix).
 
 The staging, its cost and its caching are covered in
 [Func steps off the coordinator](/docs/executors/func-remote/).
 
-### Not as a handler, off the coordinator
+#### Why delegated secrets and func steps cannot mix
 
-A [handler](/docs/steps/handlers/) inherits its parent step's executor and declares none of its
-own, so there is nothing to key the binary staging to. A `senro.Func` handler on a non-local step
-is refused at `Build()`. Use an `exec` handler for cleanup on the target.
+A secret reaches a pod in one of two ways, and the target decides which:
+
+| On the target | What lands in the pod | Who turns it into a credential |
+|---|---|---|
+| Default | `SENRO_SECRET_KUBECONFIG=/run/senro/secrets/Kubeconfig`, the path of a **file senro already wrote** | senro, before the step starts |
+| [`k8s.DelegateSecrets()`](/docs/executors/kubernetes/) | `SENRO_SECRET_KUBECONFIG_SOURCE=aws-sm://prod/ci/kubeconfig`, a **source URI** and nothing else | your command, while it runs |
+
+A function never sees either variable: it is handed a `senro.Ctx`, not an environment.
+`ctx.Secret("Kubeconfig")` is a lookup of the files senro wrote for this step, and under delegation
+senro wrote none, so the call would return `""` and your function would deploy with an empty
+kubeconfig. `Build()` refuses the pipeline instead:
+
+```go
+// Refused
+runner := k8s.Pod(img,
+	k8s.Namespace("ci"),
+	k8s.ServiceAccount("senro-ci"),
+	k8s.DelegateSecrets(),                 // the pod fetches its own secrets...
+)
+
+deploy := p.Workflow("deploy", senro.On(runner))
+deploy.Step("deploy", senro.Func("deploy/apply", nil)).   // ...but this is a function
+	SecretEnv("KUBECONFIG", "Kubeconfig")
+```
+
+```
+plan: step "deploy" is a func step on a target that delegates secrets, and the two cannot both
+hold: delegation delivers secret "Kubeconfig" to the pod as SENRO_SECRET_KUBECONFIG_SOURCE, a
+source URI for the step's own COMMAND to resolve, while a function reads ctx.Secret("Kubeconfig")
+```
+
+There are two ways out. **Drop the delegation**, so senro delivers a file, which is what a function
+wants:
+
+```go
+runner := k8s.Pod(img, k8s.Namespace("ci"))   // no DelegateSecrets
+
+deploy := p.Workflow("deploy", senro.On(runner))
+deploy.Step("deploy", senro.Func("deploy/apply", nil)).
+	SecretEnv("KUBECONFIG", "Kubeconfig")
+
+// inside deploy/apply:
+//   kubeconfig, err := os.ReadFile(ctx.Secret("Kubeconfig"))
+```
+
+Or **keep the delegation and write the step as a command**, which can resolve the URI itself:
+
+```go
+deploy.Step("deploy", exec.Command("sh", "-c", `
+	aws secretsmanager get-secret-value \
+	  --secret-id "${SENRO_SECRET_KUBECONFIG_SOURCE#aws-sm://}" \
+	  --query SecretString --output text > /tmp/kubeconfig
+	KUBECONFIG=/tmp/kubeconfig kubectl apply -f k8s/
+`)).
+	SecretEnv("KUBECONFIG", "Kubeconfig")
+```
+
+The rule in one line: delegation means *the step fetches its own credential*, and only a command can
+do that. A function can only read a file senro already put there.
+
+### As a handler, on the same target
+
+A [handler](/docs/steps/handlers/) declares no executor of its own and runs wherever its parent
+ran. A `senro.Func` handler gets the same treatment a func step does: on an ssh host, in a
+container or in a pod, senro stages the binary on the parent's target and re-enters it there.
+
+It reuses the copy the parent step already staged, so a handler on a remote step costs no second
+transfer.
+
+```go
+deploy.Step("apply", exec.Command("./deploy.sh")).
+	OnFailure(senro.Handler("collect", senro.Func("ci/collect", CollectParams{})))
+```
+
+Inside `ci/collect`, `ctx.Failure()` says what broke, and `ctx.Workspace(...)` reports paths on
+the target. See [Failure handlers](/docs/steps/handlers/#a-handler-can-be-a-go-function).
 
 ## Panics and timeouts
 

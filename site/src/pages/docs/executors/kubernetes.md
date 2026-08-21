@@ -233,7 +233,9 @@ What is specific to this executor:
 - **`k8s.DelegateSecrets()` is refused for a func step that declares a secret.** Delegation delivers
   a source URI in the pod's environment for the step's own *command* to resolve, and a function reads
   `ctx.Secret(name)`, the path of a file senro wrote. `Build()` says so rather than handing the
-  function an empty string.
+  function an empty string. See
+  [why the two cannot mix](/docs/steps/functions/#why-delegated-secrets-and-func-steps-cannot-mix)
+  for the two ways out.
 
 ## What is not here
 

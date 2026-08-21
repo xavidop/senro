@@ -68,6 +68,24 @@ type Ctx = funcs.Ctx
 // WorkspacePath is a mounted workspace's path, as Ctx.Workspace reports it.
 type WorkspacePath = funcs.WorkspacePath
 
+// StepFailure is what a func HANDLER is told about the step it is cleaning
+// up after, through Ctx.Failure. It is the same evidence an Exec handler
+// reads out of SENRO_FAILURE_STEP, SENRO_FAILURE_STATE,
+// SENRO_FAILURE_EXIT_CODE and SENRO_FAILURE_ATTEMPT, plus the error text
+// and the failed attempt's log tail, which an environment is the wrong
+// shape for.
+//
+//	func Collect(ctx senro.Ctx, p CollectParams) error {
+//		f, ok := ctx.Failure()
+//		if !ok {
+//			return errors.New("collect only runs as a handler")
+//		}
+//		fmt.Fprintf(ctx.Stdout(), "%s ended %s (exit %d) on attempt %d\n",
+//			f.Step, f.State, f.ExitCode, f.Attempt)
+//		return nil
+//	}
+type StepFailure = funcs.Failure
+
 // RegisterFunc registers a Go function as a step kind, under a stable name:
 //
 //	type DeployParams struct {
@@ -1402,6 +1420,12 @@ func toNode(sb *StepBuilder, path map[*StepBuilder]bool) (plan.Node, error) {
 // Build refuses rather than leaving RetrySpec.Predicate empty, which would
 // silently become retry-on-every-failure.
 func toRetrySpec(sb *StepBuilder) (*plan.RetrySpec, error) {
+	// A predicate that failed to construct (retry.Named with parameters
+	// that would not marshal, or a name nothing registered) reports that
+	// here rather than at the moment a step fails on a host at 3am.
+	if err := sb.retryPred.Err(); err != nil {
+		return nil, fmt.Errorf("senro: step %q: %w", sb.id, err)
+	}
 	serial := sb.retryPred.Serial()
 	if serial == "" {
 		return nil, fmt.Errorf("senro: step %q retry predicate has no serialized form and cannot be "+

@@ -17,14 +17,49 @@ import (
 	"github.com/xavidop/senro/internal/stepwire"
 )
 
-// remoteFuncStep reports whether n is a func step that runs somewhere other
-// than the coordinator's own process. It reads the NODE's executor, which
-// makes it always false for a handler node (handlers declare no executor),
-// correct today because plan.validateHandlers refuses a func handler whose
-// parent is remote; if that refusal is ever lifted, this function is what
-// has to learn it, not the four call sites.
-func remoteFuncStep(n *plan.Node) bool {
-	return n.Kind == "func" && n.Func != nil && n.ExecutorKey() != plan.ExecutorLocal
+// invocation is everything invoke needs that is not on the node itself.
+//
+// It exists because a HANDLER node's own fields do not say where it runs: a
+// handler declares no executor and inherits its parent's (see execHandler),
+// so reading n.ExecutorKey() reported "local" for a func handler on an ssh
+// host, which is why func handlers were once refused off the coordinator.
+// Resolving the target ONCE at the call site and passing it down is what
+// lets the same staging path serve a step and a handler.
+type invocation struct {
+	// key is the effective executor's key: the node's own for a step, its
+	// parent's for a handler. plan.ExecutorLocal means the coordinator.
+	key string
+	// ex is that executor, already resolved. Passed rather than looked up
+	// again, so a handler cannot silently get the run's default.
+	ex executor.Executor
+	// eventStep is the id this invocation's events are routed under: a
+	// step's own id, but a HANDLER's composite log-step id
+	// ("boom/on_failure/notify"), which is what every other handler event
+	// carries. Without it binary.staged was the one handler event filed
+	// under the bare handler id, which is not a node any client can find.
+	eventStep string
+	// failure is the evidence a HANDLER is cleaning up after, and nil for
+	// an ordinary step. It reaches a function through Ctx.Failure and a
+	// remote one through the step child's wire state.
+	failure *funcs.Failure
+}
+
+// remote reports whether this invocation runs a func somewhere other than
+// the coordinator's own process, which means a second PROCESS on the
+// target rather than a call in this one.
+func (inv invocation) remote(n *plan.Node) bool {
+	return n.Kind == "func" && n.Func != nil && inv.key != plan.ExecutorLocal
+}
+
+// stepFor is the id to file this invocation's events under. The node's own
+// unless a caller supplied a routing id, which execHandler does: a handler
+// id is unique only within its parent, so the bare one names nothing a
+// client can resolve.
+func (inv invocation) stepFor(n *plan.Node) string {
+	if inv.eventStep != "" {
+		return inv.eventStep
+	}
+	return n.ID
 }
 
 // invokeRemote runs one attempt of a func step on an executor that is not
@@ -33,7 +68,7 @@ func remoteFuncStep(n *plan.Node) bool {
 // step inherits from runAttempt (retries, timeouts, snapshots, cache, logs,
 // handlers, redaction) this inherits identically: same seam.
 func (rc *runCore) invokeRemote(
-	ctx context.Context, n *plan.Node, sb executor.Sandbox, c executor.Cmd,
+	ctx context.Context, n *plan.Node, inv invocation, sb executor.Sandbox, c executor.Cmd,
 	mounts []executor.Mount, secretPaths map[string]string, attempt int,
 	stdout, stderr io.Writer,
 ) (int, error) {
@@ -42,26 +77,26 @@ func (rc *runCore) invokeRemote(
 		return 0, fmt.Errorf(
 			"engine: %w: step %q runs a func on the %q executor, whose sandbox cannot be given a "+
 				"stdin; a step child reads its whole state from stdin, because nothing about it may "+
-				"appear on a command line", executor.ErrInfra, n.ID, n.ExecutorKey())
+				"appear on a command line", executor.ErrInfra, n.ID, inv.key)
 	}
 	loc, ok := sb.(executor.MountLocator)
 	if !ok {
 		return 0, fmt.Errorf(
 			"engine: %w: step %q runs a func on the %q executor, which cannot say where it put "+
 				"this step's workspaces; a function reaches a file through ctx.Workspace(name), and "+
-				"that has to be a path on the target", executor.ErrInfra, n.ID, n.ExecutorKey())
+				"that has to be a path on the target", executor.ErrInfra, n.ID, inv.key)
 	}
 
-	bin, stager, err := rc.remoteBinary(ctx, n)
+	bin, stager, err := rc.remoteBinary(ctx, n, inv)
 	if err != nil {
 		return 0, err
 	}
-	path, err := rc.stage(ctx, n, bin, stager, attempt)
+	path, err := rc.stage(ctx, n, inv, bin, stager, attempt)
 	if err != nil {
 		return 0, err
 	}
 
-	state, err := json.Marshal(remoteState(ctx, rc.runID, n, mounts, loc, secretPaths, attempt))
+	state, err := json.Marshal(remoteState(ctx, rc.runID, n, inv, mounts, loc, secretPaths, attempt))
 	if err != nil {
 		return 0, fmt.Errorf("engine: step %q: encoding the step state: %w", n.ID, err)
 	}
@@ -102,14 +137,13 @@ var childArgs = []string{"__step", "--state-fd", "0"}
 // executor that can put it there. Both halves are asked first at run start
 // (checkRemoteFunc); asking again here is a map lookup and a memoized
 // provisioner hit, and keeps invokeRemote correct for any caller.
+// The executor comes from inv, not from a second lookup on n: a handler
+// node declares none of its own, so resolving from it would hand back the
+// run's default and stage the binary on the wrong machine.
 func (rc *runCore) remoteBinary(
-	ctx context.Context, n *plan.Node,
+	ctx context.Context, n *plan.Node, inv invocation,
 ) (binprov.Binary, executor.BinaryStager, error) {
-	ex, err := rc.executorFor(n)
-	if err != nil {
-		return binprov.Binary{}, nil, err
-	}
-	stager, ok := ex.(executor.BinaryStager)
+	stager, ok := inv.ex.(executor.BinaryStager)
 	if !ok {
 		return binprov.Binary{}, nil, fmt.Errorf(
 			"engine: step %q runs a func on the %q executor, which cannot stage a binary on its "+
@@ -117,13 +151,13 @@ func (rc *runCore) remoteBinary(
 				"so running one anywhere but the coordinator means putting this binary over there "+
 				"first. This build can do that over ssh, in a container and in a pod; run this step "+
 				"on the coordinator instead",
-			n.ID, n.ExecutorKey())
+			n.ID, inv.key)
 	}
-	plat, err := ex.DeclaredPlatform(ctx)
+	plat, err := inv.ex.DeclaredPlatform(ctx)
 	if err != nil {
 		return binprov.Binary{}, nil, fmt.Errorf(
 			"engine: step %q runs a func on %q, and senro could not find out what platform that "+
-				"is, so it cannot know what binary to send: %w", n.ID, n.ExecutorKey(), err)
+				"is, so it cannot know what binary to send: %w", n.ID, inv.key, err)
 	}
 	bin, err := rc.binaries.For(ctx, plat)
 	if err != nil {
@@ -137,7 +171,7 @@ func (rc *runCore) remoteBinary(
 // second func step reports reused=false is paying a large transfer per
 // step, and an event that only appeared on a transfer could not say so.
 func (rc *runCore) stage(
-	ctx context.Context, n *plan.Node, bin binprov.Binary,
+	ctx context.Context, n *plan.Node, inv invocation, bin binprov.Binary,
 	stager executor.BinaryStager, attempt int,
 ) (string, error) {
 	started := time.Now()
@@ -148,12 +182,12 @@ func (rc *runCore) stage(
 		return "", fmt.Errorf("engine: step %q: %w", n.ID, err)
 	}
 	rc.emit(api.Event{
-		Type: api.BinaryStaged, Step: n.ID, Attempt: attempt,
+		Type: api.BinaryStaged, Step: inv.stepFor(n), Attempt: attempt,
 		Payload: mustMarshal(api.BinaryStagedBody{
 			Digest:     bin.Digest,
 			Platform:   bin.Platform.String(),
 			Strategy:   string(bin.Strategy),
-			Target:     n.ExecutorKey(),
+			Target:     inv.key,
 			Path:       staged.Path,
 			Bytes:      bin.Size,
 			Reused:     staged.Reused,
@@ -171,7 +205,7 @@ func (rc *runCore) stage(
 // one variable the child does receive, TRACEPARENT, travels in the process
 // environment the executor launches it with.
 func remoteState(
-	ctx context.Context, runID string, n *plan.Node,
+	ctx context.Context, runID string, n *plan.Node, inv invocation,
 	mounts []executor.Mount, loc executor.MountLocator,
 	secretPaths map[string]string, attempt int,
 ) stepwire.State {
@@ -181,6 +215,18 @@ func remoteState(
 		Func: n.Func.Name, Params: n.Func.Params,
 		Secrets:   secretPaths,
 		TimeoutMS: remainingMS(ctx),
+	}
+	// A func HANDLER is told what it is cleaning up after, exactly as an
+	// Exec handler reads SENRO_FAILURE_*. It travels in the state document
+	// rather than the environment for the same reason everything else does:
+	// the child reads its whole world off stdin.
+	if inv.failure != nil {
+		f := *inv.failure
+		st.Failure = &stepwire.Failure{
+			Run: f.Run, Step: f.Step, Attempt: f.Attempt,
+			State: string(f.State), ExitCode: f.ExitCode,
+			Error: f.Error, LogTail: f.LogTail,
+		}
 	}
 	for _, m := range mounts {
 		p, ok := loc.MountPath(m.Name)
@@ -351,13 +397,34 @@ func protocolDetail(err error) string {
 // IS the check: the cgo analysis, toolchain, package, platform and compile
 // are one question, and a guard verifying four of the five would pass and
 // then fail. A plan with no remote func step reaches nothing here.
+// A node's HANDLERS are walked too, under the node's own executor: a func
+// handler runs on its parent's target, so it needs the same binary, and
+// discovering that at cleanup time means discovering it while a step is
+// already failing.
 func checkRemoteFunc(ctx context.Context, rc *runCore, p *plan.Plan) error {
 	for i := range p.Nodes {
-		if !remoteFuncStep(&p.Nodes[i]) {
+		n := &p.Nodes[i]
+		ex, err := rc.executorFor(n)
+		if err != nil {
+			// Left to checkExecutors, which reports it with the message
+			// written for it. Nothing here can provision against an
+			// executor the run does not have.
 			continue
 		}
-		if _, _, err := rc.remoteBinary(ctx, &p.Nodes[i]); err != nil {
-			return err
+		inv := invocation{key: n.ExecutorKey(), ex: ex}
+		nodes := []*plan.Node{n}
+		for _, list := range [][]plan.Node{n.OnFailure, n.Always} {
+			for j := range list {
+				nodes = append(nodes, &list[j])
+			}
+		}
+		for _, cand := range nodes {
+			if !inv.remote(cand) {
+				continue
+			}
+			if _, _, err := rc.remoteBinary(ctx, cand, inv); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

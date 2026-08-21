@@ -48,6 +48,12 @@ type Attempt struct {
 type Predicate struct {
 	match  func(Attempt) bool
 	serial string
+	// err is a construction failure carried to the point a plan is built,
+	// the way senro's own funcAction carries one: Named cannot return an
+	// error without breaking every call site that passes a Predicate
+	// straight into Retry, and a predicate whose parameters would not
+	// marshal must not become one that silently never matches.
+	err error
 }
 
 // Match reports whether the attempt is retryable. A zero Predicate matches
@@ -67,6 +73,11 @@ func (p Predicate) Match(a Attempt) bool {
 // predicates Func builds, and any Any whose composition includes one: there
 // is no way to write down "retry on something, but I can't say what."
 func (p Predicate) Serial() string { return p.serial }
+
+// Err reports a failure that happened while p was being constructed, which
+// Build surfaces rather than executing a policy that does not do what was
+// asked. Nil for every predicate built successfully.
+func (p Predicate) Err() error { return p.err }
 
 // Func adapts a bare function into a Predicate. The result has no
 // serialized form, so a step using it cannot be built into a plan through
@@ -184,6 +195,13 @@ func Any(preds ...Predicate) Predicate {
 
 	names := make([]string, len(preds))
 	for i, p := range preds {
+		// A component's construction error is the composite's too, and it
+		// travels rather than being swallowed: Any(OnInfra(), Named("typo",
+		// nil)) must fail the build naming "typo", not quietly become a
+		// predicate that only matches infrastructure failures.
+		if err := p.Err(); err != nil {
+			return Predicate{match: match, err: err}
+		}
 		s := p.Serial()
 		if s == "" {
 			return Predicate{match: match}
@@ -229,6 +247,9 @@ func Parse(s string) (Predicate, error) {
 
 	case strings.HasPrefix(s, "log_match:"):
 		return OnLogMatch(strings.TrimPrefix(s, "log_match:"))
+
+	case strings.HasPrefix(s, "func:"):
+		return parseNamed(s)
 
 	case strings.HasPrefix(s, "any:"):
 		rest := strings.TrimPrefix(s, "any:")

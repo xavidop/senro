@@ -10,6 +10,8 @@ import (
 	"runtime/debug"
 	"sort"
 	"sync"
+
+	"github.com/xavidop/senro/api"
 )
 
 // WorkspacePath is a materialized workspace, as the running function sees it.
@@ -60,6 +62,47 @@ type Ctx interface {
 	Stderr() io.Writer
 	// Logger writes structured lines to Stderr.
 	Logger() *slog.Logger
+
+	// Failure describes the step this function is cleaning up after, and is
+	// the func equivalent of an Exec handler's SENRO_FAILURE_* environment.
+	//
+	// ok is false for an ordinary step, which is not cleaning up after
+	// anything: a function used both as a step and as a handler branches on
+	// it rather than reading a zero value that looks like a step called ""
+	// that exited 0.
+	Failure() (Failure, bool)
+}
+
+// Failure is what a func HANDLER is told about the step it belongs to,
+// captured before any handler runs so one handler's own outcome can never
+// change what the next one is told.
+//
+// It is the same evidence an Exec handler reads out of SENRO_FAILURE_STEP,
+// SENRO_FAILURE_STATE, SENRO_FAILURE_EXIT_CODE and SENRO_FAILURE_ATTEMPT,
+// plus the two an environment is the wrong shape for: the error text and
+// the tail of the failed attempt's log.
+type Failure struct {
+	// Run and Step identify the failed step in the event stream. Step is
+	// the parent's id, not the handler's.
+	Run  string
+	Step string
+	// Attempt is the attempt the step actually reached, so a handler can
+	// find that attempt's log. Zero for a node that never ran an attempt,
+	// skipped or cancelled before it started.
+	Attempt int
+	// State is the parent's terminal state: api.StateFailed,
+	// api.StateTimedOut, api.StatePanicked, api.StateCancelled, or a
+	// succeeded one for an Always handler.
+	State api.State
+	// ExitCode is what the failed attempt exited with. Zero for a failure
+	// that never produced one, which is what Error then describes.
+	ExitCode int
+	// Error is the substrate's own message when the attempt failed to run
+	// at all, and empty when the step ran and returned a verdict.
+	Error string
+	// LogTail is the last portion of the failed attempt's combined output,
+	// bounded: evidence to classify with, not a log viewer.
+	LogTail string
 }
 
 // SubgraphRunner is the optional capability behind senro.RunSubgraph: a

@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xavidop/senro/api"
 	"github.com/xavidop/senro/internal/binprov"
 	"github.com/xavidop/senro/internal/executor"
 	"github.com/xavidop/senro/internal/funcs"
@@ -255,6 +256,21 @@ func (c *remoteCtx) Workspace(name string) (funcs.WorkspacePath, bool) {
 func (c *remoteCtx) Secret(name string) string { return c.state.Secrets[name] }
 func (c *remoteCtx) Stdout() io.Writer         { return c.stdout }
 func (c *remoteCtx) Stderr() io.Writer         { return c.stderr }
+
+// Failure implements funcs.Ctx: the same answer a func handler gets on the
+// coordinator, rebuilt from what arrived on the wire. Absent for an
+// ordinary step, which is what makes ok meaningful.
+func (c *remoteCtx) Failure() (funcs.Failure, bool) {
+	f := c.state.Failure
+	if f == nil {
+		return funcs.Failure{}, false
+	}
+	return funcs.Failure{
+		Run: f.Run, Step: f.Step, Attempt: f.Attempt,
+		State: api.State(f.State), ExitCode: f.ExitCode,
+		Error: f.Error, LogTail: f.LogTail,
+	}, true
+}
 
 func (c *remoteCtx) Logger() *slog.Logger {
 	c.once.Do(func() {

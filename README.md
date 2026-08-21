@@ -74,8 +74,10 @@ debugger.
   [mamori](https://github.com/xavidop/mamori). See [Secrets](site/src/pages/docs/secrets/index.md).
 - **Triggers.** The pipeline binary is its own matcher: hand it a GitHub, GitLab, Bitbucket or
   Gitea webhook event (or your own provider) and it decides whether to run, with exit code 78 for
-  "not my business".
-  See [Triggers](site/src/pages/docs/triggers/index.md).
+  "not my business". Or be the endpoint yourself: `trigger.FromRequest` verifies and parses a
+  delivery straight off the wire, per source, with no event file in between.
+  See [Triggers](site/src/pages/docs/triggers/index.md) and
+  [Run it as a server](site/src/pages/docs/triggers/server.md).
 - **Notifications and export.** Slack, GitHub Checks, webhooks, or your own destination through a
   small `Renderer`/`Requester` seam; traces exported from the event stream through a `Sink`. See
   [Notifications](site/src/pages/docs/notifications.md).

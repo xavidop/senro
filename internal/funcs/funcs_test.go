@@ -21,6 +21,7 @@ func (fakeCtx) Workspace(string) (funcs.WorkspacePath, bool) { return "", false 
 func (fakeCtx) Secret(string) string                         { return "" }
 func (fakeCtx) Stdout() io.Writer                            { return io.Discard }
 func (fakeCtx) Stderr() io.Writer                            { return io.Discard }
+func (fakeCtx) Failure() (funcs.Failure, bool)               { return funcs.Failure{}, false }
 func (fakeCtx) Logger() *slog.Logger                         { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func TestRegisterAndInvoke(t *testing.T) {

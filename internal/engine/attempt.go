@@ -476,7 +476,9 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 	stderrRW := rc.redact.Writer(io.MultiWriter(
 		&logMarker{rc: rc, w: stderrW, step: n.ID, attempt: attempt, stream: api.StreamStderr}, tail))
 
-	exit, runErr := rc.invoke(attemptCtx, n, sb,
+	// A step's own executor, and no failure: a step is not cleaning up
+	// after anything, which is what makes ctx.Failure report ok=false.
+	exit, runErr := rc.invoke(attemptCtx, n, invocation{key: n.ExecutorKey(), ex: ex}, sb,
 		executor.Cmd{Args: n.Cmd, Env: cmdEnv, Dir: cmdDirFor(n.WorkDir, mounts)},
 		mounts, secretPaths, attempt, stdoutRW, stderrRW, opts)
 

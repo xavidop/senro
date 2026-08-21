@@ -112,6 +112,24 @@ func init() {
 		time.Sleep(10 * time.Minute)
 		return nil
 	})
+
+	// handler is a func HANDLER on the far side: it reports both where it
+	// ran and what ctx.Failure() told it, which are the two things that
+	// have to hold at once. A handler that ran on the coordinator would
+	// still know the failure, and one that ran on the host but was told
+	// nothing would still print a hostname; only both together prove the
+	// parent's target and the parent's outcome travelled.
+	senro.RegisterFunc("remotefunc/handler", func(ctx senro.Ctx, p params) error {
+		host, _ := os.Hostname()
+		fmt.Fprintf(ctx.Stdout(), "handler %s/%s host=%s\n", runtime.GOOS, runtime.GOARCH, host)
+		f, ok := ctx.Failure()
+		if !ok {
+			return errors.New("a handler was told about no failure")
+		}
+		fmt.Fprintf(ctx.Stdout(), "failure step=%s state=%s exit=%d attempt=%d\n",
+			f.Step, f.State, f.ExitCode, f.Attempt)
+		return nil
+	})
 }
 
 func main() {

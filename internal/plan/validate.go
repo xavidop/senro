@@ -431,14 +431,15 @@ func validateSecrets(n Node) error {
 // the parent.
 //
 // parent is passed whole because a handler's EFFECTIVE executor is its
-// parent's (execHandler resolves the parent's, and a handler may not
-// declare one), so the func-handler rule below must read parent.Executor
-// for Validate to agree with what actually runs.
+// parent's: execHandler resolves the parent's, and a handler may not
+// declare one.
 //
-// That rule is deliberately STRICTER than the step rule: a func HANDLER
-// runs on the coordinator alone, because a handler has no executor of its
-// own to key a staged binary to. See
-// TestValidateRefusesAFuncHandlerOnANonLocalStep.
+// A func handler runs on EVERY executor, exactly as a func step does. The
+// engine resolves the target once, at the call site, and passes it down
+// (engine.invocation), so the same staged binary and the same re-entry
+// serve a handler and a step. There is deliberately no rule here confining
+// a func handler to the coordinator: cleanup and evidence collection belong
+// on the machine that broke.
 func validateHandlers(parent *Node, lists ...[]Node) error {
 	parentID := parent.ID
 	seen := make(map[string]bool)
@@ -462,18 +463,18 @@ func validateHandlers(parent *Node, lists ...[]Node) error {
 						"executor of the step it belongs to, so it collects evidence from the "+
 						"environment that actually broke", h.ID, parentID)
 			}
-			if h.Kind == "func" && parent.Executor != nil && parent.Executor.Kind != ExecutorLocal {
-				return fmt.Errorf(
-					"plan: handler %q of step %q is a func handler, and step %q runs on the %q "+
-						"executor; a handler inherits its parent's executor, and this build runs "+
-						"func HANDLERS on the coordinator only. A func STEP on an ssh host, in a "+
-						"container and in a pod is supported and re-enters a staged binary on the "+
-						"target; a handler does not, because execHandler resolves its parent's "+
-						"executor rather "+
-						"than declaring one of its own, and the re-entry has nothing to key the "+
-						"staging to. Use an Exec handler for cleanup on the target, or put the func "+
-						"step on the coordinator",
-					h.ID, parentID, parentID, parent.Executor.Kind)
+			// The one shape that genuinely cannot hold, applied to a
+			// handler through its parent's executor because its own is
+			// nil. nodeShape's identical check reads h.Executor and so
+			// never fires for a handler; without this a func handler on a
+			// delegating pod would read the empty string for every
+			// credential it asked for.
+			if h.Kind == "func" && len(h.Secrets) > 0 {
+				withParent := h
+				withParent.Executor = parent.Executor
+				if err := validateFuncSecrets(withParent); err != nil {
+					return err
+				}
 			}
 			if h.Retry != nil {
 				return fmt.Errorf(

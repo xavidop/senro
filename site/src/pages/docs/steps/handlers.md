@@ -44,9 +44,72 @@ handler are refused by `Build()` rather than quietly dropped.
 | `Mount` | Refused: `plan: handler "collect" of step "s" declares its own mounts; a handler already has its parent's workspaces, mounted read-only at the same paths` |
 | `When`, `Retry`, an executor of its own, cache settings, handlers of its own | Refused |
 
-A **`senro.Func` handler on a non-local step** is not supported either. A handler inherits its
-parent's executor and declares none of its own, so there is nothing to key binary staging to; use an
-`exec` handler for cleanup on the target. See [Func steps off the coordinator](/docs/executors/func-remote/).
+## A handler can be a Go function
+
+A handler's action is a [step action](/docs/steps/#the-two-step-kinds), so it can be a
+`senro.Func` as easily as a command:
+
+```go
+type CollectParams struct {
+	Bucket string `json:"bucket"`
+}
+
+func init() { senro.RegisterFunc("ci/collect", Collect) }
+
+func Collect(ctx senro.Ctx, p CollectParams) error {
+	f, ok := ctx.Failure()
+	if !ok {
+		return errors.New("ci/collect only makes sense as a handler")
+	}
+
+	fmt.Fprintf(ctx.Stdout(), "%s ended %s (exit %d) on attempt %d\n",
+		f.Step, f.State, f.ExitCode, f.Attempt)
+
+	// Classify without opening the log file: the tail came with the failure.
+	if strings.Contains(f.LogTail, "no space left on device") {
+		return upload(ctx, p.Bucket, f.Step, f.LogTail)
+	}
+	return nil
+}
+
+// in the pipeline:
+deploy.Step("apply", exec.Command("./deploy.sh")).
+	OnFailure(senro.Handler("collect", senro.Func("ci/collect", CollectParams{Bucket: "ci-evidence"})))
+```
+
+### `ctx.Failure()`
+
+This is the func equivalent of the `SENRO_FAILURE_*` variables an `exec` handler reads. It returns
+a `senro.StepFailure` and an `ok` that is **false for an ordinary step**, so a function used both
+ways can tell which it is.
+
+| Field | What it holds |
+|---|---|
+| `Run` | The run's id |
+| `Step` | The id of the step this handler belongs to. The **parent's**, not the handler's |
+| `State` | Its terminal state, one of [the ten](/docs/steps/states/) |
+| `ExitCode` | The exit code it ended on |
+| `Attempt` | The attempt the step actually reached. `0` for a node that never ran one |
+| `Error` | The substrate's own message when the attempt failed to run at all, and empty when the step ran and returned a verdict |
+| `LogTail` | The tail of the failed attempt's combined output |
+
+`Error` and `LogTail` are the two an environment has no room for, which is why an `exec` handler
+has to go and open the log file and a function does not.
+
+> An **`Always` handler** gets a `Failure` too, describing whatever happened, so `State` is how it
+> tells a passing step from a failing one. `ok` says "I am a handler", never "something broke".
+
+### It runs on the parent's executor
+
+A `senro.Func` handler runs wherever its parent ran: the coordinator, an ssh host, a container, a
+pod. senro stages the binary on the parent's target and re-enters it there, exactly as it does for
+a func step, **reusing the copy the parent step already staged**. `ctx.Workspace(...)` and
+`ctx.Secret(...)` report paths on that machine.
+
+The one refusal left is a func handler that declares a **delegated** secret, for the same reason a
+func step cannot: delegation hands the pod a source URI for the step's own *command* to resolve,
+and a function reads `ctx.Secret(name)`, which is a file senro wrote. See
+[Func steps off the coordinator](/docs/executors/func-remote/).
 
 ## What a handler inherits
 
@@ -84,6 +147,8 @@ unqualified `cat build.log` find the file.
 
 ## The failure arrives in the environment
 
+An `exec` handler reads what broke out of four variables:
+
 | Variable | What it holds |
 |---|---|
 | `SENRO_FAILURE_STEP` | The id of the step that failed |
@@ -91,10 +156,22 @@ unqualified `cat build.log` find the file.
 | `SENRO_FAILURE_EXIT_CODE` | The exit code it ended on |
 | `SENRO_FAILURE_ATTEMPT` | The attempt the step actually reached, so a handler can find that attempt's log. `0` for a node that never ran an attempt, skipped or cancelled before it started |
 
+```sh
+#!/bin/sh
+echo "$SENRO_FAILURE_STEP ended $SENRO_FAILURE_STATE" \
+     "(exit $SENRO_FAILURE_EXIT_CODE) on attempt $SENRO_FAILURE_ATTEMPT"
+```
+
+A [func handler](#a-handler-can-be-a-go-function) reads the same evidence through
+`ctx.Failure()`, plus the error text and the log tail. These four variables are unchanged either
+way: a func handler does not take them away from anything.
+
 ## Where to go next
 
 - **[Retries](/docs/steps/retries/)**: what has to be exhausted before `OnFailure` fires.
 - **[Step states](/docs/steps/states/)**: what `SENRO_FAILURE_STATE` can say.
+- **[Go functions as steps](/docs/steps/functions/)**: `senro.Func`, `senro.Ctx` and
+  `RegisterFunc`.
 - **[The event stream](/docs/reference/event-stream/)**: the `handler.started`, `handler.succeeded`
   and `handler.failed` events a handler run emits.
 - **[Workspaces](/docs/data/workspaces/)**: what a handler gets to read back.

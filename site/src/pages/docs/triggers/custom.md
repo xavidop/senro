@@ -220,6 +220,8 @@ triggers for pushes and merge requests keep working with no code of its own.
 ## Where to go next
 
 - **[Triggers](/docs/triggers/)**: the wiring, every matcher, and what a match carries into the run.
+- **[Run it as a server](/docs/triggers/server/)**: reaching your provider from an HTTP handler,
+  with `trigger.As`.
 - **[The event file](/docs/triggers/events/)**: the envelope your provider is reached through.
 - **[Write a destination](/docs/notifications/custom/)**: the other end, for telling somebody how
   the run went.

@@ -35,7 +35,7 @@ import (
 // the message in step.finished); one that wraps executor.ErrInfra is saying
 // its failure was infrastructural, and retry.OnInfra will match it.
 func (rc *runCore) invoke(
-	ctx context.Context, n *plan.Node, sb executor.Sandbox, c executor.Cmd,
+	ctx context.Context, n *plan.Node, inv invocation, sb executor.Sandbox, c executor.Cmd,
 	mounts []executor.Mount, secretPaths map[string]string, attempt int,
 	stdout, stderr io.Writer, opts Options,
 ) (int, error) {
@@ -46,14 +46,18 @@ func (rc *runCore) invoke(
 	// target: this binary, staged there and re-entered as a step child.
 	// The split is here because everything above this line is identical
 	// for the two.
-	if remoteFuncStep(n) {
-		return rc.invokeRemote(ctx, n, sb, c, mounts, secretPaths, attempt, stdout, stderr)
+	//
+	// inv, not n: a handler node carries no executor of its own, so asking
+	// the node would answer "local" for a func handler on an ssh host.
+	if inv.remote(n) {
+		return rc.invokeRemote(ctx, n, inv, sb, c, mounts, secretPaths, attempt, stdout, stderr)
 	}
 	fc := &funcCtx{
 		Context: ctx,
 		runID:   rc.runID, stepID: n.ID, attempt: attempt,
 		mounts: mounts, secrets: secretPaths,
 		stdout: stdout, stderr: stderr,
+		failure: inv.failure,
 		subgraph: func(sctx context.Context, b []byte) error {
 			return rc.runSubgraph(sctx, n, opts, b)
 		},
@@ -87,6 +91,11 @@ type funcCtx struct {
 	secrets map[string]string
 	stdout  io.Writer
 	stderr  io.Writer
+
+	// failure is set only when this invocation is a HANDLER: the evidence
+	// about the step it is cleaning up after. Nil for an ordinary step,
+	// which is what Ctx.Failure's ok reports.
+	failure *funcs.Failure
 
 	once   sync.Once
 	logger *slog.Logger
@@ -123,6 +132,16 @@ func (c *funcCtx) Workspace(name string) (funcs.WorkspacePath, bool) {
 func (c *funcCtx) Secret(name string) string { return c.secrets[name] }
 func (c *funcCtx) Stdout() io.Writer         { return c.stdout }
 func (c *funcCtx) Stderr() io.Writer         { return c.stderr }
+
+// Failure implements funcs.Ctx. The value is copied out rather than shared:
+// a handler that mutated it would change what a LATER handler of the same
+// step is told, and handlers run in declaration order off one Failure.
+func (c *funcCtx) Failure() (funcs.Failure, bool) {
+	if c.failure == nil {
+		return funcs.Failure{}, false
+	}
+	return *c.failure, true
+}
 
 func (c *funcCtx) Logger() *slog.Logger {
 	c.once.Do(func() {

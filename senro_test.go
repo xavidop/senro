@@ -156,27 +156,44 @@ func TestAFuncStepOnADelegatingPodIsRefusedByName(t *testing.T) {
 	}
 }
 
-// TestAFuncHandlerOnAContainerStepIsRefusedByName: a func HANDLER on a
-// container-targeted step must be refused too, and the trap is real: a
-// handler's Executor is always nil by construction, so a check that only
-// read n.Executor would never fire for one, and the handler would silently
-// run on the coordinator (execHandler resolves the PARENT's executor). Same
-// rule internal/plan's TestValidateRefusesAFuncHandlerOnANonLocalStep proves
-// directly; this proves it from the top of the public API.
-func TestAFuncHandlerOnAContainerStepIsRefusedByName(t *testing.T) {
+// TestAFuncHandlerOnAContainerStepBuilds: a func HANDLER runs wherever its
+// parent ran, container included. A handler's Executor is nil by
+// construction, so the engine resolves its parent's target once and stages
+// the binary against that (engine.invocation) rather than silently running
+// the function on the coordinator. Same rule internal/plan's
+// TestValidateAcceptsAFuncHandlerOnANonLocalStep proves directly; this
+// proves it from the top of the public API.
+func TestAFuncHandlerOnAContainerStepBuilds(t *testing.T) {
 	p := senro.New("p")
 	w := p.Workflow("deploy", senro.On(container.Image("alpine:3")))
 	w.Step("apply", exec.Command("helm", "upgrade")).
 		OnFailure(senro.Handler("notify", senro.Func("test/deploy", deployParams{App: "web"})))
+	if _, err := p.Build(); err != nil {
+		t.Fatalf("Build refused a func handler on a container step: %v", err)
+	}
+}
+
+// The one channel a func handler still cannot be given, for the same reason
+// a func STEP cannot: delegation hands the pod a secret's SOURCE for the
+// step's own command to resolve, and a function has no environment to read
+// it from. The handler's own Executor is nil, so this rule has to read the
+// parent's or it never fires.
+func TestAFuncHandlerNeedingADelegatedSecretIsRefused(t *testing.T) {
+	p := senro.New("p")
+	w := p.Workflow("deploy", senro.On(k8s.Pod("ghcr.io/acme/runner@sha256:"+strings.Repeat("a", 64),
+		k8s.Namespace("ci"), k8s.ServiceAccount("senro-ci"), k8s.DelegateSecrets())))
+	w.Step("apply", exec.Command("helm", "upgrade")).
+		OnFailure(senro.Handler("notify", senro.Func("test/deploy", deployParams{App: "web"})).
+			SecretEnv("KUBECONFIG", "Kubeconfig"))
 	_, err := p.Build()
 	if err == nil {
-		t.Fatal("Build accepted a func handler on a step targeted at a container executor")
+		t.Fatal("Build accepted a func handler asking for a delegated secret")
 	}
 	if !strings.Contains(err.Error(), "notify") {
 		t.Errorf("the refusal does not name the handler: %v", err)
 	}
-	if !strings.Contains(err.Error(), "coordinator only") {
-		t.Errorf("the refusal does not say func handlers run on the coordinator only: %v", err)
+	if !strings.Contains(err.Error(), "ctx.Secret") {
+		t.Errorf("the refusal does not say what the function would read instead: %v", err)
 	}
 }
 

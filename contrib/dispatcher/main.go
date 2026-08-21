@@ -43,6 +43,7 @@ import (
 	"github.com/xavidop/senro/internal/kubeapi"
 	"github.com/xavidop/senro/internal/persist"
 	"github.com/xavidop/senro/internal/persist/kubelock"
+	"github.com/xavidop/senro/trigger"
 )
 
 // maxBody bounds a delivery. GitHub's own limit is 25MB, and an unbounded
@@ -168,6 +169,29 @@ func (d *dispatcher) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The pipeline is a separate process reached through --trigger-event, so
+	// the delivery has to reach it as a FILE, and the file format is an
+	// envelope naming the source and its own name for the event.
+	//
+	// A raw webhook body is not that and never was: no GitHub, GitLab,
+	// Bitbucket or Gitea body says which event it is (that is the header),
+	// which is exactly why the envelope exists. Writing the body verbatim
+	// produced "the event names no provider" at the far end of an exec, in a
+	// log nobody reads, for every delivery.
+	provider, event, ok := trigger.SourceOf(r.Header)
+	if !ok {
+		http.Error(w, "the delivery names no event source this build knows\n",
+			http.StatusBadRequest)
+		return
+	}
+	envelope, err := trigger.Envelope(provider, event, body)
+	if err != nil {
+		log.Printf("dispatcher: %v", err)
+		http.Error(w, "the delivery could not be prepared for the pipeline\n",
+			http.StatusBadRequest)
+		return
+	}
+
 	release, err := d.take()
 	if err != nil {
 		// A held group and a broken lock must not share a status: 409 says
@@ -189,7 +213,7 @@ func (d *dispatcher) serve(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = io.WriteString(w, "accepted\n")
 
-	go d.run(body, release)
+	go d.run(envelope, release)
 }
 
 // verify checks the HMAC. Constant-time, and the whole of the

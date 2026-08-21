@@ -109,6 +109,7 @@ stream you can attach to.
 | Page | What it covers |
 |---|---|
 | [Running on an event](/docs/triggers/) | Wiring `WithTrigger`, the matchers, the three outcomes |
+| [Run it as a server](/docs/triggers/server/) | Your binary as the webhook endpoint, verified per source |
 | [The event file](/docs/triggers/events/) | The envelope every source is delivered through |
 | [GitHub](/docs/triggers/github/) | `push`, `pull_request`, and tags arriving as pushes |
 | [GitLab](/docs/triggers/gitlab/) | Push, tag push, merge request, and GitLab's own action words |

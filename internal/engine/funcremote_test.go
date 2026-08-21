@@ -660,3 +660,108 @@ func ssh(t *testing.T, srv sshdtest.Server, script string) string {
 }
 
 func shQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// TestAFuncHandlerRunsOnItsParentsHost is the whole of the "func handlers
+// run everywhere" change, end to end.
+//
+// A handler declares no executor of its own, so reading the handler node's
+// executor answers "local" for every handler ever written. That is why func
+// handlers were once refused off the coordinator: the staging had nothing to
+// key to. The engine now resolves the PARENT's target once at the call site
+// and hands it down (engine.invocation), so the handler's binary is staged
+// on the same host the step ran on and re-entered there.
+//
+// Both halves are asserted together on purpose. A handler that quietly ran
+// on the coordinator would still report the right failure, and one that ran
+// remotely but was told nothing would still report the right hostname; only
+// the pair proves the target and the outcome both travelled.
+func TestAFuncHandlerRunsOnItsParentsHost(t *testing.T) {
+	srv := sshdtest.Require(t)
+
+	boom := plan.Node{ID: "boom", Kind: "exec", Cmd: []string{"sh", "-c", "exit 7"}}
+	boom.OnFailure = []plan.Node{funcNode("notify", "remotefunc/handler", nil)}
+
+	res := remoteRun(t, srv, &plan.Plan{Version: 1, Nodes: []plan.Node{boom}})
+
+	logStep := "boom/on_failure/notify"
+	if !hasEventFor(res.events, api.HandlerSucceeded, logStep) {
+		t.Fatalf("the remote func handler did not succeed; stderr=%s",
+			stepLog(t, res.dir, logStep, api.StreamStderr))
+	}
+
+	out := stepLog(t, res.dir, logStep, api.StreamStdout)
+	// linux, because the sshd is a container and this test binary is not
+	// necessarily one: a handler that ran on the coordinator fails here.
+	if !strings.Contains(out, "handler linux/") {
+		t.Errorf("stdout = %q, want the handler to report having run on the host", out)
+	}
+	// And it was told what it is cleaning up after, over the wire.
+	if !strings.Contains(out, "failure step=boom") {
+		t.Errorf("stdout = %q, want ctx.Failure() to name the parent step", out)
+	}
+	if !strings.Contains(out, "exit=7") {
+		t.Errorf("stdout = %q, want the parent's exit code to have travelled", out)
+	}
+	if !strings.Contains(out, "state="+string(api.StateFailed)) {
+		t.Errorf("stdout = %q, want the parent's terminal state to have travelled", out)
+	}
+}
+
+// A remote func handler stages the same binary its parent step did, so the
+// handler must not pay a second transfer. binary.staged is emitted on every
+// staging precisely so a run that is re-uploading per step can be seen to
+// be doing it.
+func TestAFuncHandlerReusesItsParentsStagedBinary(t *testing.T) {
+	srv := sshdtest.Require(t)
+
+	boom := funcNode("boom", "remotefunc/fails", nil)
+	boom.OnFailure = []plan.Node{funcNode("notify", "remotefunc/handler", nil)}
+
+	res := remoteRun(t, srv, &plan.Plan{Version: 1, Nodes: []plan.Node{boom}})
+
+	type staging struct {
+		step string
+		body api.BinaryStagedBody
+	}
+	var got []staging
+	for _, e := range res.events {
+		if e.Type != api.BinaryStaged {
+			continue
+		}
+		var b api.BinaryStagedBody
+		if err := e.Decode(&b); err != nil {
+			t.Fatalf("decoding binary.staged: %v", err)
+		}
+		got = append(got, staging{step: e.Step, body: b})
+	}
+	if len(got) != 2 {
+		t.Fatalf("binary.staged count = %d, want one for the step and one for its handler", len(got))
+	}
+
+	step, handler := got[0], got[1]
+	// The handler's staging is filed under the COMPOSITE log-step id, like
+	// every other handler event. The bare handler id names nothing a client
+	// can resolve, since handler ids are unique only within their parent.
+	if step.step != "boom" {
+		t.Errorf("the step's staging is filed under %q, want \"boom\"", step.step)
+	}
+	if handler.step != "boom/on_failure/notify" {
+		t.Errorf("the handler's staging is filed under %q, want the composite log-step id",
+			handler.step)
+	}
+
+	// One binary, one path: the handler did not pay a second transfer.
+	// Asserted on identity rather than on the step's own Reused flag, which
+	// depends on whether an earlier test already staged onto this shared
+	// sshd and so is not this test's business.
+	if handler.body.Digest != step.body.Digest {
+		t.Errorf("the handler staged digest %q, the step %q; a handler must reuse its parent's binary",
+			handler.body.Digest, step.body.Digest)
+	}
+	if handler.body.Path != step.body.Path {
+		t.Errorf("the handler's binary is at %q, the step's at %q", handler.body.Path, step.body.Path)
+	}
+	if !handler.body.Reused {
+		t.Error("the handler re-transferred a binary its parent step had already staged")
+	}
+}

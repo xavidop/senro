@@ -9,6 +9,7 @@ import (
 	"github.com/xavidop/senro/api"
 	"github.com/xavidop/senro/internal/eventlog"
 	"github.com/xavidop/senro/internal/executor"
+	"github.com/xavidop/senro/internal/funcs"
 	"github.com/xavidop/senro/internal/plan"
 )
 
@@ -276,7 +277,18 @@ func (rc *runCore) execHandler(ctx context.Context, parent, h *plan.Node, logSte
 	// rc.invoke hands mounts to funcCtx, so ctx.Workspace(name) reported
 	// false, untruthfully, inside every func handler (see
 	// TestAFuncHandlerReachesTheParentsWorkspace).
-	exit, runErr := rc.invoke(handlerCtx, h, sb,
+	// The PARENT's executor and key, because a handler declares neither and
+	// runs where its parent ran. That is what lets a func handler be staged
+	// and re-entered on an ssh host, in a container or in a pod exactly as a
+	// func step is, rather than being refused for having nothing to key the
+	// staging to.
+	//
+	// fail travels too, so a func handler reads ctx.Failure() where an Exec
+	// one reads SENRO_FAILURE_*; the two describe the same attempt.
+	exit, runErr := rc.invoke(handlerCtx, h, invocation{
+		key: parent.ExecutorKey(), ex: ex, failure: funcFailure(fail),
+		eventStep: logStep,
+	}, sb,
 		executor.Cmd{Args: h.Cmd, Env: cmdEnv, Dir: cmdDirFor(workDir, mounts)},
 		mounts, secretPaths, 1, stdoutRW, stderrRW, opts)
 
@@ -317,6 +329,21 @@ func (rc *runCore) execHandler(ctx context.Context, parent, h *plan.Node, logSte
 		return fmt.Errorf("exit status %d", exit)
 	default:
 		return nil
+	}
+}
+
+// funcFailure is the same evidence failureEnv puts in an Exec handler's
+// environment, in the shape a func handler reads through ctx.Failure().
+//
+// Two fields an environment has no room for come with it: the substrate's
+// own error text, and the tail of the failed attempt's log. An Exec handler
+// gets neither and has to go and read the log file; a function is handed
+// them, because it is already in a position to classify.
+func funcFailure(fail Failure) *funcs.Failure {
+	return &funcs.Failure{
+		Run: fail.Run, Step: fail.Step, Attempt: fail.Attempt,
+		State: fail.State, ExitCode: fail.ExitCode,
+		Error: fail.Err, LogTail: fail.LogTail,
 	}
 }
 

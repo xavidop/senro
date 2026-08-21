@@ -8,6 +8,10 @@ title: The event file
 The file a dispatcher hands your pipeline. Read [Triggers](/docs/triggers/) first for the wiring;
 this page is the format, and where to find the details of the source you use.
 
+> **Running as a server?** You need none of this. `trigger.FromRequest` reads a webhook delivery
+> straight off the wire, headers and signature included, with no file and no envelope. See
+> [Run it as a server](/docs/triggers/server/).
+
 ## Load one
 
 ```go
@@ -84,5 +88,6 @@ If you fetched the list yourself, supply it through
 ## Where to go next
 
 - **[Triggers](/docs/triggers/)**: the wiring, the matchers and the three outcomes.
+- **[Run it as a server](/docs/triggers/server/)**: skipping the file entirely.
 - **[Write your own](/docs/triggers/custom/)**: a source that is not on this page.
 - **[Affected sets](/docs/monorepo/affected/)**: the precise narrowing `Paths` is not.

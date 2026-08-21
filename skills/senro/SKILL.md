@@ -135,12 +135,23 @@ facts apart (`Sandbox.Run` returns exit code and error, never collapsed) and
 - `retry.OnLogMatch(pattern string) (Predicate, error)`: last resort; a message
   someone will eventually reword, silently breaking the match.
 - `retry.Any(preds ...Predicate)`: matches if any of preds does.
+- `retry.Named(name string, params any)`: a Go function of your own, registered
+  under a stable name with `retry.RegisterPredicate[P](name, func(P, retry.Attempt) bool)`
+  from an `init`. The plan records the NAME and the JSON parameters
+  (`func:http-status:{"codes":[502,503]}`), which is what lets a Go decision
+  cross the engine's process boundary. `Attempt` is
+  `{Number, ExitCode, Err, LogTail}`. Pass `nil` for no parameters. Registering
+  a name twice, an empty name, or one containing `:` panics; naming an
+  unregistered predicate is a `Build` error listing what this binary does have.
+  It composes: `retry.Any(retry.OnInfra(), retry.Named(...))` is storable.
 
 `.Retry(maxAttempts, predicate)` uses default exponential backoff (500ms base,
 factor 2, cap 30s, jittered); `.RetryPolicy(retry.Policy{...})` also sets
 `Backoff` explicitly. A `retry.Func` predicate has no serialized form (a `*Plan`
 is JSON; no closure crosses the engine's process boundary): `Build` refuses a
-step using one rather than silently retrying on every failure.
+step using one rather than silently retrying on every failure. Use
+`retry.RegisterPredicate` + `retry.Named` for the same Go code with a name a
+plan can record; `retry.Func` remains for a `retry.Policy` applied directly.
 
 ## `Timeout`, `OnFailure`, `Always`
 
@@ -512,7 +523,9 @@ deploy.Step("notify", senro.Func("deploy/notify", DeployParams{App: "web"})).
 - `senro.Ctx` replaces working directory and argv: `ctx.Workspace(name)` (a
   mounted workspace's path), `ctx.Secret(name)` (a delivered secret's file path,
   by the same field name `SecretEnv` used), `ctx.Stdout()`/`ctx.Stderr()`
-  (redacted like command output), `ctx.Logger()` (structured logs to stderr).
+  (redacted like command output), `ctx.Logger()` (structured logs to stderr),
+  `ctx.Failure()` (`(senro.StepFailure, bool)`, set only when running as a
+  handler).
 
 A function's body is compiled into the binary and no plan can describe it, so
 running one elsewhere means moving the binary, not the plan. It runs:
@@ -529,8 +542,16 @@ running one elsewhere means moving the binary, not the plan. It runs:
   that is holding open for it, so its stdout and stderr stay apart. The image
   needs `sh` and `tar`, exactly as carrying a workspace does. One transfer per
   POD, so `binary.staged` reports `reused: false` every time.
-- **As an `OnFailure`/`Always` handler**: coordinator only; a handler inherits
-  its parent's executor and there is nothing to key a staged binary to.
+- **As an `OnFailure`/`Always` handler**: wherever its parent ran. A handler
+  declares no executor and inherits its parent's, and senro stages against that
+  target, reusing the copy the parent step already staged (`binary.staged`
+  reports `reused: true`). Inside it, `ctx.Failure()` returns a
+  `senro.StepFailure` describing the step it is cleaning up after (`Run`,
+  `Step`, `Attempt`, `State`, `ExitCode`, `Error`, `LogTail`), and a second
+  result that is `false` for an ordinary step. It is the func equivalent of an
+  `exec` handler's `SENRO_FAILURE_*` variables, which are unchanged. The one
+  refusal left is a func handler declaring a **delegated** secret, for the same
+  reason a func step cannot.
 
 `senro.WithFuncBuild("./ci")` names the package this program was built from, so
 the binary can be cross-compiled when the target's platform differs; `senro run`

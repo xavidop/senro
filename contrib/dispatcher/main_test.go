@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/xavidop/senro/internal/persist"
+	"github.com/xavidop/senro/trigger"
 )
 
 // newDispatcher builds one backed by a file lock in a temp directory, with a
@@ -59,9 +61,13 @@ func sign(secret, body string) string {
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
+// deliver posts a body the way a real webhook does: with the header naming
+// which source sent it and what happened. Without one the delivery names no
+// event source, which is a 400 before anything else is looked at.
 func deliver(t *testing.T, d *dispatcher, body, sig string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "push")
 	if sig != "" {
 		req.Header.Set("X-Hub-Signature-256", sig)
 	}
@@ -231,4 +237,81 @@ func waitFor(t *testing.T, d *dispatcher, free bool, msg string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal(msg)
+}
+
+// The assertion whose absence let a real bug ship: the pipeline is execed
+// with --trigger-event <file>, and NOTHING here ever checked that the file
+// is one trigger.LoadEvent can read.
+//
+// It could not be: the dispatcher wrote the raw webhook body, and a raw body
+// is not the envelope format. No GitHub, GitLab, Bitbucket or Gitea body
+// says which event it is, which is the whole reason the envelope exists. So
+// every delivery reached the pipeline as "the event names no provider", at
+// the far end of an exec, in a log nobody reads, while these tests went on
+// asserting 202.
+func TestThePipelineReceivesAnEventItCanActuallyLoad(t *testing.T) {
+	dir := t.TempDir()
+	captured := filepath.Join(dir, "captured.json")
+
+	// The stub pipeline copies the file it was handed, so the test can read
+	// exactly what a real pipeline binary would have been given.
+	d := newDispatcher(t, "cp \"$2\" "+captured)
+
+	body := string(rawGitHubPush(t))
+	if got := deliver(t, d, body, sign("shh", body)).Code; got != http.StatusAccepted {
+		t.Fatalf("delivery got %d, want 202", got)
+	}
+	waitFor(t, d, true, "the run did not finish")
+
+	ev, err := trigger.LoadEvent(captured)
+	if err != nil {
+		t.Fatalf("the pipeline was handed a file trigger.LoadEvent cannot read: %v", err)
+	}
+	if ev == nil {
+		t.Fatal("the pipeline was handed no event at all")
+	}
+	if ev.Provider != "github" {
+		t.Errorf("Provider = %q, want github from the X-GitHub-Event header", ev.Provider)
+	}
+	if ev.Kind != trigger.Push {
+		t.Errorf("Kind = %q, want push", ev.Kind)
+	}
+	if ev.Branch != "master" {
+		t.Errorf("Branch = %q, want the branch the payload names", ev.Branch)
+	}
+}
+
+// A delivery carrying no source header names nothing this build can parse,
+// so it is refused before the concurrency group is taken: a run must not be
+// started for a body nobody can attribute.
+func TestADeliveryWithNoSourceHeaderIsRefused(t *testing.T) {
+	d := newDispatcher(t, "exit 0")
+	const body = `{"ref":"refs/heads/main"}`
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("X-Hub-Signature-256", sign("shh", body))
+	w := httptest.NewRecorder()
+	d.serve(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("got %d, want 400 for a delivery naming no event source", w.Code)
+	}
+}
+
+// rawGitHubPush is a real GitHub push body: the trigger package's own
+// fixture, with senro's envelope stripped back off, which is what the wire
+// actually carries.
+func rawGitHubPush(t *testing.T) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "trigger", "testdata", "github-push-branch.json"))
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	var env struct {
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(b, &env); err != nil {
+		t.Fatalf("reading the fixture envelope: %v", err)
+	}
+	return env.Payload
 }
