@@ -2,6 +2,13 @@
 
 All notable changes to senro are documented here. This file is generated from Conventional Commits by semantic-release.
 
+# [1.3.0](https://github.com/xavidop/senro/compare/v1.2.1...v1.3.0) (2026-08-24)
+
+
+### Features
+
+* scratch cache in S3 and between exectors, improved docs ([2b3a11f](https://github.com/xavidop/senro/commit/2b3a11ff45ce96888379ef1c5010d232714b5e34))
+
 ## [1.2.1](https://github.com/xavidop/senro/compare/v1.2.0...v1.2.1) (2026-08-24)
 
 
