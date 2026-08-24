@@ -185,7 +185,7 @@ func TestLogsAttemptAndStreamSelectTheRightFile(t *testing.T) {
 // r.PathValue("step") comes back with "/" intact.
 func TestLogsHandlesAStepIDContainingASlash(t *testing.T) {
 	ts := newTestServer(t, testServerOpts{})
-	const step = "deploy/discover/apply-cm4"
+	const step = "deploy/discover/apply-west"
 	writeLogFile(t, ts.dir, step, 1, api.StreamStdout, "nested-step-output")
 
 	encoded := stepid.Encode(step)

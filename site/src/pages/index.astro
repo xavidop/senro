@@ -333,14 +333,31 @@ const features = [
 </Layout>
 
 <style>
-  /* The hero is sized so the install line is on screen without scrolling on a
-     laptop: at 1440x800 the whole block, `go get` included, lands inside the
-     first viewport. That is the one thing a first-time visitor is looking for,
-     so it must not sit below the fold. */
+  /* The hero is ONE window tall, so the next section starts exactly at the
+     fold rather than showing a sliver of itself above it.
+     
+     100dvh, not 100vh: on mobile Safari and Chrome the visual viewport shrinks
+     as the URL bar retracts, and 100vh is the LARGER of the two, so a 100vh
+     hero is taller than the window at rest and pushes its own install line
+     under the browser chrome.
+
+     min-height rather than height: the content still decides on a short
+     window. At 1440x800 the whole block, `go get` included, already fits;
+     below that the hero grows past the fold instead of clipping, because a
+     first-time visitor is looking for that install line and it must not be
+     cut off to satisfy a number.
+
+     The 66px is the sticky header (Layout.astro), which sits above the hero
+     rather than over it: without subtracting it the hero would be one window
+     PLUS a header tall, and the fold would land in the middle of nothing. */
   .hero {
     position: relative;
     overflow: hidden;
     padding-top: clamp(1.75rem, 1.2rem + 1.8vw, 3rem);
+    min-height: calc(100dvh - 66px);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
   }
   .hero__grid {
     display: grid;

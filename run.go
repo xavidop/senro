@@ -555,7 +555,8 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 	if err != nil {
 		return err
 	}
-	store, err := storage.Open(cacheDir, storage.WithRemote(remote))
+	store, err := storage.Open(cacheDir,
+		storage.WithRemote(remote), storage.WithScratchNamespace(pipeline))
 	if err != nil {
 		return fmt.Errorf("senro: %w", err)
 	}

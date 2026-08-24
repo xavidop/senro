@@ -206,6 +206,6 @@ resolve closes the one it opened.
 ## Where to go next
 
 - **[Notifications](/docs/notifications/)**: the options, the headers, the failure reporting.
-- **[The event stream](/docs/reference/event-stream/)**: what an `api.Event` contains, which is
+- **[The event stream](/docs/run/event-stream/)**: what an `api.Event` contains, which is
   what you are rendering.
 - **[Writing a trace exporter](/docs/extend/exporter/)**: the same sink, folded into spans instead.

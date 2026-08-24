@@ -81,8 +81,7 @@ falls back to running locally.
 
 | What you wrote | Where it is refused |
 |---|---|
-| A `Func` step on `k8s.Pod` | `Build()`. senro does not build the pod's image, so nothing carries the binary in |
-| One scratch cache mounted by a remote step and by a local or container step | `Build()`. The local step writes that directory while the remote step is tarring it |
+| One scratch cache mounted by a remote step and by a local or container step, **with nothing ordering them** | `Build()`. The local step would write that directory while the remote step is tarring it. A `Needs` between them makes it a hand-off, and legal |
 | An unpinned image tag on `k8s.Pod` | `Build()`. Pin it to a digest |
 | `k8s.Pod` with no `k8s.Namespace` | `Build()`. There is no fallback to `default` |
 | An executor on a handler | `Build()`. A handler runs where its parent ran |

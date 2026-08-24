@@ -45,7 +45,7 @@ Named explicitly so the boundary is not re-litigated during implementation:
 §2.8.1 specifies two operations:
 
 ```
-senro rerun <run> --step deploy/apply-cm4-jpmc     # replay recorded fragments
+senro rerun <run> --step deploy/apply-west-acme     # replay recorded fragments
 senro rerun <run> --regenerate                      # re-invoke generators
 ```
 
@@ -142,15 +142,15 @@ generator emits the same vocabulary `plan.json` already publishes:
 ```json
 {
   "version": 1,
-  "nodes": [ { "id": "apply-cm4", "kind": "exec", "cmd": ["./apply","cm4"], "needs": ["preflight-cm4"] } ],
-  "boundary": ["apply-cm4"]
+  "nodes": [ { "id": "apply-west", "kind": "exec", "cmd": ["./apply","west"], "needs": ["preflight-west"] } ],
+  "boundary": ["apply-west"]
 }
 ```
 
 ### 4.2 Identifiers
 
 Fragment node IDs are **relative**. The engine prefixes each with the generator's own ID, which
-produces §2.8's `deploy/discover-clusters/apply-cm4-jpmc` and makes IDs hierarchical and stable
+produces §2.8's `deploy/discover-clusters/apply-west-acme` and makes IDs hierarchical and stable
 without the generator having to know where it sits in the graph. In-fragment `Needs` are rewritten
 with the same prefix.
 

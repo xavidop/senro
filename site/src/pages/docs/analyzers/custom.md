@@ -240,4 +240,4 @@ with the policy wide open, because the analyzer proposed no remedy for a full di
 - **[Failure analyzers](/docs/analyzers/)**: the gate, and who decides a proposal becomes an action.
 - **[Control operations](/docs/attach/control-ops/)**: `analysis.accept` and `analysis.reject` on
   the wire.
-- **[Reading a failed run](/docs/reference/debugging/)**: what senro tells you without any analyzer.
+- **[Reading a failed run](/docs/run/debugging/)**: what senro tells you without any analyzer.

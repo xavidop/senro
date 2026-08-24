@@ -5,9 +5,11 @@ title: Cache keys
 
 # Cache keys
 
-Every action cache key is built from the same twelve components, on every machine, whether the
-result is stored locally or in the [shared cache](/docs/data/shared-cache/). This page covers what's
-in a key, what isn't, and how to read a miss.
+The [action cache](/docs/data/caching/) skips a step when its key matches a result senro already
+has, so the key is what decides whether a step reruns or repeats work you already paid for. Every
+key is built from the same twelve components, on every machine, whether the result is stored locally
+or in the [shared cache](/docs/data/shared-cache/). This page covers what's in a key, what isn't,
+and how to read a miss.
 
 ## The twelve components
 
@@ -91,7 +93,7 @@ senro cache explain build/test     # one step's own key, hit or miss, field by f
   [`senro verify --recheck-pure`](/docs/data/caching/) is for.
 
 Full flags are in [Cache commands](/docs/cli/cache/). A worked example of a miss is in
-[Reading a failed run](/docs/reference/debugging/).
+[Reading a failed run](/docs/run/debugging/).
 
 ## Where to go next
 

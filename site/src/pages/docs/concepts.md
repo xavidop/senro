@@ -87,7 +87,7 @@ folding **that same list** through one function. So:
 That is why there is no "the UI is out of date" state in senro: there is nothing for it to be out
 of date with.
 
-[The event stream](/docs/reference/event-stream/) lists the envelope and every event sent today.
+[The event stream](/docs/run/event-stream/) lists the envelope and every event sent today.
 [Attach](/docs/attach/) is the protocol built on top of it.
 
 ## 3. Two kinds of step

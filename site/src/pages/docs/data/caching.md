@@ -9,6 +9,29 @@ The action cache skips a step if its inputs haven't changed, and restores what i
 time. It's **opt-in per step**: mark the step `Pure()`, declare what it reads with `Inputs`, and
 optionally declare what it produces with `Outputs`.
 
+## Which cache is which
+
+senro says "cache" in three places, and only two of them are caches. The third is a place the first
+one lives.
+
+| Name | What it does | Where it lives |
+| --- | --- | --- |
+| **Action cache** (this page) | Skips a step entirely. Opt in with `Pure()` and `Inputs`, restores its `Outputs` | Local disk, plus the shared store when one is configured |
+| **[Scratch cache](/docs/data/scratch/)** | Restores a *directory* by key before a step runs. Never skips anything | Local disk, and a bucket only if you set `SENRO_REMOTE_SCRATCH` |
+| **[Shared cache](/docs/data/shared-cache/)** (`SENRO_REMOTE_CACHE`) | Not a cache. The S3 or OCI store the action cache is kept in, so other machines can reuse it | It *is* the off-machine part |
+
+One sentence each: the action cache answers "can I skip this work?", the scratch cache answers "can
+I avoid re-downloading this?", and the shared cache answers "where does the action cache live?".
+
+Two consequences worth knowing before you read further. `SENRO_REMOTE_CACHE` on its own does nothing
+for scratch caches: they travel only when you also set `SENRO_REMOTE_SCRATCH`
+([why it is separate](/docs/data/scratch-sharing/)). And a scratch cache's contents never enter an
+action cache key, so the two are fully independent.
+
+A [workspace](/docs/data/workspaces/) is not a cache at all, though it occupies the same mental
+slot. It's how data moves between steps, and unlike a scratch cache it crosses into pods and onto
+ssh hosts.
+
 ```go
 verify.Step("test", exec.Command("go", "test", "./...")).
 	Needs("compile").

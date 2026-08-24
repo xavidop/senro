@@ -20,16 +20,16 @@ func ambient(t *testing.T) string {
 	path := filepath.Join(dir, "config")
 	const doc = `apiVersion: v1
 kind: Config
-current-context: cm4-vodafone-0-p3
+current-context: prod-west-0
 clusters:
-- name: cm4-vodafone-0-p3
+- name: prod-west-0
   cluster:
     server: https://A1B2C3D4E5F6.gr7.eu-west-1.eks.amazonaws.com
 contexts:
-- name: cm4-vodafone-0-p3
-  context: {cluster: cm4-vodafone-0-p3, user: cm4-vodafone-0-p3}
+- name: prod-west-0
+  context: {cluster: prod-west-0, user: prod-west-0}
 users:
-- name: cm4-vodafone-0-p3
+- name: prod-west-0
   user: {token: a-real-production-token}
 `
 	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
@@ -63,7 +63,7 @@ func TestFromEnvIgnoresAnAmbientKubeconfig(t *testing.T) {
 		t.Fatal("FromEnv found a cluster with no SENRO_K8S_* variable set, which can only mean " +
 			"it read the ambient kubeconfig")
 	}
-	for _, forbidden := range []string{path, "eks.amazonaws.com", "cm4-vodafone-0-p3"} {
+	for _, forbidden := range []string{path, "eks.amazonaws.com", "prod-west-0"} {
 		if strings.Contains(err.Error(), forbidden) {
 			t.Errorf("the error mentions %q, so something read the ambient kubeconfig: %v",
 				forbidden, err)

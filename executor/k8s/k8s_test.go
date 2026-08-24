@@ -7,6 +7,7 @@ import (
 	"github.com/xavidop/senro"
 	"github.com/xavidop/senro/exec"
 	"github.com/xavidop/senro/executor/k8s"
+	"github.com/xavidop/senro/internal/plan"
 )
 
 const pinned = "ghcr.io/acme/runner@sha256:" +
@@ -35,6 +36,52 @@ func TestADeclaredUserAndPlatformChangeTheExecutorKey(t *testing.T) {
 	asRoot := k8s.Pod(pinned, k8s.Namespace("ci"), k8s.User("0:0")).ExecutorSpec().Key()
 	arm := k8s.Pod(pinned, k8s.Namespace("ci"), k8s.Platform("linux", "arm64")).ExecutorSpec().Key()
 	for name, got := range map[string]string{"user": asRoot, "platform": arm} {
+		if got == base {
+			t.Errorf("a declared %s did not change the executor key", name)
+		}
+	}
+}
+
+// TestPodTuningOptionsReachTheSpec proves Resources, NodeSelector,
+// Toleration and ImagePullSecrets all land on the executor spec unchanged,
+// the same shape podSpec in internal/executor/k8sexec reads them back in.
+func TestPodTuningOptionsReachTheSpec(t *testing.T) {
+	spec := k8s.Pod(pinned, k8s.Namespace("ci"),
+		k8s.Resources(map[string]string{"cpu": "500m"}, map[string]string{"cpu": "1"}),
+		k8s.NodeSelector(map[string]string{"disktype": "ssd"}),
+		k8s.Toleration("dedicated", "Equal", "ci", "NoSchedule"),
+		k8s.ImagePullSecrets("regcred"),
+	).ExecutorSpec()
+
+	if spec.Resources == nil || spec.Resources.Requests["cpu"] != "500m" || spec.Resources.Limits["cpu"] != "1" {
+		t.Errorf("Resources = %+v", spec.Resources)
+	}
+	if spec.NodeSelector["disktype"] != "ssd" {
+		t.Errorf("NodeSelector = %+v", spec.NodeSelector)
+	}
+	if len(spec.Tolerations) != 1 || spec.Tolerations[0] != (plan.TolerationSpec{
+		Key: "dedicated", Operator: "Equal", Value: "ci", Effect: "NoSchedule",
+	}) {
+		t.Errorf("Tolerations = %+v", spec.Tolerations)
+	}
+	if len(spec.ImagePullSecrets) != 1 || spec.ImagePullSecrets[0] != "regcred" {
+		t.Errorf("ImagePullSecrets = %+v", spec.ImagePullSecrets)
+	}
+}
+
+// TestPodTuningOptionsChangeTheExecutorKey: two targets naming one image
+// but disagreeing about resources, node selector, tolerations or pull
+// secrets must not collapse into one executor that silently schedules the
+// wrong pod.
+func TestPodTuningOptionsChangeTheExecutorKey(t *testing.T) {
+	base := k8s.Pod(pinned, k8s.Namespace("ci")).ExecutorSpec().Key()
+	cases := map[string]string{
+		"resources":          k8s.Pod(pinned, k8s.Namespace("ci"), k8s.Resources(map[string]string{"cpu": "500m"}, nil)).ExecutorSpec().Key(),
+		"node selector":      k8s.Pod(pinned, k8s.Namespace("ci"), k8s.NodeSelector(map[string]string{"disktype": "ssd"})).ExecutorSpec().Key(),
+		"toleration":         k8s.Pod(pinned, k8s.Namespace("ci"), k8s.Toleration("dedicated", "Equal", "ci", "NoSchedule")).ExecutorSpec().Key(),
+		"image pull secrets": k8s.Pod(pinned, k8s.Namespace("ci"), k8s.ImagePullSecrets("regcred")).ExecutorSpec().Key(),
+	}
+	for name, got := range cases {
 		if got == base {
 			t.Errorf("a declared %s did not change the executor key", name)
 		}

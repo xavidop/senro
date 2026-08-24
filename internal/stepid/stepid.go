@@ -1,6 +1,6 @@
 // Package stepid owns senro's step identifier grammar.
 //
-//	stepID   := segment ("/" segment)*         "deploy/discover/apply-cm4"
+//	stepID   := segment ("/" segment)*         "deploy/discover/apply-west"
 //	expanded := stepID "[" k=v ("," k=v)* "]"  keys sorted
 //	address  := (stepID|expanded) ["@" N]      CLI surface only, N >= 1
 //

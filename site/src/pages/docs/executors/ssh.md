@@ -115,6 +115,13 @@ multi-gigabyte dependency tree can be slower to carry over than to just download
 doesn't come back, the run saves nothing rather than storing your stale copy under a key nothing can
 rewrite.
 
+Two ways to get more out of one. **Across runs and machines**, set `SENRO_REMOTE_SCRATCH` and the
+cache is kept in the bucket, so a fresh coordinator starts from what the last run built instead of
+sending an empty tree across ([Sharing scratch caches](/docs/data/scratch-sharing/)). **Within one
+run**, an ssh step can share a cache with a local or container step as long as a `Needs` orders the
+two: a coordinator step warms a module cache, the ssh step reuses it, or the reverse
+([handing one over](/docs/data/scratch/#handing-one-between-a-remote-step-and-a-local-one)).
+
 ## Secrets are files on the host, and they are removed
 
 A secret's value crosses as bytes on the connection's standard input, into a file created under
@@ -234,7 +241,9 @@ session rides it, so a step costs a handshake instead of six.
 - Incremental workspace transfer, and a disk-space check before one.
 - A terminal for `senro shell`, refused with `executor_no_terminal`, because `ssh` driven from pipes
   has no window size to give a remote pty ([Shell](/docs/attach/shell/)).
-- A [scratch cache](/docs/data/scratch/) shared with a step on the coordinator's own filesystem,
-  refused at build time: a local or container step writes that directory while it runs, and an ssh
-  step tarring the same directory would send a half-written tree and then save it under a key nothing
-  can rewrite. Two ssh steps can still share one freely.
+- A [scratch cache](/docs/data/scratch/) shared with a step on the coordinator's own filesystem
+  **when nothing orders the two**, refused at build time: a local or container step writes that
+  directory while it runs, and an ssh step tarring the same directory at that same moment would send
+  a half-written tree and then save it under a key nothing can rewrite. Put a `Needs` between them
+  and it is allowed, because there is no longer a same moment: the cache is handed from whichever
+  runs first to whichever runs second. Two ssh steps can still share one freely, ordered or not.

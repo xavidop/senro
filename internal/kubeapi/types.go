@@ -73,6 +73,18 @@ type PodSpec struct {
 	ServiceAccountName           string               `json:"serviceAccountName,omitempty"`
 	TerminationGracePeriod       *int64               `json:"terminationGracePeriodSeconds,omitempty"`
 	ImagePullSecrets             []LocalObjectRefName `json:"imagePullSecrets,omitempty"`
+	Tolerations                  []Toleration         `json:"tolerations,omitempty"`
+}
+
+// Toleration lets a pod schedule onto a node whose taint would otherwise
+// repel it. Mirrors NodeTaint but adds Operator, which a toleration needs
+// and a taint does not: "Equal" requires Value to match, "Exists" tolerates
+// the key regardless of Value.
+type Toleration struct {
+	Key      string `json:"key,omitempty"`
+	Operator string `json:"operator,omitempty"`
+	Value    string `json:"value,omitempty"`
+	Effect   string `json:"effect,omitempty"`
 }
 
 // LocalObjectRefName names another object in the same namespace.
@@ -99,13 +111,23 @@ type PodSecurityContext struct {
 
 // Container is the step's process.
 type Container struct {
-	Name            string        `json:"name"`
-	Image           string        `json:"image"`
-	Command         []string      `json:"command,omitempty"`
-	Env             []EnvVar      `json:"env,omitempty"`
-	WorkingDir      string        `json:"workingDir,omitempty"`
-	VolumeMounts    []VolumeMount `json:"volumeMounts,omitempty"`
-	ImagePullPolicy string        `json:"imagePullPolicy,omitempty"`
+	Name            string                `json:"name"`
+	Image           string                `json:"image"`
+	Command         []string              `json:"command,omitempty"`
+	Env             []EnvVar              `json:"env,omitempty"`
+	WorkingDir      string                `json:"workingDir,omitempty"`
+	VolumeMounts    []VolumeMount         `json:"volumeMounts,omitempty"`
+	ImagePullPolicy string                `json:"imagePullPolicy,omitempty"`
+	Resources       *ResourceRequirements `json:"resources,omitempty"`
+}
+
+// ResourceRequirements are the compute resources a container requests and is
+// capped at. Values are Kubernetes quantity strings ("500m", "256Mi") carried
+// exactly as the apiserver spells them; this package has no numeric quantity
+// type to parse or format them into.
+type ResourceRequirements struct {
+	Requests map[string]string `json:"requests,omitempty"`
+	Limits   map[string]string `json:"limits,omitempty"`
 }
 
 // EnvVar is one name/value pair. Only the literal form is here: there is no

@@ -5,9 +5,9 @@ title: Shared cache
 
 # Shared cache
 
-The local cache is nearly useless in CI, since every job starts on a fresh runner with an empty
-disk. A shared cache points every machine at one store instead, so a branch build can reuse what
-the trunk build computed, even on a runner that no longer exists.
+The [local cache](/docs/data/caching/) is nearly useless in CI, since every job starts on a fresh
+runner with an empty disk. A shared cache points every machine at one store instead, so a branch
+build can reuse what the trunk build computed, even on a runner that no longer exists.
 
 ## Turn it on
 
@@ -194,12 +194,12 @@ and does not touch the shared store.
 
 senro never deletes from a shared cache, so expiry there is the store's job. Expiring anything is
 always safe: objects are content-addressed and immutable, so the worst outcome is a miss, and the
-step just runs. See [Retention](/docs/data/archiving/#retention) for the lifecycle rule, and why
+step just runs. See [Retention](/docs/run/archiving/#retention) for the lifecycle rule, and why
 logs usually deserve a longer one than the cache.
 
 ## Where to go next
 
 - **[Cache stores](/docs/data/cache-stores/)**: picking a bucket or a registry, and what each costs.
 - **[Cache keys](/docs/data/cache-keys/)**: what a key is made of, here and locally.
-- **[Archiving a run](/docs/data/archiving/)**: the same store holding a run's logs and ledger.
+- **[Archiving a run](/docs/run/archiving/)**: the same store holding a run's logs and ledger.
 - **[Caching a step](/docs/data/caching/)**: making a step eligible in the first place.

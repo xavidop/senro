@@ -77,6 +77,11 @@ type Config struct {
 	// being able to put anything into a cache others trust.
 	ReadOnly bool
 
+	// Scratch shares scratch caches through this remote as well. Off by
+	// default and ignored by the registry backend; see EnvScratch for the
+	// three reasons it is not simply part of turning the cache on.
+	Scratch bool
+
 	// Report receives every degradation. Optional: the report also goes to
 	// ReportWriter regardless, so a caller that wires nothing still finds out.
 	Report func(Degradation)
@@ -131,6 +136,13 @@ type Remote struct {
 	entries *Entries
 	runLogs *RunLogs
 	deg     *degrader
+	// scratch is nil unless sharing scratch caches was asked for AND the
+	// backend is a bucket. Nil is the whole switch: TierScratch hands back
+	// the local cache untouched, so nothing downstream branches on it. A
+	// registry leaves it nil however the variable is set, because the
+	// prefix fallback is a listing and OCI cannot list by prefix.
+	scratch         *scratchDocs
+	scratchReadOnly bool
 }
 
 // Open validates the config and prepares the remote. No I/O: reachability
@@ -180,14 +192,26 @@ func Open(cfg Config) (*Remote, error) {
 
 	docs := &s3Docs{client: client, prefix: prefix}
 	objects := &Objects{client: client, prefix: prefix + "cas/", readOnly: cfg.ReadOnly}
+	var sc *scratchDocs
+	if cfg.Scratch {
+		sc = &scratchDocs{client: client, prefix: prefix + "scratch/"}
+	}
 	return &Remote{
-		name:    client.String(),
-		deg:     deg,
-		objects: objects,
-		entries: &Entries{docs: docs, readOnly: cfg.ReadOnly, deg: deg},
-		runLogs: &RunLogs{objects: objects, docs: docs, readOnly: cfg.ReadOnly, deg: deg},
+		name:            client.String(),
+		deg:             deg,
+		objects:         objects,
+		entries:         &Entries{docs: docs, readOnly: cfg.ReadOnly, deg: deg},
+		runLogs:         &RunLogs{objects: objects, docs: docs, readOnly: cfg.ReadOnly, deg: deg},
+		scratch:         sc,
+		scratchReadOnly: cfg.ReadOnly,
 	}, nil
 }
+
+// SharesScratch reports whether scratch caches travel through this remote,
+// which decides whether the scratch backend snapshots into the tiered object
+// store or the local one alone. False for a registry however it is
+// configured. See Storage.Scratch.
+func (r *Remote) SharesScratch() bool { return r != nil && r.scratch != nil }
 
 // String names the remote without naming its credentials.
 func (r *Remote) String() string { return r.name }

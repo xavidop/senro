@@ -168,6 +168,49 @@ func (d *Dir) read(key string) (cas.Digest, bool, error) {
 	return dg, true, nil
 }
 
+// Lookup reports the content this key points at, without materializing it.
+//
+// For a tier in front of this one (see remotecache.TieredScratch): after a
+// local Save it is how the tier learns the digest to publish remotely, and
+// it answers from the entry file alone, so it costs no snapshot.
+func (d *Dir) Lookup(key string) (cas.Digest, bool, error) { return d.read(key) }
+
+// Adopt records that key holds content ALREADY in the CAS, which is what a
+// tier does with a remote hit so the next run on this machine answers from
+// disk.
+//
+// Immutable exactly as Save is: it claims with O_EXCL and a losing caller
+// gets (false, nil). Deliberately no snapshot, because there is nothing to
+// measure; the digest was verified when the CAS wrote it.
+func (d *Dir) Adopt(key string, dg cas.Digest) (bool, error) {
+	if !dg.Valid() {
+		return false, fmt.Errorf("scratch: adopt %q: %q is not a digest", key, dg)
+	}
+	p := d.entryPath(key)
+	f, err := d.claim(p)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("scratch: adopt %q: %w", key, err)
+	}
+	ok := false
+	defer func() {
+		_ = f.Close()
+		if !ok {
+			_ = os.Remove(p)
+		}
+	}()
+	if _, err := f.Write([]byte(dg)); err != nil {
+		return false, fmt.Errorf("scratch: adopt %q: %w", key, err)
+	}
+	if err := f.Sync(); err != nil {
+		return false, fmt.Errorf("scratch: adopt %q: %w", key, err)
+	}
+	ok = true
+	return true, nil
+}
+
 // Digests reports the content address every stored entry points at, for
 // internal/cache's GC: an entry whose target a sweep collects can never be
 // resaved under the same key, since Save claims with O_EXCL and never

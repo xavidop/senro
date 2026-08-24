@@ -1086,14 +1086,125 @@ func TestValidateRefusesAScratchCacheSharedByARemoteAndALocalStep(t *testing.T) 
 	p := k8sPlan(func(n *plan.Node) {
 		n.Mounts = []plan.MountSpec{{Scratch: "gomod", At: "/go/pkg/mod"}}
 	})
+	// No Needs either way, so the two can run at the same moment.
 	p.Nodes = append(p.Nodes, plan.Node{
 		ID: "lint", Kind: "exec", Cmd: []string{"true"},
 		Mounts: []plan.MountSpec{{Scratch: "gomod", At: "/go/pkg/mod"}},
 	})
 	err := p.Validate()
 	if err == nil {
-		t.Fatal("Validate accepted one scratch cache mounted by a pod and by a coordinator step, " +
-			"so a half-written tree could be saved under an immutable key")
+		t.Fatal("Validate accepted one scratch cache mounted CONCURRENTLY by a pod and by a " +
+			"coordinator step, so a half-written tree could be saved under an immutable key")
+	}
+	for _, want := range []string{"gomod", "deploy", "lint"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not name %q: %v", want, err)
+		}
+	}
+}
+
+// Ordered, the same pair is a hand-off rather than a race: the local step has
+// finished before the pod starts, so nothing writes the directory while it is
+// being tarred. This is what lets a coordinator step fill a module cache and a
+// pod reuse it.
+func TestValidateAcceptsALocalToRemoteScratchHandoff(t *testing.T) {
+	p := k8sPlan(func(n *plan.Node) {
+		n.Mounts = []plan.MountSpec{{Scratch: "gomod", At: "/go/pkg/mod"}}
+		n.Needs = []string{"warm"}
+	})
+	p.Nodes = append(p.Nodes, plan.Node{
+		ID: "warm", Kind: "exec", Cmd: []string{"go", "mod", "download"},
+		Mounts: []plan.MountSpec{{Scratch: "gomod", At: "/go/pkg/mod"}},
+	})
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate refused an ordered local-to-pod scratch hand-off: %v", err)
+	}
+}
+
+// And the other direction: the pod fills it, a coordinator step consumes it.
+func TestValidateAcceptsARemoteToLocalScratchHandoff(t *testing.T) {
+	p := k8sPlan(func(n *plan.Node) {
+		n.Mounts = []plan.MountSpec{{Scratch: "gomod", At: "/go/pkg/mod"}}
+	})
+	p.Nodes = append(p.Nodes, plan.Node{
+		ID: "lint", Kind: "exec", Cmd: []string{"true"},
+		Needs:  []string{"deploy"},
+		Mounts: []plan.MountSpec{{Scratch: "gomod", At: "/go/pkg/mod"}},
+	})
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate refused an ordered pod-to-local scratch hand-off: %v", err)
+	}
+}
+
+// The ordering may run through other steps: what matters is that no schedule
+// exists in which the two overlap, not that the edge is direct.
+func TestValidateAcceptsAScratchHandoffOrderedTransitively(t *testing.T) {
+	p := k8sPlan(func(n *plan.Node) {
+		n.Mounts = []plan.MountSpec{{Scratch: "gomod", At: "/go/pkg/mod"}}
+		n.Needs = []string{"middle"}
+	})
+	p.Nodes = append(p.Nodes,
+		plan.Node{ID: "middle", Kind: "exec", Cmd: []string{"true"}, Needs: []string{"warm"}},
+		plan.Node{
+			ID: "warm", Kind: "exec", Cmd: []string{"go", "mod", "download"},
+			Mounts: []plan.MountSpec{{Scratch: "gomod", At: "/go/pkg/mod"}},
+		},
+	)
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate refused a transitively ordered scratch hand-off: %v", err)
+	}
+}
+
+// A third mounter that is ordered against neither is still a race, even when
+// one pair of the three is ordered: the rule is about every pair, not about
+// whether any ordering exists at all.
+func TestValidateRefusesAnUnorderedThirdScratchMounter(t *testing.T) {
+	p := k8sPlan(func(n *plan.Node) {
+		n.Mounts = []plan.MountSpec{{Scratch: "gomod", At: "/go/pkg/mod"}}
+		n.Needs = []string{"warm"}
+	})
+	p.Nodes = append(p.Nodes,
+		plan.Node{
+			ID: "warm", Kind: "exec", Cmd: []string{"true"},
+			Mounts: []plan.MountSpec{{Scratch: "gomod", At: "/go/pkg/mod"}},
+		},
+		plan.Node{
+			ID: "stray", Kind: "exec", Cmd: []string{"true"},
+			Mounts: []plan.MountSpec{{Scratch: "gomod", At: "/go/pkg/mod"}},
+		},
+	)
+	err := p.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted a third, unordered mounter of a shared scratch cache")
+	}
+	if !strings.Contains(err.Error(), "stray") {
+		t.Errorf("the refusal does not name the unordered step: %v", err)
+	}
+}
+
+// The refusal is not k8s-specific: an ssh step tars the coordinator's
+// directory the same way a pod does, so sharing a scratch cache with a
+// step on the coordinator's own filesystem is exactly as unsafe.
+func TestValidateRefusesAScratchCacheSharedByAnSSHStepAndALocalStep(t *testing.T) {
+	p := &plan.Plan{
+		Version: 1,
+		Nodes: []plan.Node{
+			{
+				ID: "deploy", Kind: "exec", Cmd: []string{"true"},
+				Executor: &plan.ExecutorSpec{Kind: plan.ExecutorSSH, Host: "build-07"},
+				Mounts:   []plan.MountSpec{{Scratch: "gomod", At: "/go/pkg/mod"}},
+			},
+			{
+				ID: "lint", Kind: "exec", Cmd: []string{"true"},
+				Mounts: []plan.MountSpec{{Scratch: "gomod", At: "/go/pkg/mod"}},
+			},
+		},
+		Scratch: []plan.ScratchSpec{{Name: "gomod", Key: "gomod-v1"}},
+	}
+	err := p.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted one scratch cache mounted CONCURRENTLY by an ssh step and by a " +
+			"coordinator step, so a half-written tree could be saved under an immutable key")
 	}
 	for _, want := range []string{"gomod", "deploy", "lint"} {
 		if !strings.Contains(err.Error(), want) {

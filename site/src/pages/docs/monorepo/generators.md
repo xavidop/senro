@@ -10,7 +10,7 @@ A generator fans out over a list that only exists **after something has run**: t
 `terraform plan` says changed, the clusters an API reports right now, the shards a timing tool
 just computed.
 
-Without one, that work goes in a loop inside a single step:
+Without one, that work goes in a loop inside a single step. In this example:
 
 ```sh
 for c in $(list-clusters); do ./preflight "$c" && ./apply "$c"; done
@@ -42,10 +42,25 @@ l.Step("discover", exec.Command("./bin/list-clusters")).
 Each generated step is an ordinary step. It gets its own state, log, cache entry, and retry,
 scheduled under the run's `MaxParallel`. Retrying one cluster retries just that cluster.
 
+### What's actually in a `Fragment`
+
+A `Fragment` is nothing more than a list of steps to add, plus an optional boundary. It never talks
+to the engine, the closure just builds one and hands it back:
+
+- `senro.NewFragment()` starts empty.
+- `f.Step(id, action)` adds one step to the fragment and returns a `*StepBuilder`, the same builder
+  `l.Step` gives you, so `.Needs(...)`, `.Mount(...)`, and the rest work exactly the way they do on
+  an ordinary step.
+- `f.Boundary(...)` names which of the fragment's own steps count as "the generator is done" (see
+  below).
+
+senro takes it from there: it serializes the fragment, checks it, and splices its steps into the
+run under the generator's id.
+
 ## Ids are hierarchical
 
 A fragment names its steps **relatively**, and senro prefixes each one with the generator's id.
-The fragment above produces `discover/preflight-cm4` and `discover/apply-cm4`.
+The fragment above produces `discover/preflight-west` and `discover/apply-west`.
 
 That's what lets a fragment be written once, without knowing where it will sit in the graph. It's
 also why two different generators can both produce an `apply` step without colliding: the prefix
@@ -55,57 +70,97 @@ makes the full id unique even when the relative name repeats.
 flowchart TD
     subgraph discover["generator: discover"]
         direction TB
-        a1["discover/preflight-cm4"]
-        a2["discover/apply-cm4"]
+        a1["discover/preflight-west"]
+        a2["discover/apply-west"]
     end
     subgraph rollout["generator: rollout"]
         direction TB
-        b1["rollout/apply-cm4"]
+        b1["rollout/apply-west"]
     end
 ```
 
 ## The boundary is what dependents wait for
 
-A step that `Needs` the generator waits for the generator to **finish**, but that's the moment
-the generated work *starts*, not when it's done. `Boundary` tells senro what "done" actually
-means:
+Say a `publish` step should run only after every cluster is deployed:
 
 ```go
-f.Boundary(applyStep)
+discover := l.Step("discover", exec.Command("./bin/list-clusters")).
+    Mount(ws.At("/src", senro.RO)).
+    Generates(senro.Generate(func(ctx senro.GenCtx) (*senro.Fragment, error) {
+        // same generator as before: reads clusters.json, builds preflight/apply steps
+        ...
+    }))
+
+l.Step("publish", exec.Command("./notify-slack")).Needs(discover.ID())
 ```
 
-Every existing dependent of the generator now also depends on the boundary steps. If you declare
-no boundary, those dependents wait only on the generator itself. That's the right answer when
-nothing downstream consumes what the generator produced.
+Here's the trap: `discover` is the step that *runs the generator function*, and generating a
+fragment is fast, it's just building a Go value. `discover` finishes the instant it hands that
+fragment back to senro, which is the moment `apply-west` and the other generated steps **start**,
+not the moment they're done. Left alone, `publish` (which only `Needs(discover.ID())`) fires while
+clusters are still mid-deploy.
+
+`Boundary` fixes this by redirecting `discover`'s existing dependents onto the fragment's real
+finish line instead of onto `discover` itself. Inside the generator function, pass it the
+`*StepBuilder` that `f.Step(...)` returned for each "actually done" step, `apply-west` in this
+case:
+
+```go
+apply := f.Step("apply-"+c.Name, exec.Command("./apply", c.Name)).Needs(pre.ID())
+f.Boundary(apply)
+```
+
+Now `publish` effectively waits on `discover/apply-west` (and every other step named in the
+boundary), not on `discover`. Pass `Boundary` several steps if dependents should wait for more
+than one to finish, which is exactly what the first example on this page does in one line:
+`f.Boundary(f.Step("apply-"+c.Name, ...).Needs(pre.ID()))`.
 
 ```mermaid
 flowchart LR
-    subgraph noBoundary["no Boundary declared"]
+    subgraph noBoundary["no Boundary: publish fires too early"]
         direction TB
-        d1["discover"] --> dep1["publish (dependent)"]
+        d1["discover"] --> dep1["publish"]
     end
-    subgraph withBoundary["Boundary(applyStep)"]
+    subgraph withBoundary["Boundary(applyStep): publish fires on time"]
         direction TB
-        d2["discover"] --> pre["preflight-cm4"] --> ap["apply-cm4"]
-        ap --> dep2["publish (dependent)"]
+        d2["discover"] --> pre["preflight-west"] --> ap["apply-west"]
+        ap --> dep2["publish"]
     end
 ```
 
-An empty fragment is legal. It means "nothing to do here," and the generator's dependents run
-rather than being skipped.
+Declaring no boundary is legal, and correct when nothing downstream consumes what the generator
+produced, e.g. a generator that fans out cleanup work nobody waits on. In that case dependents wait
+only on `discover` itself.
+
+An empty fragment (`return senro.NewFragment(), nil`) is legal too. It means "nothing to do here,"
+and the generator's dependents run immediately rather than being skipped.
 
 ## Any language can write one
 
-The Go closure is one way to write a generator. The other is a file, so a shell script, a Python
-tool, or a Terraform wrapper can produce a subgraph too:
+The Go closure is one way to write a generator. The other doesn't involve Go at all: the step's
+command writes a JSON file, and `GenerateFromJSON` just points senro at it.
+
+**`fragment.json` is that file**, and nothing more exotic: the same `nodes` + `boundary` shape a
+`Fragment` builds in Go, written to disk by whatever tool the step ran. That's what makes it work
+from a shell script, a Python tool, or a wrapper around Terraform, none of which can return a Go
+value:
 
 ```go
-l.Step("plan-infra", exec.Command("terraform", "plan", "-json", "-out=tf.plan")).
+l.Step("plan-infra", exec.Command("./bin/plan-infra")).
     Mount(ws.At("/src", senro.RW)).
     Generates(senro.GenerateFromJSON("fragment.json"))
 ```
 
-The file is the public schema: plan nodes plus a boundary list.
+Three things have to line up for this to work:
+
+1. `./bin/plan-infra` runs `terraform plan`, looks at what changed, and **writes `fragment.json`**
+   into the step's own output directory as a side effect, the same directory `Mount` gave it.
+2. The step succeeds (exit code 0). A failed step produces no fragment, Go or JSON, senro doesn't
+   go looking.
+3. senro reads `fragment.json` back, validates it, and splices it into the graph, exactly like it
+   would a Go closure's return value.
+
+A minimal `fragment.json` your script could write:
 
 ```json
 {
@@ -119,12 +174,17 @@ The file is the public schema: plan nodes plus a boundary list.
 }
 ```
 
-Both forms go through exactly the same validation. A Go fragment is serialized to this same
-schema before the engine reads it, so the two never drift apart in what they accept.
+Same rules as the Go form: `id`s are relative (senro prefixes them with `plan-infra/`), `needs`
+can only name other nodes in this same file, and `boundary` lists which of those nodes
+`plan-infra`'s dependents should actually wait for.
 
-The file path resolves against the same root a step's `Outputs` do. That means a generator step
-has to mount a workspace: a step with no workspace has nowhere for senro to read what it
-produced from.
+Both forms go through exactly the same validation, because a Go fragment is serialized to this
+exact schema before the engine reads it. Nothing in senro's core reads Go value data directly,
+it always reads this JSON shape, so writing it by hand is a first-class option, not a fallback.
+
+The file path resolves against the step's own output root, the same one `Outputs` reads from.
+That's why the step needs `Mount`: with no workspace mounted, there's no directory for senro to
+look in for `fragment.json` once the step exits.
 
 ## Your generator doesn't have to be deterministic
 

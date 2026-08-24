@@ -938,6 +938,10 @@ func (s *sandbox) podSpec(c senroexec.Cmd, workDir string, bin bool) kubeapi.Pod
 		mounts = append(mounts, kubeapi.VolumeMount{Name: binVolume, MountPath: BinDir})
 	}
 
+	var resources *kubeapi.ResourceRequirements
+	if r := s.ex.spec.Resources; r != nil {
+		resources = &kubeapi.ResourceRequirements{Requests: r.Requests, Limits: r.Limits}
+	}
 	containers := []kubeapi.Container{{
 		Name: StepContainer, Image: s.ex.spec.Image,
 		Command: c.Args, Env: env, WorkingDir: workDir,
@@ -945,6 +949,10 @@ func (s *sandbox) podSpec(c senroexec.Cmd, workDir string, bin bool) kubeapi.Pod
 		// The image is pinned to a digest (CheckSpec), so IfNotPresent is
 		// both faster and exactly as correct as Always.
 		ImagePullPolicy: "IfNotPresent",
+		// Only the step's own container: senro's stage and reader containers
+		// are its own plumbing, not part of what the pipeline asked to run,
+		// and a limit sized for the step's workload would starve them.
+		Resources: resources,
 	}}
 	var initContainers []kubeapi.Container
 	// Only when there is a workspace to CARRY, not merely to mount: a pod
@@ -960,6 +968,17 @@ func (s *sandbox) podSpec(c senroexec.Cmd, workDir string, bin bool) kubeapi.Pod
 			Name: IOContainer, Image: s.ex.spec.Image,
 			Command: ioCommand(), VolumeMounts: readMounts,
 			ImagePullPolicy: "IfNotPresent",
+		})
+	}
+
+	var imagePullSecrets []kubeapi.LocalObjectRefName
+	for _, name := range s.ex.spec.ImagePullSecrets {
+		imagePullSecrets = append(imagePullSecrets, kubeapi.LocalObjectRefName{Name: name})
+	}
+	var tolerations []kubeapi.Toleration
+	for _, t := range s.ex.spec.Tolerations {
+		tolerations = append(tolerations, kubeapi.Toleration{
+			Key: t.Key, Operator: t.Operator, Value: t.Value, Effect: t.Effect,
 		})
 	}
 
@@ -985,6 +1004,9 @@ func (s *sandbox) podSpec(c senroexec.Cmd, workDir string, bin bool) kubeapi.Pod
 			Volumes:                      volumes,
 			InitContainers:               initContainers,
 			Containers:                   containers,
+			NodeSelector:                 s.ex.spec.NodeSelector,
+			Tolerations:                  tolerations,
+			ImagePullSecrets:             imagePullSecrets,
 		},
 	}
 }

@@ -312,3 +312,56 @@ func TestAServiceAccountAloneDoesNotMountAToken(t *testing.T) {
 		t.Error("naming a ServiceAccount mounted a token on its own")
 	}
 }
+
+// Resources land on the step's own container and nowhere else: senro's
+// stage and reader containers are its own plumbing, not part of what the
+// pipeline asked to run, and a limit sized for the step's workload would
+// starve them.
+func TestResourcesLandOnTheStepContainerOnly(t *testing.T) {
+	pod := podForSpec(plan.ExecutorSpec{
+		Image: "img@sha256:abc", Namespace: "senro",
+		Resources: &plan.ResourceSpec{
+			Requests: map[string]string{"cpu": "500m"},
+			Limits:   map[string]string{"cpu": "1", "memory": "256Mi"},
+		},
+	}, "")
+	got := pod.Spec.Containers[0].Resources
+	if got == nil || got.Requests["cpu"] != "500m" || got.Limits["cpu"] != "1" || got.Limits["memory"] != "256Mi" {
+		t.Errorf("step container Resources = %+v", got)
+	}
+}
+
+// With no Resources declared, the container carries no requests or limits
+// at all, so an unmodified pipeline's pod digests and schedules exactly as
+// it always has.
+func TestByDefaultTheContainerHasNoResources(t *testing.T) {
+	pod := podForSpec(plan.ExecutorSpec{Image: "img@sha256:abc", Namespace: "senro"}, "")
+	if pod.Spec.Containers[0].Resources != nil {
+		t.Errorf("Resources = %+v, want nil", pod.Spec.Containers[0].Resources)
+	}
+}
+
+// NodeSelector, Tolerations and ImagePullSecrets are pod-wide, so they land
+// on the PodSpec rather than on any one container.
+func TestNodeSelectorTolerationsAndImagePullSecretsLandOnThePod(t *testing.T) {
+	pod := podForSpec(plan.ExecutorSpec{
+		Image: "img@sha256:abc", Namespace: "senro",
+		NodeSelector: map[string]string{"disktype": "ssd"},
+		Tolerations: []plan.TolerationSpec{
+			{Key: "dedicated", Operator: "Equal", Value: "ci", Effect: "NoSchedule"},
+		},
+		ImagePullSecrets: []string{"regcred"},
+	}, "")
+
+	if pod.Spec.NodeSelector["disktype"] != "ssd" {
+		t.Errorf("NodeSelector = %+v", pod.Spec.NodeSelector)
+	}
+	want := []kubeapi.Toleration{{Key: "dedicated", Operator: "Equal", Value: "ci", Effect: "NoSchedule"}}
+	if !slices.Equal(pod.Spec.Tolerations, want) {
+		t.Errorf("Tolerations = %+v, want %+v", pod.Spec.Tolerations, want)
+	}
+	wantSecrets := []kubeapi.LocalObjectRefName{{Name: "regcred"}}
+	if !slices.Equal(pod.Spec.ImagePullSecrets, wantSecrets) {
+		t.Errorf("ImagePullSecrets = %+v, want %+v", pod.Spec.ImagePullSecrets, wantSecrets)
+	}
+}

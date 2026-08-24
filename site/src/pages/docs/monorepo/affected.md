@@ -160,7 +160,7 @@ which prunes a node that the plan does contain.
   others decline.
 - **[Triggers](/docs/triggers/)**: where the mode and the base come from.
 - **[Trigger events](/docs/triggers/events/)**: the event file and the per-provider traps.
-- **[Reading a failed run](/docs/reference/debugging/)**: `run.json` records the mode and base
+- **[Reading a failed run](/docs/run/debugging/)**: `run.json` records the mode and base
   consumed.
 - **[Implement a unit graph](/docs/monorepo/unit-graphs/custom/)**: teach senro a layout no shipped graph
   fits.

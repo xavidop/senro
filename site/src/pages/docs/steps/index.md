@@ -110,4 +110,4 @@ many apps, modules or packages and you want one step each, that is
 - **[Ordering](/docs/steps/ordering/)**: the two `Needs`, and the graph they build.
 - **[Step states](/docs/steps/states/)**: the ten states a step can end in.
 - **[Executors](/docs/executors/)**: the four places a step can run.
-- **[Reading a failed run](/docs/reference/debugging/)**: where the evidence is.
+- **[Reading a failed run](/docs/run/debugging/)**: where the evidence is.

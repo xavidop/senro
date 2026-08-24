@@ -5,18 +5,19 @@ title: Archiving a run
 
 # Archiving a run
 
-The [shared cache](/docs/data/shared-cache/) also holds a run's record: its event ledger and every
-step's output. A CI runner is destroyed when the job ends, taking `runs/<id>/` with it. The archive
-is what brings a failed build's logs back.
+A CI runner is destroyed when its job ends, and your build's logs go with it. Archiving is what
+gets them back. While the run is still going, senro uploads each step's output to the
+[shared cache](/docs/data/shared-cache/), so you can pull the whole run down onto any machine
+afterwards and read it exactly as if it had run there.
 
 ```sh
 senro logs fetch 20260812T151058-540c8ca44b    # into ./runs/20260812T151058-540c8ca44b
 senro attach --run 20260812T151058-540c8ca44b  # read it like any other run
 ```
 
-Archiving turns on automatically whenever the shared cache is on: there's nothing else to
-configure. The fetch reads the same `SENRO_REMOTE_CACHE` variables the original run used, so on a
-machine already set up for the shared cache, there's nothing extra to set.
+There is nothing to configure. Archiving turns itself on whenever the shared cache is on, and
+`senro logs fetch` reads the same `SENRO_REMOTE_CACHE` variables the original run used, so any
+machine already set up for the shared cache can already fetch runs.
 
 ## What is uploaded, and when
 
@@ -127,6 +128,6 @@ An expired log is simply missing when a fetch goes looking. The rest of the run 
 ## Where to go next
 
 - **[Shared cache](/docs/data/shared-cache/)**: turning the store on, and how it degrades.
-- **[Reading a failed run](/docs/reference/debugging/)**: what to do with the run directory once you
+- **[Reading a failed run](/docs/run/debugging/)**: what to do with the run directory once you
   have it.
 - **[Attach](/docs/attach/)**: reading a run live instead.

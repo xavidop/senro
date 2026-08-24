@@ -13,6 +13,7 @@ import (
 	"github.com/xavidop/senro/api"
 	"github.com/xavidop/senro/internal/engine"
 	"github.com/xavidop/senro/internal/executor"
+	"github.com/xavidop/senro/internal/executor/localexec"
 	"github.com/xavidop/senro/internal/plan"
 	"github.com/xavidop/senro/internal/scratch"
 	"github.com/xavidop/senro/internal/sink"
@@ -202,5 +203,117 @@ func TestAReadBackScratchCopyDoesNotSurviveTheRun(t *testing.T) {
 		if strings.HasPrefix(e.Name(), ".senro-read-") {
 			t.Errorf("the run directory still holds the read-back copy %q", e.Name())
 		}
+	}
+}
+
+// handoffPlan is the shape the build-time refusal used to forbid: one scratch
+// cache mounted by a step on a machine of its own AND by a step on the
+// coordinator's filesystem, ordered so they cannot overlap.
+func handoffPlan() *plan.Plan {
+	return &plan.Plan{
+		Version: 1,
+		Scratch: []plan.ScratchSpec{{Name: "deps", Key: "deps-v1"}},
+		Nodes: []plan.Node{
+			{
+				ID: "install", Kind: "exec", Cmd: []string{"true"},
+				Executor: &plan.ExecutorSpec{Kind: plan.ExecutorSSH, Host: "build-07"},
+				Mounts:   []plan.MountSpec{{Scratch: "deps", At: "/m"}},
+			},
+			{
+				// Reads what the remote step left and writes proof it saw it.
+				ID: "verify", Kind: "exec",
+				Cmd:    []string{"sh", "-c", "cp m/marker m/seen"},
+				Needs:  []string{"install"},
+				Mounts: []plan.MountSpec{{Scratch: "deps", At: "/m"}},
+			},
+		},
+	}
+}
+
+// TestARemoteStepHandsItsScratchCacheToALocalStep is the whole hand-off: the
+// coordinator step must see what the remote step produced, not the copy that
+// was sent out to it.
+//
+// Without the swap in readScratch this fails at the `cp`, because m/marker
+// only ever existed on the far side and the coordinator's directory still
+// holds what it sent.
+func TestARemoteStepHandsItsScratchCacheToALocalStep(t *testing.T) {
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	store, err := storage.Open(cacheRoot)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ex := &remoteExecutor{left: "from-the-pod"}
+	p := handoffPlan()
+	runDir := filepath.Join(t.TempDir(), "run")
+	status, err := engine.Run(context.Background(), p, engine.Options{
+		Dir: runDir, Storage: store, Sink: sink.Recording(), RunID: "r1",
+		Executor:  localexec.New(runDir, store.Snapshotter),
+		Executors: map[string]executor.Executor{p.Nodes[0].Executor.Key(): ex},
+	})
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if status != api.RunSucceeded {
+		t.Fatalf("run = %v, want succeeded: the local step could not read what the remote left",
+			status)
+	}
+
+	// The saved entry must hold BOTH: the remote step's tree and what the
+	// coordinator step added on top of it. One lineage, not two.
+	dest := filepath.Join(t.TempDir(), "restored")
+	if _, ok, err := store.Scratch.Restore(context.Background(), "deps-v1", nil, dest); err != nil {
+		t.Fatalf("Restore: %v", err)
+	} else if !ok {
+		t.Fatal("nothing was saved for a cache both steps mounted")
+	}
+	marker, err := os.ReadFile(filepath.Join(dest, "marker")) // #nosec G304 -- a path this test named
+	if err != nil {
+		t.Fatalf("the remote step's own tree is missing from the entry: %v", err)
+	}
+	if string(marker) != "from-the-pod" {
+		t.Errorf("marker = %q, want from-the-pod", marker)
+	}
+	seen, err := os.ReadFile(filepath.Join(dest, "seen")) // #nosec G304 -- a path this test named
+	if err != nil {
+		t.Fatalf("the coordinator step's own write is missing from the entry: %v", err)
+	}
+	if string(seen) != "from-the-pod" {
+		t.Errorf("seen = %q, so the local step did not read the remote step's tree", seen)
+	}
+}
+
+// A read-back that fails stores nothing, even for a hand-off: the entry would
+// be written once and never rewritten, so an incomplete tree saved now is
+// what every later run is served.
+func TestAFailedReadBackStoresNothingForAHandoff(t *testing.T) {
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	store, err := storage.Open(cacheRoot)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ex := &remoteExecutor{left: "unused", readErr: errors.New("the pod went away")}
+	p := handoffPlan()
+	// The local step cannot read a marker that never arrived, so it is only
+	// asked to succeed here; what is under test is what the run STORED.
+	p.Nodes[1].Cmd = []string{"true"}
+	runDir := filepath.Join(t.TempDir(), "run")
+	if _, err := engine.Run(context.Background(), p, engine.Options{
+		Dir: runDir, Storage: store, Sink: sink.Recording(), RunID: "r1",
+		Executor:  localexec.New(runDir, store.Snapshotter),
+		Executors: map[string]executor.Executor{p.Nodes[0].Executor.Key(): ex},
+	}); err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "restored")
+	if _, ok, err := store.Scratch.Restore(context.Background(), "deps-v1", nil, dest); err != nil {
+		t.Fatalf("Restore: %v", err)
+	} else if ok {
+		t.Fatal("a hand-off whose read-back failed stored an entry anyway, under an immutable key")
 	}
 }

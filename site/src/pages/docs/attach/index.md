@@ -99,7 +99,7 @@ The runtime directory depends on the platform. `$XDG_RUNTIME_DIR` is only used o
   to the one live entry. If there's more than one, it lists them so you can pick with `--pid`.
 - `senro attach --run <id>` looks up a run by ID instead. It checks live over the socket first,
   then falls back to the recorded run under `runs/<id>/` on disk. See
-  [Reading a failed run](/docs/reference/debugging/) for what that directory contains.
+  [Reading a failed run](/docs/run/debugging/) for what that directory contains.
 
 ## Snapshot, then subscribe
 

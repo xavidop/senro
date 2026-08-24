@@ -60,7 +60,7 @@ func TestEncodeRoundTrip(t *testing.T) {
 	for _, id := range []string{
 		"build/test",
 		"build/test[unit=services/api]",
-		"deploy/discover/apply-cm4[a=1,b=2]",
+		"deploy/discover/apply-west[a=1,b=2]",
 	} {
 		enc := stepid.Encode(id)
 		if enc == "" {

@@ -101,7 +101,7 @@ senro attach --run <run-id>
 
 This is the same client over the same protocol, reading recorded events and step logs instead of a
 live socket. When a run fails, that directory is where the answer is:
-[Reading a failed run](/docs/reference/debugging/) covers every file in `runs/<id>/` and where a
+[Reading a failed run](/docs/run/debugging/) covers every file in `runs/<id>/` and where a
 step's stdout and stderr live.
 
 ## Where to go next

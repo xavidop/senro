@@ -59,7 +59,7 @@ stream you can attach to.
 | [Caching a step](/docs/data/caching/) | `Pure()`, `Inputs`, `Outputs`, `CacheEnv` |
 | [Cache keys](/docs/data/cache-keys/) | What enters a key, and `cache explain` |
 | [Shared cache](/docs/data/shared-cache/) | The S3 and OCI tier, config, degradation |
-| [Archiving](/docs/data/archiving/) | Archiving a run, and `logs fetch` |
+| [Archiving](/docs/run/archiving/) | Archiving a run, and `logs fetch` |
 
 ## Monorepos
 
@@ -155,8 +155,8 @@ stream you can attach to.
 | [Running and watching](/docs/cli/run/) | `senro run`, `attach`, `shell`, `ui` |
 | [Cache commands](/docs/cli/cache/) | `cache gc`, `cache explain`, `verify` |
 | [Workspace commands](/docs/cli/workspaces/) | `ws ls/pull/diff`, `logs fetch`, `func check` |
-| [The event stream](/docs/reference/event-stream/) | The event envelope, and turning it into live state |
-| [`api`](/docs/reference/api/) | The `api` package as a wire contract |
-| [Run options and outcomes](/docs/reference/run-options/) | Every `senro.Run` option, and reading `RunError` |
-| [Reading a failed run](/docs/reference/debugging/) | The run directory, file by file |
+| [The event stream](/docs/run/event-stream/) | The event envelope, and turning it into live state |
+| [`api`](/docs/run/api/) | The `api` package as a wire contract |
+| [Run options and outcomes](/docs/run/options/) | Every `senro.Run` option, and reading `RunError` |
+| [Reading a failed run](/docs/run/debugging/) | The run directory, file by file |
 | [Agent skill](/docs/reference/skill/) | The skill that teaches an AI agent senro |

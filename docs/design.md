@@ -401,7 +401,7 @@ Validation at splice time is all-or-nothing. A partially spliced fragment leaves
 - no cycles, including through the boundary attachment
 - no references to node IDs outside the fragment except the declared boundary
 - no duplicate or colliding IDs; IDs are hierarchical and stable:
-  `deploy/discover-clusters/apply-cm4-jpmc`
+  `deploy/discover-clusters/apply-west-acme`
 - within `MaxNodes`, `MaxDepth` and the run's remaining node budget
 
 ### 2.8.1 Why this does not need deterministic user code
@@ -424,7 +424,7 @@ generator does not run at all, and its fragment is restored from the cache entry
 Two distinct operations follow, and both are legitimate:
 
 ```
-senro rerun <run> --step deploy/apply-cm4-jpmc     # replay recorded fragments; graph identical
+senro rerun <run> --step deploy/apply-west-acme     # replay recorded fragments; graph identical
 senro rerun <run> --regenerate                      # re-invoke generators; graph may differ
 ```
 

@@ -99,9 +99,9 @@ func TestGenerateFromJSONWithNoPathIsRefusedAtBuild(t *testing.T) {
 // produced it.
 func TestAGoFragmentSerializesToTheSameWireFormAJSONGeneratorWrites(t *testing.T) {
 	f := senro.NewFragment()
-	pre := f.Step("preflight-cm4", exec.Command("./preflight", "cm4"))
-	f.Step("apply-cm4", exec.Command("./apply", "cm4")).Needs("preflight-cm4")
-	f.Boundary(f.Step("verify-cm4", exec.Command("./verify", "cm4")))
+	pre := f.Step("preflight-west", exec.Command("./preflight", "west"))
+	f.Step("apply-west", exec.Command("./apply", "west")).Needs("preflight-west")
+	f.Boundary(f.Step("verify-west", exec.Command("./verify", "west")))
 	_ = pre
 
 	b, err := json.Marshal(f)
@@ -116,14 +116,14 @@ func TestAGoFragmentSerializesToTheSameWireFormAJSONGeneratorWrites(t *testing.T
 	if len(got.Nodes) != 3 {
 		t.Fatalf("Nodes = %d, want 3", len(got.Nodes))
 	}
-	if got.Nodes[1].ID != "apply-cm4" {
-		t.Errorf("Nodes[1].ID = %q, want %q: a fragment keeps its declared order", got.Nodes[1].ID, "apply-cm4")
+	if got.Nodes[1].ID != "apply-west" {
+		t.Errorf("Nodes[1].ID = %q, want %q: a fragment keeps its declared order", got.Nodes[1].ID, "apply-west")
 	}
-	if len(got.Nodes[1].Needs) != 1 || got.Nodes[1].Needs[0] != "preflight-cm4" {
-		t.Errorf("Nodes[1].Needs = %v, want [preflight-cm4]", got.Nodes[1].Needs)
+	if len(got.Nodes[1].Needs) != 1 || got.Nodes[1].Needs[0] != "preflight-west" {
+		t.Errorf("Nodes[1].Needs = %v, want [preflight-west]", got.Nodes[1].Needs)
 	}
-	if len(got.Boundary) != 1 || got.Boundary[0] != "verify-cm4" {
-		t.Errorf("Boundary = %v, want [verify-cm4]: it is what the generator's dependents wait on", got.Boundary)
+	if len(got.Boundary) != 1 || got.Boundary[0] != "verify-west" {
+		t.Errorf("Boundary = %v, want [verify-west]: it is what the generator's dependents wait on", got.Boundary)
 	}
 }
 
@@ -406,11 +406,11 @@ func TestAGeneratorWhoseRecordedFragmentIsGoneRunsAgain(t *testing.T) {
 // the compiler.
 func TestAStepBuildersIDIsReadableForDeclaringNeeds(t *testing.T) {
 	f := senro.NewFragment()
-	pre := f.Step("preflight-cm4", exec.Command("true"))
-	if pre.ID() != "preflight-cm4" {
-		t.Fatalf("ID() = %q, want %q", pre.ID(), "preflight-cm4")
+	pre := f.Step("preflight-west", exec.Command("true"))
+	if pre.ID() != "preflight-west" {
+		t.Fatalf("ID() = %q, want %q", pre.ID(), "preflight-west")
 	}
-	f.Step("apply-cm4", exec.Command("true")).Needs(pre.ID())
+	f.Step("apply-west", exec.Command("true")).Needs(pre.ID())
 
 	b, err := json.Marshal(f)
 	if err != nil {
@@ -420,8 +420,8 @@ func TestAStepBuildersIDIsReadableForDeclaringNeeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseFragment: %v", err)
 	}
-	if len(got.Nodes[1].Needs) != 1 || got.Nodes[1].Needs[0] != "preflight-cm4" {
-		t.Errorf("Needs = %v, want [preflight-cm4]", got.Nodes[1].Needs)
+	if len(got.Nodes[1].Needs) != 1 || got.Nodes[1].Needs[0] != "preflight-west" {
+		t.Errorf("Needs = %v, want [preflight-west]", got.Nodes[1].Needs)
 	}
 }
 

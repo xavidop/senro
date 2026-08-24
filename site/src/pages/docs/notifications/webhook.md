@@ -6,7 +6,7 @@ title: Webhook
 # Webhook
 
 Posts each event to an HTTP endpoint as JSON: the `api.Event` itself, exactly as
-[`event.schema.json`](/docs/reference/api/) describes it. A receiver needs no senro-specific
+[`event.schema.json`](/docs/run/api/) describes it. A receiver needs no senro-specific
 knowledge, just the schema.
 
 ```go
@@ -126,7 +126,7 @@ Every [option](/docs/notifications/#options) works here. The ones that matter mo
 
 ## Where to go next
 
-- **[The `api` package](/docs/reference/api/)**: the schema your receiver decodes.
-- **[The event stream](/docs/reference/event-stream/)**: every event type, and what its payload
+- **[The `api` package](/docs/run/api/)**: the schema your receiver decodes.
+- **[The event stream](/docs/run/event-stream/)**: every event type, and what its payload
   holds.
 - **[Notifications](/docs/notifications/)**: retries, drops, and how a failed delivery is reported.

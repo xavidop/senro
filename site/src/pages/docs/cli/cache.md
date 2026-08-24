@@ -5,9 +5,9 @@ title: "CLI: cache and verify"
 
 # CLI: cache and verify
 
-This page covers the three commands for reading and reclaiming the cache: `senro cache gc`,
-`senro cache explain`, and `senro verify`. For the full command table and exit codes, see
-[CLI](/docs/cli/).
+This page covers the four commands for reading and reclaiming the cache: `senro cache gc`,
+`senro cache explain`, `senro cache scratch`, and `senro verify`. For the full command table and
+exit codes, see [CLI](/docs/cli/).
 
 **Where the cache root is**, for every `--cache-dir` flag below: the flag if you pass it,
 otherwise `$SENRO_CACHE_DIR`, otherwise `os.UserCacheDir()/senro`. This is the same root that
@@ -80,6 +80,36 @@ emit events anywhere else, so this is the one place you can see their behavior: 
 cache, reporting `cold`, `cold, saved`, `restored (exact)`, or `restored from <key>`.
 
 See [Cache keys](/docs/data/cache-keys/) for what each component means.
+
+## `senro cache scratch`
+
+```bash
+senro cache scratch [--pipeline NAME] [--limit N] [KEY-PREFIX]
+
+senro cache scratch                        # every pipeline sharing the store, newest first
+senro cache scratch --pipeline acme-ci     # just this pipeline's entries
+senro cache scratch --pipeline acme-ci gomod-   # and just the keys a RestoreKeys prefix would match
+```
+
+Lists what the **shared bucket** holds, which nothing else can show you. `cache explain` reports one
+run's view of its own scratch caches; this reports the store itself, so it answers "is anything in
+there at all" and "would my `RestoreKeys` prefix match it".
+
+```
+PIPELINE                  KEY                                       SIZE  STORED
+acme-ci                   gomod-9f2c1e8b                        412.7 MiB  2026-08-24T11:02:19Z
+acme-ci                   npm-4d1a77c0                            1.8 GiB  2026-08-23T18:40:02Z
+```
+
+- **Reads the same `SENRO_REMOTE_*` environment a run does**, so a shell already set up for the
+  shared cache needs nothing extra beyond `SENRO_REMOTE_SCRATCH=1`.
+- **`--pipeline` is the namespace** entries are stored under, which is the name passed to
+  `senro.New`. Omit it to see every pipeline sharing the bucket.
+- **Needs `s3:ListBucket`**, which nothing else in senro uses. A credential scoped to `GetObject`
+  and `PutObject` alone reaches everything else and fails here.
+- **Buckets only.** An `oci://` target refuses, because the registry API cannot list by prefix.
+
+See [Sharing scratch caches](/docs/data/scratch-sharing/).
 
 ## `senro verify`
 

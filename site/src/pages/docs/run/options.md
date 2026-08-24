@@ -81,7 +81,7 @@ if err := senro.Run(ctx, p, senro.WithAttach(att)); err != nil {
   `partial`, `failed`, or `cancelled`. See [Step states](/docs/steps/states/) for how steps roll up
   into this.
 - **`Dir`**: the run directory, containing `events.jsonl`, `plan.json`, and every step's logs. See
-  [Reading a failed run](/docs/reference/debugging/).
+  [Reading a failed run](/docs/run/debugging/).
 - **`Steps`**: up to three steps behind the failure, each with `ID`, `State`, and `ExitCode`.
   `ExitCode` only means something when `State` is `failed`; otherwise it's `0`.
 - **`StepsOmitted`**: how many more failing steps exist beyond those three.

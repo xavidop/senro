@@ -50,7 +50,7 @@ that the [stream's](/docs/attach/#snapshot-then-subscribe) resume parameter is `
 ## The eleven operations
 
 These are the only eleven operations this build supports. Any other `type` value is refused with
-`unknown_op`. Each has a declared constant in [`api`](/docs/reference/api/).
+`unknown_op`. Each has a declared constant in [`api`](/docs/run/api/).
 
 | Operation | Argument | What it does |
 |---|---|---|

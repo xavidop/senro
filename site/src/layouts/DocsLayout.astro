@@ -56,16 +56,31 @@ const groups = [
     ],
   },
   {
-    label: "Files & caching",
+    label: "Files & data",
     items: [
       { slug: "data/workspaces", title: "Workspaces" },
       { slug: "data/persistent", title: "Persistent workspaces" },
       { slug: "data/scratch", title: "Scratch caches" },
+      { slug: "data/scratch-sharing", title: "Sharing scratch caches" },
+    ],
+  },
+  {
+    label: "The action cache",
+    items: [
       { slug: "data/caching", title: "Caching a step" },
       { slug: "data/cache-keys", title: "What's in a cache key" },
-      { slug: "data/shared-cache", title: "Sharing a cache" },
+      { slug: "data/shared-cache", title: "Sharing it across machines" },
       { slug: "data/cache-stores", title: "Buckets & registries" },
-      { slug: "data/archiving", title: "Archiving runs" },
+    ],
+  },
+  {
+    label: "Runs",
+    items: [
+      { slug: "run/options", title: "Starting a run" },
+      { slug: "run/debugging", title: "Reading a failed run" },
+      { slug: "run/archiving", title: "Archiving runs" },
+      { slug: "run/event-stream", title: "The event stream" },
+      { slug: "run/api", title: "api: the wire contract" },
     ],
   },
   {
@@ -163,13 +178,7 @@ const groups = [
   },
   {
     label: "Reference",
-    items: [
-      { slug: "reference/debugging", title: "Reading a failed run" },
-      { slug: "reference/skill", title: "Agent skill" },
-      { slug: "reference/run-options", title: "Run options and outcomes" },
-      { slug: "reference/event-stream", title: "The event stream" },
-      { slug: "reference/api", title: "api: the wire contract" },
-    ],
+    items: [{ slug: "reference/skill", title: "Agent skill" }],
   },
 ];
 
@@ -615,17 +624,30 @@ const next = idx >= 0 && idx < flat.length - 1 ? flat[idx + 1] : null;
     font-size: 0.74rem;
     letter-spacing: 0.02em;
   }
-  /* Code in a table cell WRAPS. It used to be nowrap, which reads well for a
-     short identifier and is why it was written that way — but the cells here
-     also hold import paths like github.com/xavidop/senro/executor/container,
-     and one of those forces the whole table wider than the content column.
-     The table then scrolled, invisibly, and the last column looked truncated.
-     Wrapping at any character rather than only at spaces, because a path has
-     none. */
+  /* Code in a table cell wraps. It used to be nowrap, which reads well for a
+     short identifier and is why it was written that way, but the cells also
+     hold import paths like github.com/xavidop/senro/executor/container, and
+     one of those forces the whole table wider than the content column.
+     box-decoration-break keeps each fragment of a wrapped pill looking like a
+     pill instead of one open-ended box. */
   .doc td code,
   .doc th code {
     white-space: normal;
     overflow-wrap: anywhere;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+  }
+  /* Short code stays whole. Wrapping alone is not enough: the browser breaks
+     at every hyphen and dot it finds, so senro.ScopePersistent and --filter
+     came apart mid-identifier with room to spare on the line. remarkTableCode
+     in astro.config.mjs flags the ones short enough to fit a column. */
+  .doc td code.code-atom,
+  .doc th code.code-atom {
+    white-space: nowrap;
+  }
+  .doc th,
+  .doc td {
+    overflow-wrap: break-word;
   }
   .doc hr {
     border: 0;

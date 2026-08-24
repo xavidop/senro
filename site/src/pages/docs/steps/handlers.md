@@ -172,6 +172,6 @@ way: a func handler does not take them away from anything.
 - **[Step states](/docs/steps/states/)**: what `SENRO_FAILURE_STATE` can say.
 - **[Go functions as steps](/docs/steps/functions/)**: `senro.Func`, `senro.Ctx` and
   `RegisterFunc`.
-- **[The event stream](/docs/reference/event-stream/)**: the `handler.started`, `handler.succeeded`
+- **[The event stream](/docs/run/event-stream/)**: the `handler.started`, `handler.succeeded`
   and `handler.failed` events a handler run emits.
 - **[Workspaces](/docs/data/workspaces/)**: what a handler gets to read back.

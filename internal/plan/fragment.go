@@ -19,7 +19,7 @@ const FragmentVersion = 1
 // Node ids here are RELATIVE. The engine prefixes each with the generator's
 // own id at splice time, so a fragment does not have to know where in the
 // graph it will land, and the ids it produces are hierarchical and stable
-// (design §2.8: deploy/discover-clusters/apply-cm4-jpmc).
+// (design §2.8: deploy/discover-clusters/apply-west-acme).
 //
 // This is the public schema. "Write a plan fragment to this path" is a
 // contract any language can honour, and it is the same shape a Go generator

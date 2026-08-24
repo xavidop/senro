@@ -72,6 +72,13 @@ type Storage struct {
 	// ActionCache is every action-cache entry this run reads and writes: the
 	// local cache, with the remote one behind it when there is a remote.
 	ActionCache cache.ActionCache
+	// ScratchCache is the scratch cache the engine should use: Scratch
+	// itself unless the remote is sharing scratch caches, in which case the
+	// bucket sits behind it. Separate from Scratch for the reason
+	// ActionCache is separate from Action: the GC and `senro cache` want the
+	// local directory specifically, and a run wants whatever tier is
+	// configured.
+	ScratchCache scratch.Cache
 	// Remote is the shared cache, or nil when none is configured. Held so a
 	// caller can ask whether it is still live, and so Close can release it.
 	Remote *remotecache.Remote
@@ -80,7 +87,23 @@ type Storage struct {
 // Option configures Open.
 type Option func(*options)
 
-type options struct{ remote *remotecache.Remote }
+type options struct {
+	remote    *remotecache.Remote
+	namespace string
+}
+
+// WithScratchNamespace names the project whose scratch entries a shared
+// bucket keeps apart from everyone else's.
+//
+// A scratch key renders from lock-file content alone and carries no
+// repository in it, so on one bucket two projects declaring
+// RestoreKeys("gomod-") would match each other's entries. The pipeline's own
+// name is the namespace; senro.RunPlan has no pipeline and so passes "",
+// which leaves scratch caches local rather than writing them somewhere
+// nothing distinguishes.
+func WithScratchNamespace(name string) Option {
+	return func(o *options) { o.namespace = name }
+}
 
 // WithRemote puts a shared, remote cache behind the local one.
 //
@@ -138,9 +161,16 @@ func Open(root string, opts ...Option) (*Storage, error) {
 	}
 
 	snap := workspace.NewSnapshotter(objects)
-	// The scratch cache gets its own snapshotter over the local store alone.
-	// See Storage.Scratch's own doc.
-	sc, err := scratch.Open(filepath.Join(root, "scratch"), workspace.NewSnapshotter(store))
+	// The scratch cache gets its own snapshotter over the local store alone,
+	// UNLESS the remote is sharing scratch caches: the entry in the bucket is
+	// a pointer, so its content has to be in the shared object store or every
+	// hit would name bytes the fetching machine does not have. See
+	// Storage.Scratch's own doc for why local-alone is the default.
+	var scratchObjects cas.Store = store
+	if o.remote.SharesScratch() {
+		scratchObjects = objects
+	}
+	sc, err := scratch.Open(filepath.Join(root, "scratch"), workspace.NewSnapshotter(scratchObjects))
 	if err != nil {
 		return nil, err
 	}
@@ -151,10 +181,20 @@ func Open(root string, opts ...Option) (*Storage, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Local unless the remote shares scratch AND this run has a namespace to
+	// keep its entries under; TierScratch decides, so there is no second
+	// copy of that rule here.
+	var scratchCache scratch.Cache = sc
+	if o.remote != nil {
+		scratchCache = o.remote.TierScratch(sc, workspace.NewSnapshotter(scratchObjects), o.namespace)
+	}
 	return &Storage{
 		Root: root, CAS: store, Action: action, Scratch: sc, Persist: ps,
-		Snapshotter: snap,
-		Objects:     objects, ActionCache: entries, Remote: o.remote,
+		Snapshotter:  snap,
+		Objects:      objects,
+		ActionCache:  entries,
+		ScratchCache: scratchCache,
+		Remote:       o.remote,
 	}, nil
 }
 

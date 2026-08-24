@@ -15,7 +15,7 @@ It's part of the main `senro` module, so `go get github.com/xavidop/senro` is al
 ## What's in it
 
 - **`Event`** and **`Type`**: the envelope every stream entry uses, and the full list of event
-  types. See [The event stream](/docs/reference/event-stream/).
+  types. See [The event stream](/docs/run/event-stream/).
 - **`Frame`**, **`Kind`**, and the `Op*` constants: the attach wire protocol. See
   [Control operations](/docs/attach/control-ops/).
 - **`State`** and **`RunStatus`**: a step's final state and a run's overall outcome, plus
@@ -46,6 +46,6 @@ your client.
 
 ## Where to go next
 
-- **[The event stream](/docs/reference/event-stream/)**: the envelope, in depth.
+- **[The event stream](/docs/run/event-stream/)**: the envelope, in depth.
 - **[Attach](/docs/attach/)**: the protocol built on these types.
 - **[Step states](/docs/steps/states/)**: what `State` and `RunStatus` mean.

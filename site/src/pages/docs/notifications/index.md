@@ -159,5 +159,5 @@ repeatable and composes with `senro.WithAttach`.
 - **[Slack](/docs/notifications/slack/)**, **[Webhook](/docs/notifications/webhook/)**,
   **[GitHub Checks](/docs/notifications/github-checks/)**: each destination in full.
 - **[Write your own](/docs/notifications/custom/)**: one method, with a complete PagerDuty example.
-- **[The event stream](/docs/reference/event-stream/)**: the events a destination renders.
+- **[The event stream](/docs/run/event-stream/)**: the events a destination renders.
 - **[Writing a trace exporter](/docs/extend/exporter/)**: the other thing built on `WithSink`.

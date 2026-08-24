@@ -163,6 +163,65 @@ func DelegateSecrets() Option {
 	return func(s *plan.ExecutorSpec) { s.DelegateSecrets = true }
 }
 
+// Resources declares the step's container's compute requests and limits.
+// Values are Kubernetes quantity strings exactly as the apiserver takes
+// them ("500m", "256Mi"); senro parses none of them, so a malformed
+// quantity is reported by the apiserver rejecting the pod, not by Build.
+//
+//	k8s.Resources(map[string]string{"cpu": "500m", "memory": "256Mi"},
+//		map[string]string{"cpu": "1", "memory": "512Mi"})
+//
+// Either map may be nil: requests alone ask the scheduler for room without
+// capping the container, limits alone cap it without reserving anything.
+// Left undeclared, the container gets neither, the ordinary case for a
+// step whose usage nobody has profiled yet.
+func Resources(requests, limits map[string]string) Option {
+	return func(s *plan.ExecutorSpec) {
+		s.Resources = &plan.ResourceSpec{Requests: requests, Limits: limits}
+	}
+}
+
+// NodeSelector constrains the pod to nodes carrying every named label.
+//
+//	k8s.NodeSelector(map[string]string{"disktype": "ssd"})
+//
+// Left undeclared, the scheduler places the pod on any node that will take
+// it.
+func NodeSelector(labels map[string]string) Option {
+	return func(s *plan.ExecutorSpec) { s.NodeSelector = labels }
+}
+
+// Toleration lets the pod schedule onto a node a taint would otherwise
+// repel. Operator is "Equal" (value must match) or "Exists" (value is
+// ignored).
+//
+//	k8s.Toleration("dedicated", "Equal", "ci", "NoSchedule")
+//
+// Declare one per taint the target nodes carry; a pod tolerates only what
+// it names.
+func Toleration(key, operator, value, effect string) Option {
+	return func(s *plan.ExecutorSpec) {
+		s.Tolerations = append(s.Tolerations, plan.TolerationSpec{
+			Key: key, Operator: operator, Value: value, Effect: effect,
+		})
+	}
+}
+
+// ImagePullSecrets names the namespace's docker-registry Secrets the node
+// pulls the pod's image with.
+//
+//	k8s.Pod(ref, k8s.Namespace("ci"), k8s.ImagePullSecrets("regcred"))
+//
+// Distinct from container.RegistryAuth, which this executor refuses at
+// Build(): that credential is resolved by senro and pushed for the
+// container executor to pull with directly, while this names a Secret
+// that must already exist in the target namespace, and the node's own
+// kubelet resolves it, the ordinary way a pod pulls a private image. A
+// missing Secret is reported when the pod fails to schedule, naming it.
+func ImagePullSecrets(names ...string) Option {
+	return func(s *plan.ExecutorSpec) { s.ImagePullSecrets = append(s.ImagePullSecrets, names...) }
+}
+
 // Pod targets the workflow at a pod running ref, which must be pinned to a
 // digest.
 func Pod(ref string, opts ...Option) Target {

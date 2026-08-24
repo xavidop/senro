@@ -5,10 +5,11 @@ title: Workspaces
 
 # Workspaces
 
-A `Workspace` is a named, versioned directory. senro snapshots it into a local content-addressed
-store (files are keyed by the hash of their contents, so identical files are only ever stored once)
-when a step that mounts it finishes, and restores it for the next step that needs it. This is
-how one step hands its files to another.
+One step compiles a binary and another step tests it. A `Workspace` is how the first hands its
+files to the second: a named, versioned directory that both steps mount. senro snapshots it into a
+local content-addressed store (files are keyed by the hash of their contents, so identical files are
+only ever stored once) when a step that mounts it finishes, and restores it for the next step that
+needs it.
 
 ```go
 src := senro.Workspace("src", senro.Scope(senro.ScopeRun))

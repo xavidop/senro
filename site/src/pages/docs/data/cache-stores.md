@@ -5,9 +5,12 @@ title: Cache stores
 
 # Cache stores
 
-The [shared cache](/docs/data/shared-cache/) works with anything that speaks the S3 API, or with
-any OCI registry. Both hold the same objects, entries, and archived runs, verify them the same way,
-and degrade the same way. This page helps you pick one and configure it.
+Turning on the [shared cache](/docs/data/shared-cache/) means picking somewhere for it to live:
+anything that speaks the S3 API, or any OCI registry. Both hold the same objects, action cache
+entries, and [archived runs](/docs/run/archiving/), verify them the same way, and degrade the same
+way when the store is unreachable. What differs is what you already run, what it costs to expire,
+and how legible the store is when you go looking through it. This page helps you pick one and
+configure it.
 
 ## Which one
 
@@ -17,6 +20,10 @@ and degrade the same way. This page helps you pick one and configure it.
   setup: no region to guess at, no addressing style, no second system to provision.
 - **A bucket lists more legibly.** A key holds the step id and run id in the clear; a registry tag
   cannot. See [what a tag costs](#what-a-tag-costs).
+- **Only a bucket can share scratch caches.** `SENRO_REMOTE_SCRATCH` needs a prefix listing for the
+  `RestoreKeys` fallback, and the registry API cannot list by prefix, so an `oci://` target ignores
+  it. This is the one thing the two backends do not both do. See
+  [Sharing scratch caches](/docs/data/scratch-sharing/).
 
 ## Buckets
 
@@ -174,4 +181,4 @@ Nothing needs a delete permission, because senro never deletes from a shared cac
 
 - **[Shared cache](/docs/data/shared-cache/)**: turning the tier on, its variables, and how it
   degrades.
-- **[Archiving a run](/docs/data/archiving/)**: the run records this store also holds.
+- **[Archiving a run](/docs/run/archiving/)**: the run records this store also holds.

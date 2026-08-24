@@ -108,7 +108,7 @@ know when reading this stream:
 - **`step.log.appended` only records the offset and length** of bytes written, never the bytes
   themselves. Read the actual output from `logs/`: `cat runs/<id>/logs/boom/1/stderr`.
 
-See [The event stream](/docs/reference/event-stream/) for the envelope and every event type.
+See [The event stream](/docs/run/event-stream/) for the envelope and every event type.
 
 ## Which tool, when
 
@@ -190,11 +190,11 @@ if errors.As(err, &runErr) {
 ```
 
 `runErr.Steps` names up to three of them, each with `ID`, `State` and `ExitCode`. See
-[Run options and outcomes](/docs/reference/run-options/) for the full field list.
+[Run options and outcomes](/docs/run/options/) for the full field list.
 
 ## Where to go next
 
 - **[Step states](/docs/steps/states/)**: the ten step states and how a run's status rolls up.
-- **[The event stream](/docs/reference/event-stream/)**: the envelope, and folding a stream in
+- **[The event stream](/docs/run/event-stream/)**: the envelope, and folding a stream in
   your own code.
 - **[CLI](/docs/cli/)**: every command and flag, and the exit-code contract.

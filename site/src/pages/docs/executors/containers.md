@@ -141,7 +141,13 @@ build.Step("compile", exec.Command("pnpm", "build")).
   the mount *is* your directory: only the snapshot leaves them out.
   [Workspaces](/docs/data/workspaces/) covers what a snapshot carries.
 - [Scratch caches](/docs/data/scratch/) work here too, bind-mounted like a workspace with no transfer
-  to pay, unlike on the Kubernetes and SSH executors.
+  to pay, unlike on the Kubernetes and SSH executors. They can also be shared **between machines**
+  through the bucket with `SENRO_REMOTE_SCRATCH`, which is what stops a cold CI runner installing
+  dependencies from scratch; see [Sharing scratch caches](/docs/data/scratch-sharing/). A container
+  step counts as running on the coordinator's filesystem, so it may share one cache with a Kubernetes
+  or SSH step **within a run** as long as a `Needs` orders the two
+  ([handing one over](/docs/data/scratch/#handing-one-between-a-remote-step-and-a-local-one)).
+  Unordered, that combination is still refused.
 
 ## Secrets never reach the container's configuration
 

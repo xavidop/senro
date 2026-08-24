@@ -101,7 +101,7 @@ func TestAShellCarriesTheStepAndCommandItWasAskedFor(t *testing.T) {
 
 	ls := dialLive(t, sock)
 	if _, err := ls.Shell(context.Background(), source.ShellRequest{
-		Step:   "deploy/discover/apply-cm4",
+		Step:   "deploy/discover/apply-west",
 		Cmd:    []string{"bash", "-lc", "ls -la"},
 		Stdin:  strings.NewReader(""),
 		Stdout: io.Discard, Stderr: io.Discard,
@@ -111,7 +111,7 @@ func TestAShellCarriesTheStepAndCommandItWasAskedFor(t *testing.T) {
 
 	select {
 	case req := <-seen:
-		if req.Step != "deploy/discover/apply-cm4" {
+		if req.Step != "deploy/discover/apply-west" {
 			t.Errorf("Step = %q, want the nested id intact across the wire", req.Step)
 		}
 		if len(req.Cmd) != 3 || req.Cmd[2] != "ls -la" {

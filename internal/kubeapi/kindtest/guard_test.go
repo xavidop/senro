@@ -35,20 +35,20 @@ func kindLike() *kubeconfig {
 // one of them, and this is the fixture that says so in code.
 func remoteLike() *kubeconfig {
 	return &kubeconfig{
-		CurrentContext: "cm4-vodafone-0-p3",
+		CurrentContext: "prod-west-0",
 		Clusters: []namedCluster{{
-			Name: "cm4-vodafone-0-p3",
+			Name: "prod-west-0",
 			Cluster: clusterEntry{
 				Server:                   "https://A1B2C3D4E5F6.gr7.eu-west-1.eks.amazonaws.com",
 				CertificateAuthorityData: "LS0tLUNB",
 			},
 		}},
 		Contexts: []namedContext{{
-			Name:    "cm4-vodafone-0-p3",
-			Context: contextEntry{Cluster: "cm4-vodafone-0-p3", User: "cm4-vodafone-0-p3"},
+			Name:    "prod-west-0",
+			Context: contextEntry{Cluster: "prod-west-0", User: "prod-west-0"},
 		}},
 		Users: []namedUser{{
-			Name: "cm4-vodafone-0-p3",
+			Name: "prod-west-0",
 			User: userEntry{ClientCertificateData: "LS0tLUNFUlQ=", ClientKeyData: "LS0tLUtFWQ=="},
 		}},
 	}
@@ -66,7 +66,7 @@ func TestTheGuardRefusesARemoteContext(t *testing.T) {
 	if conn.Server != "" || conn.Context != "" || len(conn.CAData)+len(conn.CertData)+len(conn.KeyData) != 0 {
 		t.Fatalf("guard refused but still returned a connection: %+v", conn)
 	}
-	for _, want := range []string{"cm4-vodafone-0-p3", "kind-senro-executor"} {
+	for _, want := range []string{"prod-west-0", "kind-senro-executor"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %q, so a reader cannot tell what was found or expected",
 				err, want)
@@ -129,7 +129,7 @@ func TestTheGuardRefusesAKubeconfigCarryingAnyOtherCluster(t *testing.T) {
 	if err == nil {
 		t.Fatal("guard accepted a kubeconfig that also carries a production cluster")
 	}
-	if !strings.Contains(err.Error(), "cm4-vodafone-0-p3") {
+	if !strings.Contains(err.Error(), "prod-west-0") {
 		t.Errorf("error %q does not name the extra cluster it refused", err)
 	}
 }

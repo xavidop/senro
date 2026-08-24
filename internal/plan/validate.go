@@ -697,27 +697,40 @@ func (p *Plan) validateStorage() error {
 
 // validateScratchTargets refuses one scratch cache mounted BOTH by a step
 // whose target shares the coordinator's filesystem (local, container) and by
-// a step whose target does not (k8s, ssh).
+// a step whose target does not (k8s, ssh), UNLESS the graph orders the two so
+// they cannot run at the same time.
 //
 // A remote step's copy is carried across as a tar of the coordinator's
-// directory and read back when the step exits, and the two kinds cannot
-// share that directory safely: a local or container step writes it LIVE for
-// as long as it runs, so a sibling remote step tarring it at the same moment
-// would send a half-written tree, get it back with its own additions on top,
-// and store that under the run's key. A scratch entry is written once and
-// never rewritten, so a corrupt module cache saved there is the answer every
-// later run gets.
+// directory and read back when the step exits. A local or container step
+// writes that directory LIVE for as long as it runs, so a CONCURRENT remote
+// step tarring it would send a half-written tree, get it back with its own
+// additions on top, and store that under the run's key. A scratch entry is
+// written once and never rewritten, so a corrupt module cache saved there is
+// the answer every later run gets.
 //
-// Deliberately refused whether or not the two steps can actually overlap:
-// the alternative is a rule about the shape of the dependency graph that
-// changes meaning when somebody removes an edge, and the fix here is one
-// line either way (a second scratch cache, or one kind of target).
+// What makes that safe is ordering, and only ordering. When a Needs path runs
+// between the two steps, one has finished before the other starts, nothing is
+// written while anything is tarred, and the hand-off is the point: a local
+// step fills a module cache and a pod reuses it, or the reverse (see
+// wsManager.readScratch, which keeps ONE lineage for exactly these caches).
 //
-// Sorted, so a plan tripping this twice names the same cache every run.
+// Unordered pairs are still refused. This is deliberately a rule about the
+// shape of the graph, which means removing a Needs edge can turn a working
+// pipeline into a refusal: that is the trade, and it is the safe direction to
+// fail, because the alternative is the same edit silently corrupting an
+// immutable entry.
+//
+// Ancestry is computed once per mounting step rather than once per pair, and
+// the refusal names both steps and the cache. Sorted, so a plan tripping this
+// twice names the same cache every run.
 func validateScratchTargets(p *Plan) error {
-	type where struct{ local, remote string }
+	type where struct{ local, remote []string }
 	seen := make(map[string]*where)
 	var order []string
+	byID := make(map[string]*Node, len(p.Nodes))
+	for i := range p.Nodes {
+		byID[p.Nodes[i].ID] = &p.Nodes[i]
+	}
 	for i := range p.Nodes {
 		n := &p.Nodes[i]
 		for _, m := range n.Mounts {
@@ -731,32 +744,74 @@ func validateScratchTargets(p *Plan) error {
 				order = append(order, m.Scratch)
 			}
 			if n.RemoteMounts() {
-				if w.remote == "" {
-					w.remote = n.ID
-				}
-				continue
+				w.remote = append(w.remote, n.ID)
+			} else {
+				w.local = append(w.local, n.ID)
 			}
-			if w.local == "" {
-				w.local = n.ID
-			}
+			break
 		}
 	}
 	sort.Strings(order)
+
+	needs := make(map[string]map[string]bool)
 	for _, name := range order {
 		w := seen[name]
-		if w.local == "" || w.remote == "" {
+		if len(w.local) == 0 || len(w.remote) == 0 {
 			continue
 		}
-		return fmt.Errorf(
-			"plan: scratch cache %q is mounted by step %q, which runs on a machine of its own, and "+
-				"by step %q, which runs on the coordinator's filesystem. A remote step's copy is "+
-				"carried across as a tar of the coordinator's directory, and a step that writes that "+
-				"directory while it is being tarred would put a half-written tree in the cache, "+
-				"permanently: scratch entries are immutable. Declare a second scratch cache for one "+
-				"of the two, or run both steps on the same kind of target",
-			name, w.remote, w.local)
+		for _, r := range w.remote {
+			for _, l := range w.local {
+				if needs[r] == nil {
+					needs[r] = ancestors(byID, r)
+				}
+				if needs[l] == nil {
+					needs[l] = ancestors(byID, l)
+				}
+				if needs[r][l] || needs[l][r] {
+					continue
+				}
+				return fmt.Errorf(
+					"plan: scratch cache %q is mounted by step %q, which runs on a machine of its "+
+						"own, and by step %q, which runs on the coordinator's filesystem, and "+
+						"nothing orders the two. A remote step's copy is carried across as a tar of "+
+						"the coordinator's directory, and a step that writes that directory while it "+
+						"is being tarred would put a half-written tree in the cache, permanently: "+
+						"scratch entries are immutable. Order them, with Needs on either one, and "+
+						"the cache is handed from whichever runs first to whichever runs second. "+
+						"Otherwise declare a second scratch cache, or run both steps on the same "+
+						"kind of target",
+					name, r, l)
+			}
+		}
 	}
 	return nil
+}
+
+// ancestors is every node that must finish before id starts, following Needs
+// transitively. Membership is the "cannot overlap" test: a node in here is
+// strictly ordered before id, so neither runs while the other does.
+//
+// Tolerates a dangling Needs and a cycle, which Validate refuses elsewhere:
+// this must not be the function that reports either, since a clearer message
+// for both already exists (see checkAcyclic).
+func ancestors(byID map[string]*Node, id string) map[string]bool {
+	out := make(map[string]bool)
+	var walk func(string)
+	walk = func(cur string) {
+		n, ok := byID[cur]
+		if !ok {
+			return
+		}
+		for _, need := range n.Needs {
+			if out[need] {
+				continue
+			}
+			out[need] = true
+			walk(need)
+		}
+	}
+	walk(id)
+	return out
 }
 
 func validateNodeStorage(n *Node, ws map[string]WorkspaceSpec, sc map[string]ScratchSpec) error {

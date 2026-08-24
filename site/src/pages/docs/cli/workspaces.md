@@ -143,7 +143,7 @@ senro logs fetch [--force] RUN [DEST]
 senro logs fetch 20260812T151058-540c8ca44b   # into ./runs/20260812T151058-540c8ca44b
 ```
 
-Fetches a run archived in the [shared cache](/docs/data/archiving/) back onto this machine. This
+Fetches a run archived in the [shared cache](/docs/run/archiving/) back onto this machine. This
 is useful for a run whose CI runner no longer exists. `RUN` here is the run ID it was archived
 under, not a path, unlike every other run-taking command on this page.
 
@@ -223,5 +223,5 @@ See [A Func step off the coordinator](/docs/executors/func-remote/).
 ## Where to go next
 
 - **[Workspaces](/docs/data/workspaces/)**: what `ws ls`, `ws pull` and `ws diff` are reading.
-- **[Archiving a run](/docs/data/archiving/)**: what puts a run's logs in the store.
-- **[Reading a failed run](/docs/reference/debugging/)**: these commands in a walkthrough.
+- **[Archiving a run](/docs/run/archiving/)**: what puts a run's logs in the store.
+- **[Reading a failed run](/docs/run/debugging/)**: these commands in a walkthrough.

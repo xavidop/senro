@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -98,7 +100,23 @@ type wsManager struct {
 	// rewritten, so a stale copy stored there is the answer every later run
 	// gets.
 	scratchRemote map[string]bool
-	scratchRead   map[string]string
+
+	// scratchHandoff marks a cache mounted by BOTH a remote step and a step
+	// on the coordinator's filesystem, which plan.Validate allows only when
+	// the graph orders the two. For those, and only those, a read-back
+	// REPLACES the coordinator's directory instead of being kept aside, so
+	// the cache has one lineage: the next step sees what the previous one
+	// left, whichever kind of target each was, and saveScratch stores that
+	// one directory. scratchSwapped records that a replacement actually
+	// happened, since a read-back that failed must still store nothing.
+	//
+	// Deliberately not applied to a cache only remote steps mount: two of
+	// those may run CONCURRENTLY, and replacing the directory under a
+	// sibling that is tarring it out is the corruption this whole rule
+	// exists to prevent.
+	scratchHandoff map[string]bool
+	scratchSwapped map[string]bool
+	scratchRead    map[string]string
 
 	// leases holds one lease per ScopePersistent workspace, taken in
 	// newWSManager and given back by releasePersistent or
@@ -144,6 +162,9 @@ func newWSManager(
 		scratchRemote: make(map[string]bool, len(p.Scratch)),
 		scratchRead:   make(map[string]string, len(p.Scratch)),
 		scratchStore:  scratchStore,
+
+		scratchHandoff: handoffScratch(p),
+		scratchSwapped: make(map[string]bool, len(p.Scratch)),
 	}
 	for _, w := range p.Workspaces {
 		m.specs[w.Name] = w
@@ -912,6 +933,23 @@ func (m *wsManager) readScratch(ctx context.Context, sb executor.Sandbox, mounts
 			_ = os.RemoveAll(dest)
 			continue
 		}
+		if m.scratchHandoff[mt.Name] {
+			// A cache this run hands between a remote step and a step on the
+			// coordinator's filesystem. plan.Validate has already refused
+			// this combination unless the graph orders the two, so nothing
+			// is reading or writing the directory right now and replacing it
+			// is safe. It is also necessary: a later local step mounts that
+			// path, and leaving what came back off to one side would hand it
+			// the copy that was SENT OUT rather than the one produced.
+			if err := m.swapScratch(mt.Name, dest); err != nil {
+				_ = os.RemoveAll(dest)
+				continue
+			}
+			m.mu.Lock()
+			m.scratchSwapped[mt.Name] = true
+			m.mu.Unlock()
+			continue
+		}
 		m.mu.Lock()
 		if prev := m.scratchRead[mt.Name]; prev != "" {
 			_ = os.RemoveAll(prev)
@@ -919,6 +957,67 @@ func (m *wsManager) readScratch(ctx context.Context, sb executor.Sandbox, mounts
 		m.scratchRead[mt.Name] = dest
 		m.mu.Unlock()
 	}
+}
+
+// swapScratch replaces the coordinator's copy of a cache with what a remote
+// step left in it, so the directory every later step mounts holds the newer
+// tree rather than the one that was sent out.
+//
+// Remove and rename, the move mountxfer makes for a workspace. Rename is
+// atomic within one filesystem and both paths are inside the run directory,
+// so a later step never observes a half-populated tree. A local step's mount
+// is a symlink to this path and resolves through it; a container step's bind
+// mount resolves to the old inode, which is why this is confined to caches
+// the graph has ordered, where no such step is running.
+//
+// A failure leaves the coordinator's directory as it was and is reported by
+// storing nothing for this cache, since scratchSwapped stays false.
+func (m *wsManager) swapScratch(name, staged string) error {
+	dir := m.scratchPath(name)
+	old := dir + ".senro-old"
+	_ = os.RemoveAll(old)
+	if err := os.Rename(dir, old); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(staged, dir); err != nil {
+		// Put back what was there: a cache that failed to swap must still be
+		// the tree the run has been using, not nothing at all.
+		_ = os.Rename(old, dir)
+		return err
+	}
+	_ = os.RemoveAll(old)
+	return nil
+}
+
+// handoffScratch reports which caches this plan hands between a remote step
+// and a step on the coordinator's filesystem.
+//
+// Computed from the plan once, at construction, rather than discovered as
+// mounts happen: readScratch has to know whether to replace the directory
+// the FIRST time a remote step's copy comes back, which may be before the
+// step on the other side has run at all.
+func handoffScratch(p *plan.Plan) map[string]bool {
+	local, remote := map[string]bool{}, map[string]bool{}
+	for i := range p.Nodes {
+		n := &p.Nodes[i]
+		for _, ms := range n.Mounts {
+			if ms.Scratch == "" {
+				continue
+			}
+			if n.RemoteMounts() {
+				remote[ms.Scratch] = true
+			} else {
+				local[ms.Scratch] = true
+			}
+		}
+	}
+	out := make(map[string]bool, len(remote))
+	for name := range remote {
+		if local[name] {
+			out[name] = true
+		}
+	}
+	return out
 }
 
 // ensureScratch restores a scratch cache once, and never fails a step
@@ -976,7 +1075,25 @@ func (m *wsManager) saveScratch(ctx context.Context, runDir string, succeeded bo
 			// Nothing to store when the exact key was already there: entries
 			// are immutable, so a save would lose the race with itself.
 			dir := filepath.Join(runDir, "scratch", name)
-			if m.scratchRemote[name] {
+			switch {
+			case m.scratchHandoff[name]:
+				// A cache handed between a remote step and one on the
+				// coordinator's filesystem. readScratch replaced this
+				// directory with what came back, so it already holds the
+				// whole lineage: what the remote step produced, plus
+				// whatever the step after it added. The coordinator's
+				// directory IS the honest source here, which is the point of
+				// swapping rather than keeping the copy aside.
+				//
+				// Still nothing when no read-back landed, for the reason
+				// below: an entry is written once, so an incomplete tree
+				// stored now is what every later run is served.
+				if !m.scratchSwapped[name] {
+					rec.Unread = true
+					recs = append(recs, rec)
+					continue
+				}
+			case m.scratchRemote[name]:
 				// A step on a machine of its own mounted this cache, so the
 				// coordinator's directory is only what was SENT OUT. What
 				// came back is the only honest source, and when nothing did

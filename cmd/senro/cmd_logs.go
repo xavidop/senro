@@ -237,10 +237,27 @@ func openRemoteFromEnv(stderr io.Writer) (*remotecache.Remote, int) {
 	// carries on; here the fetch IS the point, and there is nothing to
 	// carry on with. So the degradation channel is silenced in both
 	// branches and this command reports the failure with an exit code.
-	var remote *remotecache.Remote
-	var err2 error
+	remote, err2 := openRemote(rc, false)
+	if err2 != nil {
+		_, _ = fmt.Fprintf(stderr, "senro logs fetch: %v\n", err2)
+		return nil, exitUsage
+	}
+	return remote, exitSuccess
+}
+
+// openRemote maps a resolved configuration onto whichever backend it names.
+// Shared by every command that reads a store directly, so they cannot drift
+// on which fields reach it; each caller keeps its own diagnostics, because
+// "there is nowhere to fetch an archived run from" and "there is no bucket
+// to list scratch entries in" are different problems with different fixes.
+//
+// The degradation channel is discarded in both branches: a run treats a
+// store that stops answering as a degradation and carries on, but for these
+// commands reaching the store IS the point, so the caller reports the
+// failure with an exit code instead.
+func openRemote(rc senro.RemoteCache, scratch bool) (*remotecache.Remote, error) {
 	if rc.Registry.Host != "" {
-		remote, err2 = remotecache.OpenOCI(remotecache.OCIConfig{
+		return remotecache.OpenOCI(remotecache.OCIConfig{
 			Registry:     rc.Registry.Host,
 			Repository:   rc.Registry.Repository,
 			Username:     rc.Registry.Username,
@@ -249,25 +266,20 @@ func openRemoteFromEnv(stderr io.Writer) (*remotecache.Remote, int) {
 			Timeout:      rc.Timeout,
 			ReportWriter: io.Discard,
 		})
-	} else {
-		remote, err2 = remotecache.Open(remotecache.Config{
-			Endpoint:        rc.Endpoint,
-			Region:          rc.Region,
-			Bucket:          rc.Bucket,
-			Prefix:          rc.Prefix,
-			AccessKeyID:     rc.AccessKeyID,
-			SecretAccessKey: rc.SecretAccessKey,
-			SessionToken:    rc.SessionToken,
-			PathStyle:       rc.PathStyle,
-			Timeout:         rc.Timeout,
-			ReportWriter:    io.Discard,
-		})
 	}
-	if err2 != nil {
-		_, _ = fmt.Fprintf(stderr, "senro logs fetch: %v\n", err2)
-		return nil, exitUsage
-	}
-	return remote, exitSuccess
+	return remotecache.Open(remotecache.Config{
+		Endpoint:        rc.Endpoint,
+		Region:          rc.Region,
+		Bucket:          rc.Bucket,
+		Prefix:          rc.Prefix,
+		AccessKeyID:     rc.AccessKeyID,
+		SecretAccessKey: rc.SecretAccessKey,
+		SessionToken:    rc.SessionToken,
+		PathStyle:       rc.PathStyle,
+		Timeout:         rc.Timeout,
+		ReportWriter:    io.Discard,
+		Scratch:         scratch,
+	})
 }
 
 // reportFetchFailure turns one failure from the object store into a message

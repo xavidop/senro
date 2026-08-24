@@ -196,7 +196,7 @@ target
 
 This report comes from the same detector that [`senro func check`](/docs/cli/workspaces/) uses, so
 the two stay consistent. Run `senro func check ./...` in CI before you depend on this. What it costs
-in practice:
+in practice/some examples:
 
 - a pure-Go SQLite driver instead of a cgo one
 - `os/user` lookups that read `/etc/passwd` rather than calling NSS, which behaves differently under
@@ -213,14 +213,33 @@ calling a binary you built for the host yourself.
 
 ## When it goes wrong
 
-| Symptom | Cause |
-|---|---|
-| `the binary staged on … did not re-enter as a step child` | Your `main` never reached `senro.Run`, usually a flag parser that exits on `__step`. Call `senro.StepChild` first. In a container, an `ENTRYPOINT` that does not exec its arguments |
-| The step failed and stdout is empty | Read the step's stderr, unframed and captured verbatim for this: a binary that will not execute, a Go runtime that died before `main`, a shell that could not find the file |
-| The daemon reports `/senro/bin/senro-sha256-…` does not exist | A dynamically linked pipeline binary meeting a musl image. See the cgo constraint above |
-| In a pod: `sending the step binary into pod …failed (tar exited …)` | The image has no `tar`, or no `sh` to hold the container open. The same two a workspace needs |
-| The step settled as `panicked` | A function panicked, exactly as on the coordinator; the stack is in its stderr log, and panics are not retried ([States](/docs/steps/states/)) |
-| A function wants to report infrastructure | Wrap the executor's infra sentinel; `retry.OnInfra()` matches it after the round trip |
+**`the binary staged on … did not re-enter as a step child`**
+The staged binary ran, but never called back into senro to act as the step. Two likely causes:
+- Your `main` never reaches `senro.Run`, usually because a flag parser exits early when it sees the
+  `__step` argument. Call `senro.StepChild` before you parse flags, as shown [above](#what-you-have-to-set-up).
+- In a container, the image's `ENTRYPOINT` doesn't `exec` its arguments, so the staged binary is
+  never actually run.
+
+**The step failed and stdout is empty**
+Look at the step's stderr instead. It's captured unframed and verbatim, so it's where you'll see a
+binary that couldn't execute, a Go runtime that crashed before `main`, or a shell that couldn't find
+the file.
+
+**The daemon reports `/senro/bin/senro-sha256-…` does not exist**
+Your pipeline binary is dynamically linked and won't run in a musl-based image (like Alpine). See
+[Cross-compiling, and the cgo constraint](#cross-compiling-and-the-cgo-constraint) above.
+
+**In a pod: `sending the step binary into pod …failed (tar exited …)`**
+The image is missing `tar` or `sh`. Both are required, the same as for mounting a workspace
+([Kubernetes](/docs/executors/kubernetes/)).
+
+**The step settled as `panicked`**
+Your function panicked, just as it would on the coordinator. The stack trace is in its stderr log.
+Panics are not retried ([States](/docs/steps/states/)).
+
+**A function needs to report an infrastructure failure**
+Wrap the error in the executor's infra sentinel before returning it. `retry.OnInfra()` matches it
+once it's back on the coordinator.
 
 ## Func handlers come along
 

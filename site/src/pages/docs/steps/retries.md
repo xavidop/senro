@@ -200,4 +200,4 @@ See [Control operations](/docs/attach/control-ops/) for `step.retry` on the wire
 
 - **[Failure handlers](/docs/steps/handlers/)**: what runs after the last attempt fails.
 - **[Step states](/docs/steps/states/)**: `recovered`, `failed`, `timed_out`, `panicked`.
-- **[Reading a failed run](/docs/reference/debugging/)**: finding a given attempt's logs.
+- **[Reading a failed run](/docs/run/debugging/)**: finding a given attempt's logs.

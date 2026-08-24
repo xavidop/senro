@@ -237,7 +237,7 @@ func (c *Client) keyURL(key string) *url.URL {
 // Get returns the object's body. The caller closes it, and the caller
 // verifies it; see internal/remotecache.
 func (c *Client) Get(ctx context.Context, key string) (io.ReadCloser, error) {
-	resp, err := c.send(ctx, http.MethodGet, key, nil, 0, emptyPayloadHash)
+	resp, err := c.send(ctx, http.MethodGet, key, c.keyURL(key), nil, 0, emptyPayloadHash)
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +248,7 @@ func (c *Client) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 // missing object is (0, false, nil), not an error; anything that stops the
 // store from answering at all still is.
 func (c *Client) Head(ctx context.Context, key string) (int64, bool, error) {
-	resp, err := c.send(ctx, http.MethodHead, key, nil, 0, emptyPayloadHash)
+	resp, err := c.send(ctx, http.MethodHead, key, c.keyURL(key), nil, 0, emptyPayloadHash)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return 0, false, nil
@@ -287,7 +287,7 @@ func (c *Client) Put(ctx context.Context, key string, body io.ReadSeeker, size i
 	if err != nil {
 		return fmt.Errorf("s3: PUT %s: %w", key, err)
 	}
-	resp, err := c.send(ctx, http.MethodPut, key, body, size, hash)
+	resp, err := c.send(ctx, http.MethodPut, key, c.keyURL(key), body, size, hash)
 	if err != nil {
 		return err
 	}
@@ -307,8 +307,15 @@ func (c *Client) PutBytes(ctx context.Context, key string, b []byte) error {
 const emptyPayloadHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 // send performs one operation, retrying the failures that are safe to retry.
+//
+// u is the prepared URL and key is only the label errors name it by. The two
+// are separate because a bucket-level request (see List) addresses no key at
+// all, and threading its URL through here is what lets it share this retry
+// loop, this signing, and this error classification rather than growing a
+// second copy of them.
 func (c *Client) send(
-	ctx context.Context, method, key string, body io.ReadSeeker, size int64, payloadHash string,
+	ctx context.Context, method, key string, u *url.URL,
+	body io.ReadSeeker, size int64, payloadHash string,
 ) (*http.Response, error) {
 	var last error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -317,7 +324,7 @@ func (c *Client) send(
 				return nil, fmt.Errorf("s3: %s %s: rewinding the body: %w", method, key, err)
 			}
 		}
-		resp, retryable, err := c.attempt(ctx, method, key, body, size, payloadHash)
+		resp, retryable, err := c.attempt(ctx, method, key, u, body, size, payloadHash)
 		if err == nil {
 			return resp, nil
 		}
@@ -337,9 +344,9 @@ func (c *Client) send(
 // attempt performs exactly one request. The second return says whether
 // sending it again could plausibly produce a different answer.
 func (c *Client) attempt(
-	ctx context.Context, method, key string, body io.Reader, size int64, payloadHash string,
+	ctx context.Context, method, key string, u *url.URL,
+	body io.Reader, size int64, payloadHash string,
 ) (*http.Response, bool, error) {
-	u := c.keyURL(key)
 	// readOnly, never the caller's reader directly: net/http closes a body
 	// that is an io.ReadCloser, and an *os.File closed by the transport
 	// cannot be rewound for the retry, failing "file already closed" the

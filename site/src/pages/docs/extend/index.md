@@ -66,7 +66,7 @@ These are extension points too, but they are small enough to be documented where
 
 ## Where to go next
 
-- **[The event stream](/docs/reference/event-stream/)**: what a `Sink` and a notifier are reading.
-- **[Run options and outcomes](/docs/reference/run-options/)**: `WithSink` and the other options
+- **[The event stream](/docs/run/event-stream/)**: what a `Sink` and a notifier are reading.
+- **[Run options and outcomes](/docs/run/options/)**: `WithSink` and the other options
   most of these get wired through.
-- **[The `api` package](/docs/reference/api/)**: the wire contract every extension shares.
+- **[The `api` package](/docs/run/api/)**: the wire contract every extension shares.

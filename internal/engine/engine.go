@@ -297,7 +297,7 @@ func Run(ctx context.Context, p *plan.Plan, opts Options) (api.RunStatus, error)
 	var ws *wsManager
 	if opts.Storage != nil {
 		ws, err = newWSManager(
-			opts.Dir, p, opts.Storage.Snapshotter, opts.Storage.Scratch,
+			opts.Dir, p, opts.Storage.Snapshotter, opts.Storage.ScratchCache,
 			opts.Storage.Persist, opts.RunID, lockerFor(opts.Executors))
 		if err != nil {
 			_ = ledger.Close()

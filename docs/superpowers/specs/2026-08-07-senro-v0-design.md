@@ -139,7 +139,7 @@ compatibility real, and it is a test case, not a convention.
 ### 2.4 Step identity
 
 ```
-stepID   := segment ("/" segment)*         "deploy/discover-clusters/apply-cm4"
+stepID   := segment ("/" segment)*         "deploy/discover-clusters/apply-west"
 expanded := stepID "[" k=v ("," k=v)* "]"  keys sorted; "build/test[unit=services/api]"
 address  := (stepID|expanded) ["@" N]      CLI surface only; N ≥ 1
 ```

@@ -8,7 +8,7 @@ title: The event stream
 Every observable fact about a run is one `api.Event`, appended to an ordered, append-only stream.
 This page covers the envelope, the event types senro sends today, and `Apply`, the function that
 turns the stream into something a client can render. The types live in
-[`github.com/xavidop/senro/api`](/docs/reference/api/).
+[`github.com/xavidop/senro/api`](/docs/run/api/).
 
 Every view of a run reads this one stream:
 

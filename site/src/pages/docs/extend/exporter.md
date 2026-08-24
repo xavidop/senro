@@ -217,6 +217,6 @@ mistake worth catching.
 
 ## Where to go next
 
-- **[The event stream](/docs/reference/event-stream/)**: every event type and payload, which is what you are folding.
+- **[The event stream](/docs/run/event-stream/)**: every event type and payload, which is what you are folding.
 - **[Writing a notifier](/docs/notifications/custom/)**: another extension point built on the same sink.
-- **[Run options and outcomes](/docs/reference/run-options/)**: where `WithTraceContext` earns its keep.
+- **[Run options and outcomes](/docs/run/options/)**: where `WithTraceContext` earns its keep.

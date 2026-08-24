@@ -116,5 +116,5 @@ Five statuses exist, in this precedence, strongest first:
 - **[Handlers](/docs/steps/handlers/)**: `SENRO_FAILURE_STATE` carries one of these values.
 - **[Conditions](/docs/steps/conditions/)**: what produces `skipped_condition`.
 - **[Control operations](/docs/attach/control-ops/)**: `step.skip` and `skipped_manual`.
-- **[The event stream](/docs/reference/event-stream/)**: where a state is recorded.
-- **[Reading a failed run](/docs/reference/debugging/)**: reading these states out of a run.
+- **[The event stream](/docs/run/event-stream/)**: where a state is recorded.
+- **[Reading a failed run](/docs/run/debugging/)**: reading these states out of a run.

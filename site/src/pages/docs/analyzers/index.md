@@ -77,5 +77,5 @@ errors, panics or has no answer is treated as "no comment": the run's own result
 - **[The AI analyzer](/docs/analyzers/genkit/)**: install `contrib/genkitanalyzer` and wire it up.
 - **[Write your own](/docs/analyzers/custom/)**: the interface, with a worked example.
 - **[The TUI](/docs/attach/tui/)**: `a` and `A`, and what the footer shows before you press one.
-- **[Reading a failed run](/docs/reference/debugging/)**: what senro tells you with no analyzer at
+- **[Reading a failed run](/docs/run/debugging/)**: what senro tells you with no analyzer at
   all.

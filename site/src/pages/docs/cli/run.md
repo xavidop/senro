@@ -20,7 +20,7 @@ senro run ./ci -- --env=staging   # flags after -- go to the pipeline, not to se
 
 `senro run` builds the named package with `go build` into a temporary binary, then runs it. If the
 pipeline registered an attach server (by calling `attach.Listen`, see
-[Run options and outcomes](/docs/reference/run-options/)), senro attaches to it and renders the
+[Run options and outcomes](/docs/run/options/)), senro attaches to it and renders the
 run exactly like `senro attach` would.
 
 - `--trigger-event PATH` is passed straight to the pipeline binary, which decides for itself
@@ -179,5 +179,5 @@ does and doesn't end up.
 
 - **[Cache and verify](/docs/cli/cache/)**: `cache gc`, `cache explain`, `verify`.
 - **[Workspaces and runs](/docs/cli/workspaces/)**: `ws ls/pull/diff`, `logs fetch`, `func check`.
-- **[Reading a failed run](/docs/reference/debugging/)**: what to do when one of these reports a
+- **[Reading a failed run](/docs/run/debugging/)**: what to do when one of these reports a
   failure.

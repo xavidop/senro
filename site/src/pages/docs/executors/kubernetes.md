@@ -109,6 +109,14 @@ enough to be worth caching is often big enough that carrying it across the share
 step costs more than just downloading it again. If the copy doesn't come back, the run saves nothing
 rather than storing the coordinator's stale copy under a key nothing can rewrite.
 
+Two ways to get more out of one. **Across runs and machines**, set `SENRO_REMOTE_SCRATCH` and the
+cache is kept in the bucket, so a coordinator with a cold disk fills the pod from the shared copy
+instead of from nothing ([Sharing scratch caches](/docs/data/scratch-sharing/)). Note this does not
+reduce what crosses the apiserver: the pod is still filled from the coordinator, which now merely has
+something to fill it with. **Within one run**, a pod can share a cache with a local or container step
+as long as a `Needs` orders the two
+([handing one over](/docs/data/scratch/#handing-one-between-a-remote-step-and-a-local-one)).
+
 ## Persistent workspaces, with or without a claim
 
 A [persistent workspace](/docs/data/persistent/) works here with no PVC at all by default.
@@ -258,17 +266,50 @@ What's specific to this executor:
   [why the two can't mix](/docs/steps/functions/#why-delegated-secrets-and-func-steps-cannot-mix) for
   the two ways around it.
 
+## Pod tuning
+
+Resource requests and limits, a node selector, tolerations, and image pull secrets are all unset by
+default: the pod gets whatever the namespace and the scheduler would otherwise give it. Four options
+on `k8s.Pod` declare them.
+
+```go
+k8s.Pod(img, k8s.Namespace("ci"),
+	k8s.Resources(
+		map[string]string{"cpu": "500m", "memory": "256Mi"}, // requests
+		map[string]string{"cpu": "1", "memory": "512Mi"},    // limits
+	),
+	k8s.NodeSelector(map[string]string{"disktype": "ssd"}),
+	k8s.Toleration("dedicated", "Equal", "ci", "NoSchedule"),
+	k8s.ImagePullSecrets("regcred"),
+)
+```
+
+`k8s.Resources` takes Kubernetes quantity strings exactly as the apiserver does (`"500m"`, `"256Mi"`);
+senro parses neither map, so a malformed one is reported by the apiserver rejecting the pod, not by
+`Build()`. It applies to the step's own container only: senro's staging and reader containers are its
+own plumbing, not part of what the pipeline asked to run, and a limit sized for the step would starve
+them.
+
+`k8s.Toleration` is called once per taint the target nodes carry; each call appends one. `Operator` is
+`"Equal"` (`Value` must match) or `"Exists"` (`Value` is ignored).
+
+`k8s.ImagePullSecrets` names a Secret that must already exist in the target namespace; senro creates,
+resizes, and deletes nothing, the same restraint as `k8s.Claim`. It is distinct from
+`container.RegistryAuth`, which this executor refuses at `Build()`: that credential is resolved by
+senro and pushed for the container executor to pull with directly, while this is a reference the
+node's own kubelet resolves, the ordinary way a pod pulls a private image.
+
+All four are part of the executor's instance key: two targets naming one image but disagreeing about
+any of them are two executors, not one sharing a resolve.
+
 ## What is not here
 
-- **A [scratch cache](/docs/data/scratch/) shared with a step on the coordinator's own filesystem.**
-  This is refused at `Build()`: a local or container step writes that directory while it runs, and a
-  pod tarring the same directory would send a half-written tree and then save it under a key nothing
-  can rewrite. Two pods can still share one freely.
-- **Registry credentials.** `container.RegistryAuth` is refused on this executor at `Build()`. A
-  pod's image is pulled by its node, from an `imagePullSecret` in the namespace, which senro doesn't
-  set.
-- **Pod tuning.** Resource requests and limits, node selectors, tolerations, and image pull secrets
-  are all left unset. A ServiceAccount is set only when you name one with `k8s.ServiceAccount`.
+- **A [scratch cache](/docs/data/scratch/) shared with a step on the coordinator's own filesystem
+  when nothing orders the two.** Refused at `Build()`: a local or container step writes that
+  directory while it runs, and a pod tarring the same directory at that same moment would send a
+  half-written tree and then save it under a key nothing can rewrite. A `Needs` between them removes
+  the same moment and the share is allowed, handing the cache from whichever runs first to whichever
+  runs second. Two pods can still share one freely, ordered or not.
 
 If a coordinator is killed before cleaning up, every object senro creates is still findable. Each
 one carries the step's full id as the annotation `senro.dev/step-id`:

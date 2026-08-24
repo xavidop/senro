@@ -109,5 +109,5 @@ See [Write your own](/docs/notifications/custom/) for the full seam.
 
 - **[Notifications](/docs/notifications/)**: the options, the headers, and what happens when a
   delivery fails.
-- **[The event stream](/docs/reference/event-stream/)**: every event type `On` can name.
+- **[The event stream](/docs/run/event-stream/)**: every event type `On` can name.
 - **[Write your own](/docs/notifications/custom/)**: a destination senro does not ship.

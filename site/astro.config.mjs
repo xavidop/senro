@@ -39,6 +39,40 @@ function remarkMermaid() {
   };
 }
 
+// remarkTableCode marks short inline code inside a table so CSS can keep it on
+// one line. A table cell is a narrow column, and the browser treats every
+// hyphen and dot in `--filter` or `senro.ScopeRun` as a place it may break:
+// the identifier then arrives split across two lines inside a pill that looks
+// torn in half. Anything short enough to fit a column is flagged here and set
+// nowrap in DocsLayout; anything longer (import paths, endpoint URLs) is left
+// wrappable, because forcing those onto one line is what pushed whole tables
+// wider than the content column.
+// How long "short" is depends on how many columns share the row: a two-column
+// table can give an identifier most of a column, a five-column comparison
+// table cannot.
+const TABLE_CODE_ATOM_MAX = { 2: 34, 3: 30, 4: 22 };
+const TABLE_CODE_ATOM_MAX_DENSE = 16;
+
+function remarkTableCode() {
+  return (tree) => {
+    visit(tree, "table", (table) => {
+      const columns = Math.max(
+        ...table.children.map((row) => (row.children ? row.children.length : 0)),
+      );
+      const max = TABLE_CODE_ATOM_MAX[columns] ?? TABLE_CODE_ATOM_MAX_DENSE;
+      visit(table, "inlineCode", (node) => {
+        const value = String(node.value);
+        if (value.length > max || /\s/.test(value)) return;
+        node.data = node.data || {};
+        node.data.hProperties = {
+          ...(node.data.hProperties || {}),
+          className: ["code-atom"],
+        };
+      });
+    });
+  };
+}
+
 // remarkBaseLinks prefixes root-relative Markdown links with the configured
 // base. Astro rewrites `base` into component hrefs but NOT into links written
 // inside Markdown, so on a project Pages site (base "/senro/") a page linking
@@ -83,6 +117,14 @@ const moved = {
   "/docs/extend/notifier": "/docs/notifications/custom",
   "/docs/extend/trigger-source": "/docs/triggers/custom",
   "/docs/extend/unit-graph": "/docs/monorepo/unit-graphs/custom",
+  // Starting a run, reading a failed one and archiving one are three halves
+  // of the same subject, but they were split across "Reference" and the
+  // caching section, where "Archiving runs" sat under the pages about the
+  // action cache and read as if it were one. They are now one "Runs" group
+  // under /docs/run/.
+  "/docs/reference/run-options": "/docs/run/options",
+  "/docs/reference/debugging": "/docs/run/debugging",
+  "/docs/data/archiving": "/docs/run/archiving",
 };
 const basePrefix = base.replace(/\/$/, "");
 const movedPages = Object.fromEntries(
@@ -132,7 +174,7 @@ export default defineConfig({
     },
   },
   markdown: {
-    remarkPlugins: [remarkMermaid, remarkBaseLinks],
+    remarkPlugins: [remarkMermaid, remarkBaseLinks, remarkTableCode],
     shikiConfig: {
       // Two themes, not one. A single light theme was pinned here while the
       // site itself has a full dark palette, so in dark mode every code block

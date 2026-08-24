@@ -41,10 +41,10 @@ Exit codes: `0` if the re-run succeeded, `1` if it failed, `2` for a usage error
 ## `--step` includes what the step needs
 
 ```
-senro rerun --step deploy/apply-cm4
+senro rerun --step deploy/apply-west
 ```
 
-This runs `deploy/apply-cm4`, along with everything it needs (directly or transitively) and
+This runs `deploy/apply-west`, along with everything it needs (directly or transitively) and
 everything that depends on it. Any branch unrelated to it is skipped.
 
 Including its dependencies is deliberate. A step can't run without its inputs, so if you only

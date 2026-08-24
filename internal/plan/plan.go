@@ -171,6 +171,47 @@ type ExecutorSpec struct {
 	// only). A nil pointer marshals to nothing, so a target that names none
 	// digests exactly as it did before this field existed.
 	RegistryAuth *RegistryAuthSpec `json:"registry_auth,omitempty"`
+
+	// Resources are the compute requests and limits the step's container
+	// declares (Kubernetes only). A nil pointer marshals to nothing, so a
+	// target that names none digests exactly as it did before this field
+	// existed.
+	Resources *ResourceSpec `json:"resources,omitempty"`
+
+	// NodeSelector constrains the pod to nodes carrying every named label
+	// (Kubernetes only). A nil map marshals to nothing.
+	NodeSelector map[string]string `json:"node_selector,omitempty"`
+
+	// Tolerations let the pod schedule onto nodes a taint would otherwise
+	// repel (Kubernetes only).
+	Tolerations []TolerationSpec `json:"tolerations,omitempty"`
+
+	// ImagePullSecrets names the namespace's docker-registry Secrets the
+	// node pulls the pod's image with (Kubernetes only). Distinct from
+	// RegistryAuth: that credential is resolved by senro and pushed for the
+	// container executor to pull with directly, while this is a reference
+	// the node's own kubelet resolves, the ordinary way a pod pulls a
+	// private image.
+	ImagePullSecrets []string `json:"image_pull_secrets,omitempty"`
+}
+
+// ResourceSpec is the compute requests and limits a k8s step's container
+// declares, as the pipeline DECLARED them. Values are Kubernetes quantity
+// strings ("500m", "256Mi") carried verbatim; senro parses none of them.
+type ResourceSpec struct {
+	Requests map[string]string `json:"requests,omitempty"`
+	Limits   map[string]string `json:"limits,omitempty"`
+}
+
+// TolerationSpec lets a pod schedule onto a node a taint would otherwise
+// repel, as the pipeline DECLARED it. Key, Value and Effect match the
+// taint; Operator is "Equal" (Value must match) or "Exists" (Value is
+// ignored).
+type TolerationSpec struct {
+	Key      string `json:"key,omitempty"`
+	Operator string `json:"operator,omitempty"`
+	Value    string `json:"value,omitempty"`
+	Effect   string `json:"effect,omitempty"`
 }
 
 // RegistryAuthSpec names the credential a container step's image is pulled
@@ -260,6 +301,48 @@ func (e ExecutorSpec) Key() string {
 		for _, ws := range names {
 			key += "%" + ws + "=" + e.Claims[ws]
 		}
+	}
+	// Resources, node selector, tolerations and image pull secrets are
+	// instance identity for the reason a claim is: the executor memoizes one
+	// resolve against the spec it was constructed with, and two targets
+	// naming one image but disagreeing about any of these must not collapse
+	// into one executor that silently schedules the wrong pod. Maps are
+	// sorted, since a map has no order of its own.
+	if e.Resources != nil {
+		key += "?req"
+		reqs := make([]string, 0, len(e.Resources.Requests))
+		for k := range e.Resources.Requests {
+			reqs = append(reqs, k)
+		}
+		sort.Strings(reqs)
+		for _, k := range reqs {
+			key += "," + k + "=" + e.Resources.Requests[k]
+		}
+		key += ";lim"
+		lims := make([]string, 0, len(e.Resources.Limits))
+		for k := range e.Resources.Limits {
+			lims = append(lims, k)
+		}
+		sort.Strings(lims)
+		for _, k := range lims {
+			key += "," + k + "=" + e.Resources.Limits[k]
+		}
+	}
+	if len(e.NodeSelector) > 0 {
+		names := make([]string, 0, len(e.NodeSelector))
+		for k := range e.NodeSelector {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		for _, k := range names {
+			key += "&" + k + "=" + e.NodeSelector[k]
+		}
+	}
+	for _, t := range e.Tolerations {
+		key += "+" + t.Key + ":" + t.Operator + ":" + t.Value + ":" + t.Effect
+	}
+	if len(e.ImagePullSecrets) > 0 {
+		key += "*" + strings.Join(e.ImagePullSecrets, ",")
 	}
 	return key
 }

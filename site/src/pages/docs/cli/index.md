@@ -27,6 +27,7 @@ senro supports Linux and macOS. Windows is not supported; see
 | `senro shell` | Open a session inside a live run's step | [Run and watch](/docs/cli/run/) |
 | `senro cache gc` | Reclaim disk in the local content-addressed store | [Cache and verify](/docs/cli/cache/) |
 | `senro cache explain` | Why a `Pure()` step hit or missed the action cache | [Cache and verify](/docs/cli/cache/) |
+| `senro cache scratch` | List the scratch entries in the shared bucket | [Cache and verify](/docs/cli/cache/) |
 | `senro verify --recheck-pure` | Re-run cached `Pure()` steps and compare their digests | [Cache and verify](/docs/cli/cache/) |
 | `senro ws ls` | List a run's workspaces, or one workspace's files | [Workspaces and runs](/docs/cli/workspaces/) |
 | `senro ws pull` | Write a workspace's stored body out to a directory | [Workspaces and runs](/docs/cli/workspaces/) |
@@ -146,8 +147,8 @@ waiting, start the pipeline binary yourself and watch it separately with `senro 
 
 ## Where to go next
 
-- **[Reading a failed run](/docs/reference/debugging/)**: the run directory and these errors,
+- **[Reading a failed run](/docs/run/debugging/)**: the run directory and these errors,
   explained in context.
 - **[Attach](/docs/attach/)**: the protocol `senro attach` speaks.
-- **[Run options and outcomes](/docs/reference/run-options/)**: the `senro.Run` call `senro run`
+- **[Run options and outcomes](/docs/run/options/)**: the `senro.Run` call `senro run`
   wraps, and its full option list.

@@ -77,7 +77,7 @@ debugger.
 - **Runs that outlive the runner.** With the shared cache on, each step's output and the sealed
   event ledger are archived as the run goes; `senro logs fetch <id>` brings a destroyed CI
   runner's failed build back to read locally. See
-  [Archiving a run](site/src/pages/docs/data/archiving.md).
+  [Archiving a run](site/src/pages/docs/run/archiving.md).
 - **Secrets that stay out of logs.** Values are delivered as files, never argv or environment
   values; output is redacted, unsafe channels are refused outright before anything runs. Built on
   [mamori](https://github.com/xavidop/mamori). See [Secrets](site/src/pages/docs/secrets/index.md).
@@ -215,8 +215,8 @@ serves it locally with Node 22 via nvm). It is the primary reference for what is
   [Triggers](site/src/pages/docs/triggers/index.md),
   [Notifications](site/src/pages/docs/notifications.md),
   [Shared cache](site/src/pages/docs/data/shared-cache.md),
-  [Archiving](site/src/pages/docs/data/archiving.md), [CLI](site/src/pages/docs/cli/index.md),
-  [Reading a failed run](site/src/pages/docs/reference/debugging.md)
+  [Archiving](site/src/pages/docs/run/archiving.md), [CLI](site/src/pages/docs/cli/index.md),
+  [Reading a failed run](site/src/pages/docs/run/debugging.md)
 - **Extend:** [Write a unit graph](site/src/pages/docs/monorepo/unit-graphs/custom.md),
   [a trigger source](site/src/pages/docs/triggers/custom.md),
   [a notifier](site/src/pages/docs/notifications/custom.md),

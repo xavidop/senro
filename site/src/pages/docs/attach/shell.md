@@ -206,7 +206,7 @@ Every session brackets itself with two events in the run's permanent ledger:
 - The ledger records that a session existed, whose it was, what it ran, and how it ended. The
   `cmd` field tells "somebody opened a shell" apart from "somebody ran one command": useful if
   you're deciding whether an alert is worth waking up for.
-- Both event names were [reserved from the start](/docs/reference/event-stream/): adding them was
+- Both event names were [reserved from the start](/docs/run/event-stream/): adding them was
   an additive change to the protocol.
 
 ### If your connection drops
@@ -225,4 +225,4 @@ and a run can't end while leaving someone inside it.
 - **[Control operations](/docs/attach/control-ops/)**: breakpoints, retry, skip and rerun-from.
 - **[The TUI](/docs/attach/tui/)**: the full key list, including `s`.
 - **[Security](/docs/attach/security/)**: what it means that this works over TCP.
-- **[Reading a failed run](/docs/reference/debugging/)**: what to do once there is no live run.
+- **[Reading a failed run](/docs/run/debugging/)**: what to do once there is no live run.

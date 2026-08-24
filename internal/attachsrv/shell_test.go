@@ -410,7 +410,7 @@ func TestAShellOnAStepWithASlashInItsIDSurvivesTheWire(t *testing.T) {
 	ts := newTestServer(t, testServerOpts{})
 	fe := startFakeEngine(t, ts, echoSession(0))
 
-	conn, br, resp := dialShell(t, ts, "step="+urlQueryEscape("deploy/discover/apply-cm4"))
+	conn, br, resp := dialShell(t, ts, "step="+urlQueryEscape("deploy/discover/apply-west"))
 	defer func() { _ = conn.Close() }()
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("status = %d, want 101", resp.StatusCode)
@@ -424,7 +424,7 @@ func TestAShellOnAStepWithASlashInItsIDSurvivesTheWire(t *testing.T) {
 	}
 
 	reqs := fe.requests()
-	if len(reqs) != 1 || reqs[0].Step != "deploy/discover/apply-cm4" {
+	if len(reqs) != 1 || reqs[0].Step != "deploy/discover/apply-west" {
 		t.Fatalf("the engine saw %+v, want the nested step id intact", reqs)
 	}
 }

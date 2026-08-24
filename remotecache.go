@@ -89,6 +89,25 @@ type RemoteCache struct {
 	// one: this is a courtesy, and the store's policy is the control.
 	ReadOnly bool
 
+	// Scratch shares [ScratchCache] entries through the bucket as well,
+	// which is off by default.
+	//
+	// Worth it when your CI runners start cold and your dependency install
+	// dominates the build. Not worth it when the tree is large and the key
+	// churns: an entry is one whole-tree tarball, so a lock-file edit means
+	// uploading all of it again to save a download the toolchain already
+	// does incrementally.
+	//
+	// Two things to know before turning it on. It needs s3:ListBucket, which
+	// nothing else senro does requires, because the RestoreKeys fallback is a
+	// prefix listing. And a scratch tree carries no platform in its key, so a
+	// cache filled on one operating system or architecture will be restored
+	// on another unless your own key says otherwise; put the platform in
+	// [Key] if the content is not portable.
+	//
+	// Ignored by the registry backend, whose API cannot list by prefix.
+	Scratch bool
+
 	// Registry holds the cache in an OCI registry repository instead of a
 	// bucket. Setting Host on it selects that backend, and the bucket fields
 	// above must then be left alone.
@@ -182,6 +201,9 @@ const (
 	EnvRemoteCacheTimeout = remotecache.EnvTimeout
 	// EnvRemoteCacheReadOnly makes the run read the cache and never write it.
 	EnvRemoteCacheReadOnly = remotecache.EnvReadOnly
+	// EnvRemoteScratch shares scratch caches through the bucket too. Off by
+	// default, and ignored by the registry backend; see RemoteCache.Scratch.
+	EnvRemoteScratch = remotecache.EnvScratch
 )
 
 // RemoteCacheFromEnv reads a shared-cache configuration from the environment.
@@ -247,6 +269,11 @@ func RemoteCacheFromEnv() (RemoteCache, bool, error) {
 		return RemoteCache{}, false, err
 	}
 	rc.ReadOnly = set && readOnly
+	shareScratch, set, err := envBool(EnvRemoteScratch)
+	if err != nil {
+		return RemoteCache{}, false, err
+	}
+	rc.Scratch = set && shareScratch
 	return rc, true, nil
 }
 
@@ -402,6 +429,7 @@ func (rc RemoteCache) open() (*remotecache.Remote, error) {
 		PathStyle:       rc.PathStyle,
 		Timeout:         rc.Timeout,
 		ReadOnly:        rc.ReadOnly,
+		Scratch:         rc.Scratch,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("senro: %w", err)
