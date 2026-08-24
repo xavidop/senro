@@ -770,12 +770,52 @@ func (e *Executor) run(
 	args = append(args, "--", e.spec.Host, script)
 
 	cmd := exec.CommandContext(ctx, "ssh", args...)
-	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.WaitDelay = waitDelay
 
-	err := cmd.Run()
+	// Stdin goes through StdinPipe and a copy goroutine, NOT into cmd.Stdin,
+	// for the reason localexec.RunInteractive gives: os/exec copies a
+	// non-*os.File stdin on a goroutine Wait then waits for, and WaitDelay
+	// does not rescue that — on expiry it closes the pipes it owns and still
+	// waits, while the goroutine is parked in a Read on an io.Reader nothing
+	// here can interrupt. A shell session's stdin is a connected client that
+	// may never type again, so cmd.Stdin would make Interactive's
+	// cancellation contract unkeepable: `senro shell` on this executor would
+	// leak the session, and with it the Close that removes the attempt's
+	// credential from the remote host.
+	//
+	// The copy is left running when this returns. It ends on its own when
+	// the reader closes, and the pipe is closed here either way, so the
+	// goroutine can only be blocked on a Read the CALLER owns — which is
+	// exactly the division senroexec.Interactive states.
+	if stdin != nil {
+		in, err := cmd.StdinPipe()
+		if err != nil {
+			return result{err: err}
+		}
+		if err := cmd.Start(); err != nil {
+			_ = in.Close()
+			return result{err: err}
+		}
+		go func() {
+			// Both errors are discarded deliberately: a copy that failed
+			// because the client vanished is the disconnect path, which
+			// cancellation handles, and one that failed because ssh exited
+			// and Wait closed the pipe is the ordinary end of a session.
+			_, _ = io.Copy(in, stdin)
+			_ = in.Close()
+		}()
+		return classifyLocal(cmd, cmd.Wait())
+	}
+
+	return classifyLocal(cmd, cmd.Run())
+}
+
+// classifyLocal turns one finished ssh invocation into a result. Shared by
+// run's two paths so the stdin-bearing one cannot drift from the ordinary
+// one: what the local process did means the same thing either way.
+func classifyLocal(cmd *exec.Cmd, err error) result {
 	if err == nil {
 		return result{}
 	}

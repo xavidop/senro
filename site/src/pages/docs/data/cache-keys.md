@@ -6,8 +6,8 @@ title: Cache keys
 # Cache keys
 
 Every action cache key is built from the same twelve components, on every machine, whether the
-result is stored locally or in the [shared cache](/docs/data/shared-cache/). This page is the
-reference for what is in one, what is not, and how to read a miss.
+result is stored locally or in the [shared cache](/docs/data/shared-cache/). This page covers what's
+in a key, what isn't, and how to read a miss.
 
 ## The twelve components
 
@@ -26,33 +26,43 @@ reference for what is in one, what is not, and how to read a miss.
 | `tool_versions` | The declared toolchain fingerprint |
 | `version` | The key format's own version |
 
-Each one is declared by something you wrote: `Inputs` feeds `input_digests`, `Mount` feeds
+Each component comes from something you wrote: `Inputs` feeds `input_digests`, `Mount` feeds
 `workspace_digests` and `mount_shape`, `CacheEnv` feeds `env`. See
 [Caching a step](/docs/data/caching/).
 
+```mermaid
+flowchart LR
+  Inputs["Inputs(...)"] --> ID["input_digests"] --> Key["cache key"]
+  Mount["Mount(...)"] --> WD["workspace_digests"] --> Key
+  Mount --> MS["mount_shape"] --> Key
+  CacheEnv["CacheEnv(...)"] --> ENV["env"] --> Key
+  Other["+ 8 more components:<br>command, secrets, platform..."] --> Key
+```
+
 ## What never enters a key
 
-- **Any environment variable you did not name in `CacheEnv`.** The allowlist is the whole of `env`,
-  and even an allowlisted variable enters as a digest of its value, never as the value.
+- **Any environment variable you didn't name in `CacheEnv`.** The allowlist is all of `env`, and
+  even an allowlisted variable enters as a digest of its value, never the value itself.
 - **A secret's value, ever.** `secrets` carries a secret's *identity*: its name, source, version and
-  a salted digest. That holds for the local cache, the shared cache, a bucket key and a registry
-  tag alike. See [Secrets](/docs/secrets/).
+  a salted digest. That holds for the local cache, the shared cache, a bucket key and a registry tag
+  alike. See [Secrets](/docs/secrets/).
 - **Host identity.** `executor_class` is an equivalence class, so a fleet of interchangeable
-  machines shares entries. A class built from hostnames would mean forty machines that never share
-  one, with nothing to tell you. On Kubernetes the namespace is deliberately outside the class too.
+  machines can share entries. If the class were built from hostnames instead, forty machines would
+  never share a single entry, and nothing would tell you why. On Kubernetes, the namespace is
+  deliberately left out of the class too.
 - **A [scratch cache](/docs/data/scratch/)**: not its content, not its key, not its mounts.
-- **Which store you use.** A [shared cache](/docs/data/shared-cache/) changes where a result is kept,
-  never what it is keyed by. Two machines share an entry only when they would have computed the
-  identical thing.
+- **Which store you use.** A [shared cache](/docs/data/shared-cache/) changes where a result is
+  kept, never what it is keyed by. Two machines share an entry only when they would have computed
+  the identical thing.
 - **How you grouped your steps.** Moving steps between workflows does not change the plan's digest.
   Adding a workflow-level `Needs` does, because that adds real edges. See
   [Ordering](/docs/steps/ordering/).
 
-Two things about `executor_class` are worth knowing where they bite: a declared
-[`container.User`](/docs/executors/containers/) enters the class while the default does not, since
-the default names the coordinator's identity rather than anything about the pipeline, and
-[`ssh.CacheClass`](/docs/executors/ssh/) is yours to keep honest, since senro cannot tell that one
-host quietly acquired a different toolchain.
+Two details about `executor_class` are worth knowing. A declared
+[`container.User`](/docs/executors/containers/) enters the class, but the default doesn't, since the
+default just names the coordinator's own identity rather than anything about the pipeline. And
+[`ssh.CacheClass`](/docs/executors/ssh/) is yours to keep accurate: senro has no way to tell that
+one host quietly picked up a different toolchain.
 
 ## Reading a miss
 
@@ -73,14 +83,14 @@ senro cache explain build/test     # one step's own key, hit or miss, field by f
 
 - Only a step marked `Pure()` has a cache record. A step skipped because a dependency failed never
   reaches the cache and has none either.
-- A run with neither a `Pure()` step nor a scratch cache says so rather than printing nothing, and
-  still exits `0`.
+- A run with no `Pure()` steps and no scratch cache says so explicitly, rather than printing
+  nothing, and still exits `0`.
 - `workspace_digests` moving tells you a workspace changed, not what changed inside it.
   [`senro ws diff`](/docs/cli/workspaces/) answers that.
 - A key that did **not** change is not proof the step was pure. That is what
   [`senro verify --recheck-pure`](/docs/data/caching/) is for.
 
-Full flags in [Cache commands](/docs/cli/cache/); a worked miss in
+Full flags are in [Cache commands](/docs/cli/cache/). A worked example of a miss is in
 [Reading a failed run](/docs/reference/debugging/).
 
 ## Where to go next

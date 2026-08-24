@@ -462,6 +462,19 @@ func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Wr
 	s.mu.Unlock()
 
 	if err := s.ex.cli.ContainerStart(ctx, id); err != nil {
+		// A program the image does not have, or has and cannot execute, is
+		// the PIPELINE's mistake rather than the daemon's, and is reported
+		// as the shell's own verdict: the ssh and k8s executors run their
+		// command through a shell and answer 127 and 126 for exactly these
+		// two, and retry.OnInfra() must not spend a whole budget on a typo.
+		// See dockerd.ClassifyStartFailure.
+		if code := dockerd.ClassifyStartFailure(err); code != dockerd.StartFailureNone {
+			// The daemon's sentence is the only account of what was wrong
+			// with the name, and nothing else will carry it: the container
+			// never ran, so it produced no output of its own.
+			_, _ = fmt.Fprintf(stderr, "senro: %s\n", err)
+			return int(code), nil
+		}
 		return 0, fmt.Errorf("containerexec: %w: %w", senroexec.ErrInfra, err)
 	}
 

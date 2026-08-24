@@ -5,14 +5,14 @@ title: The protocol
 
 # Attach: the protocol
 
-A `senro` pipeline is an ordinary Go program. `senro attach` is a separate process that connects
-to it, renders a terminal UI, sends control operations back, and can open a session inside a live
-step. This page covers how the two find each other and what they speak.
+A `senro` pipeline is just a Go program. `senro attach` is a separate process that connects to
+it. It renders a terminal UI, sends control commands back, and can open a session inside a live
+step. This page explains how the two find each other, and what they say to each other.
 
 ## Opting in
 
-A pipeline that never calls `attach.Listen` pays nothing: no goroutine, no socket. Opting in is
-one call before `senro.Run`:
+A pipeline that never calls `attach.Listen` costs nothing extra: no goroutine, no socket. To opt
+in, add one call before `senro.Run`:
 
 ```go
 att, err := attach.Listen(ctx, attach.Options{
@@ -31,26 +31,26 @@ defer att.Close()
 err = senro.Run(ctx, p, senro.WithAttach(att))
 ```
 
-`Listen` starts an HTTP server on the bound socket, registers the run in a small on-disk registry
-so a bare `senro attach` can discover it, and returns an `*attach.Attach`. Its `.Sink()` is what
-`senro.WithAttach` hands to the engine: every event the run emits fans out through it.
+`Listen` starts an HTTP server on the bound socket. It also registers the run in a small on-disk
+registry, so a bare `senro attach` can find it. It returns an `*attach.Attach`. Its `.Sink()`
+method is what you pass to `senro.WithAttach`: every event the run produces goes through it.
 
-`Options` has eight fields, all optional; the two not shown are `TLSCertFile` and `TLSKeyFile`
-(see [Transport](#transport-unix-socket-or-tcp)). The subtleties:
+`Options` has eight fields, and all are optional. Two aren't shown above: `TLSCertFile` and
+`TLSKeyFile` (see [Transport](#transport-unix-socket-or-tcp)). Here's what each field does:
 
 | Field | Notes |
 |---|---|
-| `Dir` | The run directory, the same one `senro.WithDir` sets. `GET /api/plan` and `GET /api/logs/{step}` read `plan.json` and `logs/` from it, so a live client sees the same files a post-mortem `senro attach --run <id>` reads. Empty derives `runs/<RunID>`; `att.Dir()` reports which was used |
+| `Dir` | The run directory: the same one `senro.WithDir` sets. `GET /api/plan` and `GET /api/logs/{step}` read `plan.json` and `logs/` from here, so a live client sees the same files you'd see later with `senro attach --run <id>`. Leave it empty and it defaults to `runs/<RunID>`; `att.Dir()` tells you which was used |
 | `RunID` | Set it to match `senro.WithRunID`, so `senro attach --run <id>` finds the run again after it has finished |
 | `Pipeline` | Empty shows the run as `-` in a bare `senro attach`'s multi-run listing |
-| `WaitForClient` | Blocks `Listen` until a client subscribes: the only way to debug a pipeline that fails during its own setup, before the first step ever runs |
-| `ReadOnly` | Answers every control request with HTTP 403, and refuses a [shell](/docs/attach/shell/) with a 403 before the connection is hijacked. Right for a shared dashboard: watching stays open, driving does not |
+| `WaitForClient` | Blocks `Listen` until a client subscribes. Use this to debug a pipeline that fails during its own setup, before the first step runs |
+| `ReadOnly` | Answers every control request with HTTP 403, and refuses a [shell](/docs/attach/shell/) the same way, before the connection is hijacked. Good for a shared dashboard: people can watch, but not drive |
 
 ## Transport: unix socket or TCP
 
-`Bind` picks the transport by its shape. A filesystem path (or `attach.AutoUnixSocket`, or
-nothing at all) binds a unix socket; a `host:port` binds TCP. A value starting with `/`, `./` or
-`../` is always a path, however it is spelled.
+`Bind` picks the transport based on its shape. A filesystem path (or `attach.AutoUnixSocket`, or
+nothing at all) binds a unix socket. A `host:port` value binds TCP. Anything starting with `/`,
+`./` or `../` is always treated as a path.
 
 ```go
 attach.Listen(ctx, attach.Options{})                       // unix socket, discovered automatically
@@ -60,32 +60,33 @@ attach.Listen(ctx, attach.Options{Bind: "0.0.0.0:8443",    // TCP, reachable, ov
 	TLSCertFile: "/etc/senro/tls.crt", TLSKeyFile: "/etc/senro/tls.key"})
 ```
 
-> **The two are not equivalent.** A unix socket is `0600` in a `0700` directory with a
-> peer-credential check; another local user cannot open it at all. A TCP listener is guarded by a
-> per-run bearer token and nothing else, and that token can cancel the run, skip steps, and open
-> a shell inside a step's workspace.
+> **The two are not equivalent.** A unix socket is `0600` inside a `0700` directory, and it checks
+> peer credentials, so another local user can't open it at all. A TCP listener is guarded only by a
+> per-run bearer token, and that token can cancel the run, skip steps, and open a shell inside a
+> step's workspace.
 >
-> Loopback binds without TLS. Anything else requires a certificate and is refused without one,
-> with no opt-out flag.
+> Loopback binds work without TLS. Anything else needs a certificate. There's no flag to skip
+> that.
 
-`att.Token()` is the credential and `att.Addr()` is the resolved address with the real port. A
-bare `senro attach` works on either transport, reading the token from the run's registry entry.
-An endpoint with no local registry entry takes the token from `$SENRO_ATTACH_TOKEN` and its
-address from a flag: `senro attach --addr 127.0.0.1:8443 --tls`.
+`att.Token()` gives you the credential, and `att.Addr()` gives you the resolved address with the
+real port. A bare `senro attach` works on either transport: it reads the token from the run's
+registry entry. If there's no local registry entry (for example, over a port-forward), pass the
+token in `$SENRO_ATTACH_TOKEN` and the address on a flag: `senro attach --addr 127.0.0.1:8443
+--tls`.
 
-[Security](/docs/attach/security/) has the full comparison, and why the honest use of TCP is a
-browser on the same machine or a port-forward.
+See [Security](/docs/attach/security/) for the full comparison, and for why TCP is best used for a
+browser on the same machine or over a port-forward.
 
 ## Discovery
 
-`Listen` writes a small JSON file, `<runtime dir>/senro/<pid>.json`, naming the address, the
-transport, the run ID, the pipeline name, and the working directory. For a unix run the socket
-sits beside it.
+`Listen` writes a small JSON file, `<runtime dir>/senro/<pid>.json`. It records the address, the
+transport, the run ID, the pipeline name, and the working directory. For a unix run, the socket
+file sits right next to it.
 
-For a TCP run the file also carries the run's bearer token, which is why it is written `0600`
-inside a `0700` directory. See [Getting the token](/docs/attach/security/#getting-the-token).
+For a TCP run, the file also carries the run's bearer token. That's why it's written `0600` inside
+a `0700` directory. See [Getting the token](/docs/attach/security/#getting-the-token).
 
-The runtime directory is platform-dependent, and `$XDG_RUNTIME_DIR` is read on Linux only:
+The runtime directory depends on the platform. `$XDG_RUNTIME_DIR` is only used on Linux:
 
 | Platform | Runtime directory | Example socket |
 |---|---|---|
@@ -94,10 +95,10 @@ The runtime directory is platform-dependent, and `$XDG_RUNTIME_DIR` is read on L
 | Linux, unset and no `/dev/shm` | none | `Listen` fails: `neither $XDG_RUNTIME_DIR nor /dev/shm is available to resolve a runtime dir` |
 | macOS and everything else | `os.UserCacheDir()` | `~/Library/Caches/senro/4711.sock` |
 
-- A bare `senro attach` reads that registry, reaps entries whose process has died, and attaches to
-  the one live entry, or lists them for you to pick with `--pid`.
-- `senro attach --run <id>` looks the run up by ID instead: live first over the socket, falling
-  back to the recorded run under `runs/<id>/` on disk. See
+- A bare `senro attach` reads that registry, removes entries whose process has died, and attaches
+  to the one live entry. If there's more than one, it lists them so you can pick with `--pid`.
+- `senro attach --run <id>` looks up a run by ID instead. It checks live over the socket first,
+  then falls back to the recorded run under `runs/<id>/` on disk. See
   [Reading a failed run](/docs/reference/debugging/) for what that directory contains.
 
 ## Snapshot, then subscribe
@@ -109,13 +110,25 @@ GET  /api/state                       the current RunState, and the seq it refle
 GET  /api/stream?from=<state.seq+1>   everything that happened since
 ```
 
-Attaching costs the same however long the run has been going: no replay of a million old events.
-The snapshot carries the sequence the subscription resumes from, so there is no diverge race.
+`RunState` bundles the status of every step in the run as of that instant: the engine's live
+equivalent of the snapshot a finished run leaves on disk.
+
+Attaching costs the same no matter how long the run has been going: there's no replay of a
+million old events. The snapshot carries the sequence number the subscription resumes from, so
+there's no race where the two disagree.
+
+```mermaid
+flowchart LR
+    client["Client"] -->|"1. GET /api/state"| engine["Engine"]
+    engine -->|"RunState + seq"| client
+    client -->|"2. GET /api/stream?from=seq+1"| engine
+    engine -.->|"events, as they happen"| client
+```
 
 ## One client, two sources
 
 The client that renders a live run and the client that renders a finished one from disk are the
-*same code*, against two implementations of one interface:
+*same code*. They run against two implementations of one interface:
 
 ```go
 type Source interface {
@@ -135,13 +148,14 @@ flowchart LR
 ```
 
 The live source speaks the wire protocol. The disk source reads recorded events and log files
-directly, answers `Control` with `ErrReadOnly` (there is no engine to send an operation to), and
-is otherwise indistinguishable to the renderer. That is what makes the handoff seamless: when the
-pipeline process exits under an attached client, it switches sources and scrollback keeps working.
+directly, and answers `Control` with `ErrReadOnly` (there's no engine to send an operation to).
+Otherwise the two look identical to the renderer. That's what makes the handoff seamless: when the
+pipeline process exits while a client is attached, the client just switches sources and scrollback
+keeps working.
 
-A live source also satisfies a second, optional interface, which is how `senro shell` and the
-TUI's `s` key reach a step. The disk source deliberately does not, so a shell against a finished
-run is refused with a clear answer rather than a hang. `senro ws pull` is what you want instead.
+A live source also satisfies a second, optional interface. That's how `senro shell` and the TUI's
+`s` key reach a step. The disk source doesn't implement it, so opening a shell against a finished
+run is refused with a clear answer instead of hanging. Use `senro ws pull` instead.
 
 ## Where to go next
 

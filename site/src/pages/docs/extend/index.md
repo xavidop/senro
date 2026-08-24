@@ -67,6 +67,6 @@ These are extension points too, but they are small enough to be documented where
 ## Where to go next
 
 - **[The event stream](/docs/reference/event-stream/)**: what a `Sink` and a notifier are reading.
-- **[Embedding](/docs/reference/embedding/)**: running senro from your own program, where most of
-  these get wired.
+- **[Run options and outcomes](/docs/reference/run-options/)**: `WithSink` and the other options
+  most of these get wired through.
 - **[The `api` package](/docs/reference/api/)**: the wire contract every extension shares.

@@ -80,10 +80,21 @@ type LocalObjectRefName struct {
 	Name string `json:"name"`
 }
 
-// PodSecurityContext carries the uid and gid a step runs as.
+// PodSecurityContext carries the uid and gid a step runs as, and the
+// supplementary group its mounted volumes are owned by.
+//
+// FSGroup is what makes a projected Secret readable by a step that does not
+// run as root. kubelet owns every file in a volume it manages as root, so a
+// 0400 Secret is readable by uid 0 and by nobody else; with FSGroup set it
+// chowns the volume to that gid and widens the mode by 0440, leaving the
+// credential readable by the step's own group and by no other account. It
+// is deliberately separate from RunAsGroup: RunAsGroup is what the process
+// runs as, FSGroup is what the filesystem is owned by, and Kubernetes will
+// not infer either from the other.
 type PodSecurityContext struct {
 	RunAsUser  *int64 `json:"runAsUser,omitempty"`
 	RunAsGroup *int64 `json:"runAsGroup,omitempty"`
+	FSGroup    *int64 `json:"fsGroup,omitempty"`
 }
 
 // Container is the step's process.

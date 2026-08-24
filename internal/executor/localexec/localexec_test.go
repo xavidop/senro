@@ -77,18 +77,47 @@ func TestNonZeroExitIsNotAnError(t *testing.T) {
 	}
 }
 
-// A command that cannot start is infrastructure failure, and must classify.
-func TestMissingBinaryIsInfraFailure(t *testing.T) {
+// A program that is not there is the PIPELINE's mistake, not the
+// substrate's: reported as infrastructure, retry.OnInfra() would spend a
+// whole budget re-running a typo, and the same step would fail on the first
+// attempt on the ssh and k8s executors, which report the shell's 127. See
+// classifyRunError, and the cross-executor case in
+// internal/executor/conformance.
+func TestAMissingBinaryIsTheWorkloadsVerdictAndNotInfrastructure(t *testing.T) {
 	sb := newSandbox(t)
 	var out, errb bytes.Buffer
 
-	_, err := sb.Run(context.Background(),
+	exit, err := sb.Run(context.Background(),
 		executor.Cmd{Args: []string{"senro-no-such-binary-xyz"}}, &out, &errb)
-	if err == nil {
-		t.Fatal("a missing binary must be an error")
+	if err != nil {
+		t.Fatalf("a missing binary must not be an error, got %v", err)
 	}
-	if !executor.IsInfra(err) {
-		t.Errorf("a missing binary must classify as infra failure, got %v", err)
+	if executor.IsInfra(err) {
+		t.Errorf("a missing binary must not classify as infra failure, got %v", err)
+	}
+	if exit != 127 {
+		t.Errorf("exit = %d, want the shell's 127 for a command that was not found", exit)
+	}
+}
+
+// The other half of the same rule: a file that exists and cannot be
+// executed is 126, again by shell convention. A missing chmod is not a
+// broken machine.
+func TestAProgramThatCannotBeExecutedIs126(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "not-executable")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sb := newSandbox(t)
+	var out, errb bytes.Buffer
+
+	exit, err := sb.Run(context.Background(), executor.Cmd{Args: []string{path}}, &out, &errb)
+	if err != nil {
+		t.Fatalf("a non-executable file must not be an error, got %v", err)
+	}
+	if exit != 126 {
+		t.Errorf("exit = %d, want the shell's 126 for a file that is not executable", exit)
 	}
 }
 

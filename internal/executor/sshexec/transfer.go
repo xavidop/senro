@@ -92,6 +92,12 @@ func (s *sandbox) ReadMount(ctx context.Context, name, dest string) error {
 		return fmt.Errorf("sshexec: %w: step %q has no mount named %q to read back",
 			senroexec.ErrInfra, s.spec.StepID, name)
 	}
+	// MountReader's precondition, checked before a byte crosses: see
+	// mountxfer.RequireDir.
+	if err := mountxfer.RequireDir(dest); err != nil {
+		return fmt.Errorf("sshexec: %w: reading mount %q back for step %q: %w",
+			senroexec.ErrInfra, name, s.spec.StepID, err)
+	}
 	return s.copyOut(ctx, m, dest)
 }
 

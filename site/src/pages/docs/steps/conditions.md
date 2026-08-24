@@ -36,8 +36,8 @@ against anything a step produces.
 - **`senro.EnvIs(name, value)`**: true when an environment variable equals `value`, read from **the
   coordinator's own process**, not the step's. Conditions run before any sandbox exists.
 
-Parameters come from `senro.WithParams`; see [Embedding](/docs/reference/embedding/), or
-[Triggers](/docs/triggers/) for where `branch` comes from when an event started the run.
+Parameters come from `senro.WithParams`; see [Run options and outcomes](/docs/reference/run-options/),
+or [Triggers](/docs/triggers/) for where `branch` comes from when an event started the run.
 
 **There is deliberately no `And`, `Or` or `Not`.** Calling `When` more than once, at any level or
 mix of levels, already means AND.
@@ -68,5 +68,6 @@ See [Step states](/docs/steps/states/) for the whole taxonomy.
 
 - **[Step states](/docs/steps/states/)**: `skipped_condition` and how it propagates.
 - **[Fan-out](/docs/monorepo/fan-out/)**: `When` on a whole expansion.
-- **[Embedding](/docs/reference/embedding/)**: `senro.WithParams`, which `Branch` and `ParamIs` read.
+- **[Run options and outcomes](/docs/reference/run-options/)**: `senro.WithParams`, which `Branch`
+  and `ParamIs` read.
 - **[Triggers](/docs/triggers/)**: run parameters an event supplies.

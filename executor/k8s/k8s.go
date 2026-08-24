@@ -55,6 +55,14 @@ func Namespace(ns string) Option {
 // bind mounts of coordinator directories for a root process to leave
 // unremovable files in.
 //
+// Declare the GROUP too when the step needs a secret. Kubernetes owns a
+// projected Secret as root, and the pod's fsGroup is the only lever it
+// offers for handing one to another account; senro sets fsGroup from the
+// group written here, so k8s.User("1000:1000") reads its credential and
+// k8s.User("1000") cannot. A step that declares only a uid and needs a
+// secret is refused before its pod is created, rather than failing inside
+// the container as a "Permission denied" that reads like a bad token.
+//
 // A declared user is part of the step's cache equivalence class, since a
 // step that runs as root is not the same step.
 func User(u string) Option {

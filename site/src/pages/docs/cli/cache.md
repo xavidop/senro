@@ -5,12 +5,14 @@ title: "CLI: cache and verify"
 
 # CLI: cache and verify
 
-The three commands that read and reclaim the cache: `senro cache gc`, `senro cache explain` and
-`senro verify`. For the command table and the exit codes, see [CLI](/docs/cli/).
+This page covers the three commands for reading and reclaiming the cache: `senro cache gc`,
+`senro cache explain`, and `senro verify`. For the full command table and exit codes, see
+[CLI](/docs/cli/).
 
-**Where the cache root is**, for every `--cache-dir` below: the flag if given, else
-`$SENRO_CACHE_DIR`, else `os.UserCacheDir()/senro`. It is the same root `senro.WithCacheDir` sets
-for a library caller, and it is not the run directory, which senro never deletes.
+**Where the cache root is**, for every `--cache-dir` flag below: the flag if you pass it,
+otherwise `$SENRO_CACHE_DIR`, otherwise `os.UserCacheDir()/senro`. This is the same root that
+`senro.WithCacheDir` sets for a library caller. It is not the run directory, which senro never
+deletes.
 
 ## `senro cache gc`
 
@@ -18,24 +20,27 @@ for a library caller, and it is not the run directory, which senro never deletes
 senro cache gc [--max-size 50G] [--keep-failed 168h] [--dry-run] [--cache-dir DIR]
 ```
 
-Reclaims disk in the local content-addressed store. Least recently used entries go first.
+Reclaims disk space in the local content-addressed store, evicting least-recently-used entries
+first.
 
-- `--max-size` has **no default**. Bare `senro cache gc` collects expired pins and unreferenced
-  objects and sweeps a failed run's workspaces older than `--keep-failed`, but evicts nothing for
-  size. `50G` in the usage line is placeholder syntax, not a value senro supplies.
-- `--max-size` takes a plain byte count or a `K`, `M` or `G` suffix, **integer only**: `1.5G` is
-  refused rather than rounded into a budget nobody set, and so is a negative size.
-- `--keep-failed` defaults to `168h`, a week: a failed run's workspace snapshots are kept that
-  long so the filesystem state you are debugging is still there. Only a **failed** run's
-  workspaces are protected, which is why an old successful run's index can be gone.
-- `--dry-run` reports what would be deleted without deleting it, prefixed `dry run:`.
+- `--max-size` has no default. Running bare `senro cache gc` collects expired pins and
+  unreferenced objects, and sweeps failed-run workspaces older than `--keep-failed`, but it won't
+  evict anything just to free up size. The `50G` in the usage line above is an example, not a
+  default senro sets.
+- `--max-size` takes a plain byte count, or a number with a `K`, `M`, or `G` suffix. It must be an
+  integer: `1.5G` is refused rather than rounded, and so is a negative size.
+- `--keep-failed` defaults to `168h` (a week). Failed runs keep their workspace snapshots for that
+  long, so the filesystem state you're debugging is still around. Only failed runs get this
+  protection, which is why an old successful run's index can already be gone.
+- `--dry-run` reports what would be deleted, without deleting anything. Output is prefixed
+  `dry run:`.
 
-A sweep prints one line: objects deleted of scanned, bytes freed of the total, entries evicted of
-scanned, pinned and scratch-referenced objects kept, pins expired, leaked temp files swept. It
-adds a note and deletes nothing when a scratch cache save or a pipeline run was in progress
-against the same root; run it again once that finishes.
+A sweep prints a single summary line: objects deleted out of scanned, bytes freed out of total,
+entries evicted out of scanned, objects kept because they're pinned or scratch-referenced, pins
+expired, and leaked temp files swept. If a scratch cache save or a pipeline run is in progress
+against the same root, `gc` adds a note and deletes nothing. Just run it again once that finishes.
 
-There is no remote backend to sweep. See [Shared cache](/docs/data/shared-cache/).
+There's no remote backend for this to sweep. See [Shared cache](/docs/data/shared-cache/).
 
 ## `senro cache explain`
 
@@ -46,8 +51,8 @@ senro cache explain                # every Pure() step and scratch cache the lat
 senro cache explain build/test     # one step's own cache key, hit or miss, field by field
 ```
 
-Diffs a step's current cache key against the most recent recorded entry for that step, so a miss
-is something you can read the reason for rather than guess at:
+Diffs a step's current cache key against its most recent recorded entry, so you can read exactly
+why a step missed the cache instead of guessing:
 
 ```
 MISS  measure  key e126dad1 (previous 2ba03dd0)
@@ -56,19 +61,23 @@ MISS  measure  key e126dad1 (previous 2ba03dd0)
   ✓ command, env, secrets, executor_class, platform, mount_shape, step_shape, func_identity, tool_versions, version unchanged
 ```
 
-- **There is no `--cache-dir` here**, unlike `cache gc`. This is a pure formatter over what the
-  engine already recorded to `<run>/cache`, with no re-planning and no re-hashing that could
-  disagree with what the run concluded, so everything it reads is inside the run directory.
-- Only steps marked `Pure()` have a cache record, and only once they are actually attempted: a
-  step skipped because a dependency failed never reaches the cache and has none either.
-- A `STEP` may carry an attempt suffix (`build@2`), stripped at the CLI boundary and never stored
-  inside a record.
-- A run with no `Pure()` step and no scratch cache says so rather than printing nothing
-  (`no cache activity recorded ...: no step declared Pure() and no scratch cache was mounted`),
-  and still exits `0`.
+- **There's no `--cache-dir` flag here**, unlike `cache gc`. This command just formats what the
+  engine already recorded to `<run>/cache`. It doesn't re-plan or re-hash anything, so everything
+  it reads lives inside the run directory.
+- Only steps marked `Pure()` (which opt into the action cache as safe to skip when their inputs
+  haven't changed; see [Caching a step](/docs/data/caching/)) get a cache record, and only once
+  they're actually attempted. A step skipped because a dependency failed never reaches the cache,
+  so it has no record either.
+- A `STEP` argument can carry an attempt suffix (`build@2`); senro strips it before looking
+  anything up, and it's never stored in a record.
+- A run with no `Pure()` step and no scratch cache says so, rather than printing nothing
+  (`no cache activity recorded ...: no step declared Pure() and no scratch cache was mounted`). It
+  still exits `0`.
 
-Scratch caches emit no events, so this is the one place their behavior is visible: one line per
-cache, reporting `cold`, `cold, saved`, `restored (exact)` or `restored from <key>`.
+A [scratch cache](/docs/data/scratch/) is a mutable directory restored best-effort by key (think a
+package manager's download cache), never part of a `Pure()` step's cache key. Scratch caches don't
+emit events anywhere else, so this is the one place you can see their behavior: one line per
+cache, reporting `cold`, `cold, saved`, `restored (exact)`, or `restored from <key>`.
 
 See [Cache keys](/docs/data/cache-keys/) for what each component means.
 
@@ -84,58 +93,61 @@ senro verify --recheck-pure --rerun             # re-run the latest run's cached
 senro verify --recheck-pure --rerun --fail-on-mismatch    # exit 1 on a finding, for CI
 ```
 
-`Pure()` is **trusted, not enforced**: nothing sandboxes a step's network access. A step that
-claims purity and then downloads something is believed, and its result is served to every future
-run with the same key.
+`Pure()` is trusted, not enforced. Nothing sandboxes a step's network access, so if a step claims
+to be pure and then downloads something anyway, senro believes it, and serves that result to every
+future run with the same key.
 
-This command is the empirical answer. It puts a cached step back in front of the exact input its
-own cache key records, runs it again, and compares the digests.
+`senro verify` is how you check that claim. It puts a cached step back in front of the exact input
+its cache key recorded, runs it again, and compares the results.
 
-The check has to be named. A bare `senro verify` is a usage error, so adding a second check later
-never changes what the first one's invocation means.
+You have to name which check you want: a bare `senro verify` is a usage error. This also means
+adding a second kind of check later won't change what this invocation does.
 
-It reads `<run>/plan.json` rather than rebuilding the pipeline, so it needs no Go toolchain and no
-pipeline source, and cannot re-resolve a pipeline that has been edited since.
+It reads `<run>/plan.json` instead of rebuilding the pipeline. That means it needs no Go toolchain
+and no pipeline source, but it also can't re-resolve a pipeline that's been edited since the run.
 
 ### What it re-runs
 
-One run's cached `Pure()` steps, and only those: never their impure neighbours, never an upstream
-step. It does not need one, because a step's cache key records the content digest of every
-workspace it mounted **before** it ran, so `verify` restores that content straight from the store.
+Only one run's cached `Pure()` steps, never their impure neighbors and never an upstream step. It
+doesn't need to re-run upstream steps, because a step's cache key already records the content
+digest of every workspace it mounted before it ran. `verify` restores that content straight from
+the store.
 
-`--limit N` bounds it to the first N in plan order (`0` means no limit); `--step` names one.
+`--limit N` checks only the first N steps in plan order (`0` means no limit). `--step` checks one
+named step.
 
 ### Nothing runs without `--rerun`
 
-The premise of this command is that a `Pure()` claim may be false, so it does not help itself to
-the claim's safety corollary either. Without `--rerun` every step is reported as `planned` and
-stops there. When you do pass it, four things bound the damage:
+This command exists because a `Pure()` claim might be false, so it doesn't assume the claim is
+safe either. Without `--rerun`, every step is just reported as `planned`, and nothing actually
+executes. When you do pass `--rerun`, four things limit the risk:
 
-- Every re-run happens in a **throwaway directory tree** restored from a content address, never in
-  the run's own workspaces and never in your checkout.
-- A step that **declares secrets** is never re-run: the values live in the struct the pipeline
-  handed `senro.WithSecrets`, which is not in the run directory and must not be.
-- A step on a **non-local executor** is never re-run: building one would pull an image or create a
-  pod.
-- A scratch cache is realized **cold**, as an empty directory, because a scratch cache is never an
-  input to a cache key.
+- Every re-run happens in a throwaway directory tree restored from a content address. It never
+  touches the run's own workspaces, and never touches your checkout.
+- A step that declares secrets is never re-run. The secret values live in the struct the pipeline
+  passed to `senro.WithSecrets`, which isn't in the run directory and shouldn't be.
+- A step on a non-local executor is never re-run, since doing so would mean pulling an image or
+  spinning up a pod.
+- A scratch cache is always realized cold, as an empty directory, since a scratch cache is never
+  part of a cache key.
 
-It also never writes an action cache entry, so a re-run cannot save over the entry it is comparing
-against. It does add objects to the CAS when snapshotting a re-run's workspace; those are
-immutable, unreferenced, and reclaimed by `senro cache gc`.
+A re-run also never writes an action cache entry, so it can't overwrite the entry it's comparing
+against. It does add objects to the content store when it snapshots a re-run's workspace; those
+are immutable, unreferenced, and get cleaned up by `senro cache gc` later.
 
 ### What "the same" means
 
-Declared `Outputs`, mounted workspaces, and the exit code. **Logs are never compared**: a step's
-output legitimately carries timestamps, durations, PIDs and temp paths, and flagging those would
-produce alarms you learn to ignore.
+senro compares declared `Outputs`, mounted workspaces, and the exit code. Logs are never compared:
+a step's output legitimately contains timestamps, durations, PIDs, and temp paths, and flagging
+those would just produce noise you'd learn to ignore.
 
-A workspace is compared only when the `Needs` graph orders this step against every other step that
-mounts it read-write. A `ScopeRun` workspace is shared, so a post-step snapshot contains whatever
-an unordered sibling had written by then, while an isolated re-run has no siblings.
+A workspace is only compared when the `Needs` graph puts this step in a fixed order relative to
+every other step that mounts it read-write. A `ScopeRun` workspace is shared, so a post-step
+snapshot can contain whatever an unordered sibling step had written by that point, while an
+isolated re-run has no siblings at all.
 
-When that applies, the report says which sibling and why, and the step's declared outputs, which
-no sibling writes, decide the verdict.
+When that happens, the report names the sibling and explains why. The verdict is then decided by
+the step's declared outputs, since no sibling writes to those.
 
 ### Verdicts
 
@@ -148,11 +160,13 @@ no sibling writes, decide the verdict.
 | `skipped` | Cannot be checked, for a reason the report names |
 | `error` | The check itself broke, so nothing was learned |
 
-The split between `mismatch` and `nondeterministic` is the whole answer to false alarms: an
-archive that embeds a build timestamp disagrees with its entry on every re-run and is not impure.
+The split between `mismatch` and `nondeterministic` exists specifically to avoid false alarms. For
+example, an archive that embeds a build timestamp will disagree with its cache entry on every
+re-run, but that doesn't mean the step is impure.
 
-The second re-run is only spent on a step that already disagreed, so a clean pass costs one
-execution per step. `--no-classify` skips it and merges the two verdicts into `mismatch`.
+senro only spends a second re-run on a step that already disagreed once, so a clean pass costs just
+one execution per step. `--no-classify` skips this second re-run and merges both verdicts into
+`mismatch`.
 
 A caught step:
 
@@ -167,40 +181,41 @@ MISMATCH         codegen  key f33a005ee7e4  entry from run 20260813T105427-a248f
   environment variable it never declared in CacheEnv, or the clock
 ```
 
-`cache explain` reports that same `codegen` as a clean `HIT`, because it is one: the key did not
-change. That is exactly the failure this command exists to make visible.
+`cache explain` would report that same `codegen` step as a clean `HIT`, because it is one: the key
+never changed. That's exactly the kind of failure this command exists to catch.
 
-`hermeticity: trusted` is recorded on every entry senro writes today and means `Pure()` was taken
-at its word, so entries produced under real enforcement, if it ever arrives, can be told apart
-without a migration. A verified step's entry is **not** upgraded: verification is evidence about
-one moment, not a property of the entry.
+`hermeticity: trusted` appears on every entry senro writes today. It means `Pure()` was taken at
+its word. This label makes room for a future where purity is actually enforced, without needing a
+migration to tell old entries apart from new ones. Verifying a step doesn't upgrade its entry: a
+passing check is evidence about that one moment, not a permanent property of the cache entry.
 
 ### What it cannot check
 
 Each of these is reported as `skipped` with the reason, never silently passed:
 
-- A step that mounts **no workspace**: its `Inputs` resolve against the working directory the
-  pipeline ran in, which cannot be reconstituted from a content address.
-- A **`Func` step**, whose body is compiled into the pipeline binary rather than described by the
+- A step that mounts no workspace. Its `Inputs` resolve against the working directory the
+  pipeline ran in, which can't be reconstructed from a content address.
+- A `Func` step, since its body is compiled into the pipeline binary rather than described in the
   plan.
 - An entry whose workspace bodies a `cache gc` sweep has already collected.
 
 ### Exit codes and output
 
-Exits `0` whether or not it finds anything, like `senro ws diff`: a finding is an answer, not a
-failed run.
+Exits `0` whether or not it finds anything, just like `senro ws diff`. A finding is an answer, not
+a failed run.
 
-`--fail-on-mismatch` is the opt-in that turns the answer into a gate and exits `1` on any step
-that failed to reproduce its entry; the pass itself breaking is also `1`. A `skipped` step never
-changes the exit code, because skips are the ordinary shape of a pass over a real pipeline.
+`--fail-on-mismatch` turns this from a report into a gate: it exits `1` if any step failed to
+reproduce its cache entry, or if the check itself broke. A `skipped` step never changes the exit
+code, since skips are a normal part of running this over a real pipeline.
 
-`--json` emits the whole report as one document, whose field names are an additive-only wire
-contract. `--keep` leaves the re-run trees on disk and prints where; without it the report omits
-the paths, which are about to be removed. `--local-class CLASS` mirrors `senro.WithLocalClass` for
-the pipeline being verified.
+`--json` emits the whole report as one document; new fields may be added later, but existing ones
+won't change. `--keep` leaves the re-run trees on disk and prints where; without it, the report
+skips printing paths that are about to be deleted anyway. `--local-class CLASS` mirrors
+`senro.WithLocalClass` for the pipeline being verified.
 
 ## Where to go next
 
 - **[Caching a step](/docs/data/caching/)**: `Pure()`, `Inputs`, `Outputs`, `CacheEnv`.
 - **[Cache keys](/docs/data/cache-keys/)**: exactly what enters a key.
+- **[Scratch caches](/docs/data/scratch/)**: the mutable, best-effort cache `cache explain` also reports on.
 - **[Workspaces and runs](/docs/cli/workspaces/)**: `ws ls/pull/diff`, `logs fetch`, `func check`.

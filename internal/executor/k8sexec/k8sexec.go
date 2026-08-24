@@ -160,6 +160,14 @@ func CheckSpec(spec plan.ExecutorSpec) error {
 // reading /etc/passwd inside the image, which this executor cannot do.
 // Docker resolves names itself, so container.User("node") works and
 // k8s.User("node") cannot; the refusal names that difference.
+//
+// A declared gid also becomes FSGroup, and that is what makes a secret
+// readable by a step that is not root: kubelet owns every file in a volume
+// it manages as root, so the projected 0400 credential would otherwise be
+// readable by uid 0 alone and a step running as 1000 would get "Permission
+// denied" on its own token. FSGroup is set from the gid rather than from
+// the uid because a gid is what it is: guessing one from the uid would
+// hand the volume to whatever group happened to share the number.
 func securityContext(user string) (*kubeapi.PodSecurityContext, error) {
 	uidStr, gidStr, hasGID := strings.Cut(user, ":")
 	uid, err := strconv.ParseInt(strings.TrimSpace(uidStr), 10, 64)
@@ -176,6 +184,7 @@ func securityContext(user string) (*kubeapi.PodSecurityContext, error) {
 			return nil, fmt.Errorf("k8sexec: group in user %q is not numeric", user)
 		}
 		sc.RunAsGroup = &gid
+		sc.FSGroup = &gid
 	}
 	return sc, nil
 }
@@ -325,6 +334,9 @@ func (e *Executor) Sandbox(ctx context.Context, spec senroexec.SandboxSpec) (sen
 	if err := checkWorkDir(spec.StepID, spec.WorkDir); err != nil {
 		return nil, err
 	}
+	if err := e.checkSecretsAreReachable(spec); err != nil {
+		return nil, err
+	}
 	s := &sandbox{
 		ex: e, spec: spec,
 		pod:     podName(e.runID, spec.StepID, spec.Attempt),
@@ -337,6 +349,32 @@ func (e *Executor) Sandbox(ctx context.Context, spec senroexec.SandboxSpec) (sen
 		s.mounts = append(s.mounts, m)
 	}
 	return s, nil
+}
+
+// checkSecretsAreReachable refuses, before anything is created, the one
+// combination where senro could deliver a credential the step cannot open:
+// a declared user with no group, plus a secret.
+//
+// kubelet owns a projected Secret as root, and FSGroup is the only lever
+// Kubernetes offers for handing it to another account (see
+// securityContext). Without a gid there is no FSGroup to set and no way to
+// find one out: the group a uid belongs to lives in the image's /etc/group,
+// which this executor never reads. Delivering the secret anyway would fail
+// inside the step as "Permission denied" on its own token, which reads like
+// a wrong credential rather than a missing declaration.
+func (e *Executor) checkSecretsAreReachable(spec senroexec.SandboxSpec) error {
+	if len(spec.Secrets) == 0 || e.spec.DelegateSecrets || e.user == nil {
+		return nil
+	}
+	if e.user.FSGroup != nil {
+		return nil
+	}
+	return fmt.Errorf(
+		"k8sexec: %w: step %q runs as k8s.User(%q) and needs %d secret(s), and a user declared "+
+			"without a group cannot read them: Kubernetes owns a projected Secret as root and "+
+			"hands it to another account only through the pod's fsGroup, which senro sets from "+
+			"the group you declare. Declare k8s.User(\"%d:<gid>\")",
+		senroexec.ErrInfra, spec.StepID, e.spec.User, len(spec.Secrets), *e.user.RunAsUser)
 }
 
 // checkMount refuses a mount this executor cannot realize. A workspace is
@@ -873,9 +911,16 @@ func (s *sandbox) podSpec(c senroexec.Cmd, workDir string, bin bool) kubeapi.Pod
 			Name: "senro-secrets",
 			Secret: &kubeapi.SecretVolumeSource{
 				SecretName: name,
-				// 0400: readable by the pod's uid and by nobody else in the
-				// container, which is the closest equivalent to the 0600
-				// inside 0700 that secretdir gives a local or container step.
+				// 0400, which is what the file keeps when the pod runs as
+				// root: readable by the one account in the container and by
+				// nobody else, the closest equivalent to the 0600 inside
+				// 0700 that secretdir gives a local or container step.
+				//
+				// With a declared user the pod carries an fsGroup (see
+				// securityContext) and kubelet widens this to 0440 owned by
+				// that group, which is the same promise one rung out: the
+				// step's own account reads it, and no other account on the
+				// node does.
 				DefaultMode: int32Ptr(0o400),
 			},
 		})

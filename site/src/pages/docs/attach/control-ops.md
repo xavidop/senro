@@ -18,11 +18,18 @@ endpoint, `POST /api/control`, correlated by `id`:
 {"v":1,"kind":"res","id":"c7","ok":true}
 ```
 
-- A response carries no payload, ever. It says whether the operation was accepted, and on refusal
-  says why in `error`. What it went on to do shows up in the event stream, the only record of it.
-- An argument is exactly one key and nothing else, and a request carrying any other key is
-  rejected outright, before it can reach the permanent ledger. `Frame` is the control channel's
-  own shape and nothing else's, plain JSON deliberately, debuggable with `curl` alone.
+- A response never carries a payload. It only says whether the operation was accepted, and if not,
+  why, in `error`. What actually happened shows up in the event stream: that's the only record of
+  it.
+- A request's payload has exactly one key. A request with any other key is rejected outright.
+  `Frame` is plain JSON on purpose, so you can debug it with `curl` alone.
+
+```mermaid
+flowchart LR
+    client["Client"] -->|"req: step.retry"| engine["Engine"]
+    engine -->|"res: ok:true / ok:false"| client
+    engine -.->|"what actually happened"| stream["Event stream"]
+```
 
 `POST /api/control` is one of six routes:
 
@@ -35,16 +42,15 @@ POST /api/control         the Frame request/response above
 POST /api/shell           an interactive session on a live step, on a hijacked connection
 ```
 
-Subscribing and reading logs are deliberately not control operations, and
-[a session](/docs/attach/shell/) is `POST /api/shell`, which hijacks the connection and could not
-be a frame. The [stream's](/docs/attach/#snapshot-then-subscribe) resume parameter is `from`, not
+Subscribing and reading logs are not control operations. A [shell session](/docs/attach/shell/) is
+`POST /api/shell` instead, since it hijacks the connection and can't be expressed as a frame. Note
+that the [stream's](/docs/attach/#snapshot-then-subscribe) resume parameter is `from`, not
 `from_seq`.
 
 ## The eleven operations
 
-**These are the only eleven this build has**, and the only eleven `type` values
-`POST /api/control` accepts; anything else is refused with `unknown_op`. Each has a declared constant in
-[`api`](/docs/reference/api/), which declares only ops the engine actually serves.
+These are the only eleven operations this build supports. Any other `type` value is refused with
+`unknown_op`. Each has a declared constant in [`api`](/docs/reference/api/).
 
 | Operation | Argument | What it does |
 |---|---|---|
@@ -60,25 +66,28 @@ be a frame. The [stream's](/docs/attach/#snapshot-then-subscribe) resume paramet
 | `analysis.reject` | `id` | Rejects it; nothing is performed |
 | `ws.snapshot` | `step` | Captures that step's workspaces now, for inspection. See [Forcing a snapshot](#forcing-a-snapshot) |
 
-- `step.retry` is a *live* operation, distinct from the [`Retry` policy](/docs/steps/retries/)
-  declared at build time: something a human or script asks for after a step has exhausted, or
-  never had, an automatic policy. It dispatches one bare attempt directly, so it does not re-run
-  the step's `OnFailure`/`Always` handlers; the ledger says so with a `handler.superseded` event.
-- An analysis `id` is the one an `analysis.proposed` event carried, `<step>@<attempt>`. It names a
-  proposal rather than a step on purpose, so a client cannot approve a proposal about one step
-  into a retry of another: the step retried is the one the *engine's* record says it was about.
-- Accepting emits `analysis.applied`, rejecting emits `analysis.rejected`. The proposal is then
-  settled and a second decision refused, so two operators pressing `a` cannot retry a step twice.
-- Accepting grants an analyzer no power a client did not already have. The only remedy this build
-  can apply is a retry, served by exactly the code `step.retry` is served by, refusals included.
-- Every accepted operation is also emitted as a `control.applied` lifecycle event carrying the
-  originating client's identity, so the event stream is an audit trail nothing can bypass.
+- `step.retry` is a *live* operation. It's different from the [`Retry` policy](/docs/steps/retries/)
+  you declare at build time: this is something a human or script asks for after a step has failed
+  and exhausted (or never had) an automatic retry. It dispatches one bare attempt directly, so it
+  does not re-run the step's `OnFailure`/`Always` handlers. The ledger is the run's permanent,
+  append-only event record, and it logs this with a `handler.superseded` event.
+- An analysis `id` is the one carried by an `analysis.proposed` event, in the form
+  `<step>@<attempt>`. It identifies a proposal, not a step, so a client can't accidentally approve
+  a proposal for one step and have it retry another: the engine always retries the step its own
+  record says the proposal was about.
+- Accepting emits `analysis.applied`; rejecting emits `analysis.rejected`. Once a proposal is
+  settled, a second decision on it is refused, so two operators both pressing `a` can't retry a
+  step twice.
+- Accepting a proposal grants no more power than a client already has. The only remedy this build
+  can apply is a retry, using the exact same code path as `step.retry`, including its refusals.
+- Every accepted operation also emits a `control.applied` lifecycle event carrying the client's
+  identity, so the event stream doubles as an audit trail.
 
 ## Refusals are answers, not errors
 
-A refused operation comes back as `ok:false` with a short, machine-readable reason: a protocol
-code, not prose, so a client can branch on it and its wording does not change between releases.
-An operation either applies completely or is refused, with no half-applied state.
+A refused operation comes back as `ok:false` with a short, machine-readable reason: a code, not a
+prose message, so a client can branch on it reliably across releases. An operation either applies
+completely or is refused. There's no half-applied state.
 
 | Reason | Meaning |
 |---|---|
@@ -108,121 +117,129 @@ An operation either applies completely or is refused, with no half-applied state
 `ws.snapshot{step}` captures every workspace the named step mounts, right now, and emits one
 `ws.snapshot` event per workspace so you can `senro ws pull` the digest and look at the files.
 
-It is answerable for a step that has **not run yet**, and the case it exists for is a step held at
-a breakpoint: the run has stopped there, so nothing is writing, and what you get is exactly what
-that step is about to be given.
+It only works on a step that has **not run yet**. The main use case is a step held at a
+breakpoint: the run has stopped there, so nothing is writing to it, and what you capture is
+exactly what the step is about to receive.
 
-- A step **mid-attempt** is refused with `step_running`. It is writing the very directories the
-  capture would read, and a torn tarball digested as if it were a state is worse than no answer.
-- A step that has **settled** is refused with `step_settled`. Its own snapshot at settle time
-  already records what it produced, failures included, and that is the digest `senro ws` reports.
-- A step mounting **no workspace**, or only [claim-backed](/docs/executors/kubernetes/) ones whose
-  content lives in the cluster, is refused with `no_workspace` rather than accepted as a no-op.
+- A step **mid-attempt** is refused with `step_running`: it's actively writing to the directories
+  the capture would read, and a half-written snapshot would be worse than no answer.
+- A step that has **settled** is refused with `step_settled`. Its own snapshot, taken when it
+  settled, already records what it produced (failures included), and that's the digest `senro ws`
+  reports.
+- A step with **no workspace**, or only [claim-backed](/docs/executors/kubernetes/) ones whose
+  content lives in the cluster, is refused with `no_workspace` rather than silently accepted as a
+  no-op.
 
-**A forced capture is never evidence.** It enters no cache key, replaces no workspace's recorded
-state, and changes nothing about the plan or about what the step's own snapshot will say. The event
-carries `"forced": true`, and `senro ws ls`, `ws pull` and `ws diff` skip it for that reason: they
-report what the run produced. The digests are still pinned for the life of the run, so the snapshot
-is there when you pull it.
+**A forced capture is never evidence.** It doesn't enter any cache key, doesn't replace a
+workspace's recorded state, and doesn't change the plan or what the step's own snapshot will say.
+The event carries `"forced": true`, and `senro ws ls`, `ws pull` and `ws diff` skip it, because
+those commands report what the run actually produced. The digest stays pinned for the life of the
+run, so you can still pull the snapshot later.
 
-The operation name is the same string as the event it causes, exactly as `breakpoint.set` causes
-`breakpoint.hit`. Operations and event types never share a channel, so the reuse is unambiguous.
+The operation name matches the event it causes, just as `breakpoint.set` causes `breakpoint.hit`.
+Operations and event types are never mixed on the same channel, so there's no ambiguity.
 
-The capture does not run on the scheduler's own loop: a workspace can be gigabytes, and control
-requests are served one at a time. The response arrives when the capture is finished, so `ok:true`
-means the snapshot is in the ledger, not merely that the request was accepted. While it runs, the
-step is treated as busy, so a second `ws.snapshot`, a `step.retry` and a `step.skip` on it are all
-answered `step_running`.
+The capture doesn't block the scheduler's own loop, because a workspace can be gigabytes, and
+control requests are served one at a time. The response only arrives once the capture is finished, so
+`ok:true` means the snapshot is already in the ledger, not just that the request was accepted.
+While a capture runs, the step is treated as busy: a second `ws.snapshot`, a `step.retry`, or a
+`step.skip` on it will all get `step_running`.
 
 ## What happens below a skipped step
 
-`step.skip` settles the named step as `skipped_manual`, and every step that needs it, directly or
-transitively, settles as `skipped_manual` too. Not `skipped_upstream_failed`, and
-`ContinueOnError` does not rescue them.
+`step.skip` settles the named step as `skipped_manual`. Every step that depends on it, directly or
+transitively, also settles as `skipped_manual`, not `skipped_upstream_failed`, and
+`ContinueOnError` doesn't rescue them.
 
 That is the rule the engine applies to a step skipped by a `When` condition too. senro
 distinguishes two ways a step can stop its dependents:
 
 - **The upstream failed.** Dependents are `skipped_upstream_failed`, the run rolls up as
   `partial`, and `ContinueOnError` is the author's explicit "run anyway" escape hatch.
-- **The upstream never ran, and nothing broke.** Dependents inherit the same skip state, the run
-  rolls up clean, and `ContinueOnError` does not apply: it promises a dependent survives a
-  *failure*, not that it runs against output that was never produced.
+- **The upstream never ran, but nothing broke.** Dependents inherit the same skip state, the run
+  rolls up clean, and `ContinueOnError` doesn't apply here: it promises a dependent survives a
+  *failure*, not that it can run against output that was never produced.
 
-A manual skip is unambiguously the second, and it does not poison the graph: only transitive
-dependents are affected, unrelated branches run to completion, and the run finishes `succeeded`.
+A manual skip is always the second case. It doesn't poison the whole graph. Only the transitive
+dependents are affected, unrelated branches still run to completion, and the run finishes
+`succeeded`.
 
 ## Breakpoints
 
-`breakpoint.set{step}` stops the run *before* a step. `breakpoint.clear{step}` is the release, and
-`run.cancel` is the only other way out: a run held at a breakpoint waits indefinitely.
+`breakpoint.set{step}` stops the run *before* a step runs. `breakpoint.clear{step}` releases it.
+`run.cancel` is the only other way out: a run held at a breakpoint waits indefinitely otherwise.
 
-Nothing inside the engine blocks while it waits. `Sink.Emit` must never block, so the scheduler
-declines to *dispatch* that step and returns to its ordinary idle wait, where it reads control
-requests. No goroutine is parked, no parallelism slot is taken, and the run progresses elsewhere.
+Nothing inside the engine blocks while it waits. The scheduler simply declines to dispatch that
+step, and no parallelism slot is held for it, so the rest of the run keeps making progress
+elsewhere.
 
-- The instant the scheduler first withholds the step, it emits `breakpoint.hit` once, carrying the
-  client that armed it. That is the only thing distinguishing a held step from one still waiting
-  on its dependencies, since a held step has no `step.started`, no `step.finished` and no state.
-  Clients fold it into `StepState.Paused`, and both shipped renderers show it.
-- Because a breakpoint gates *scheduling*, it does not intercept a `step.retry`, which dispatches
-  an attempt directly. It does compose with `run.rerun_from`: arm it first, then rerun.
+- The moment the scheduler first withholds the step, it emits `breakpoint.hit` once, naming the
+  client that armed it. That's what distinguishes a held step from one still waiting on its
+  dependencies: a held step has no `step.started`, no `step.finished`, and no other state change.
+  Clients fold this into `StepState.Paused`, and both shipped renderers show it.
+- A breakpoint only gates *scheduling*, so it doesn't intercept `step.retry`, which dispatches an
+  attempt directly. It does work together with `run.rerun_from`: arm the breakpoint first, then
+  rerun.
 - A held step is the one state [`ws.snapshot`](#forcing-a-snapshot) is for: nothing is writing the
   step's workspaces, so a capture taken then is exactly what the step is about to be given.
 
 ## Pausing the whole run
 
-`run.pause` stops the run dispatching anything new; `run.resume` is the release. Neither takes an
-argument, and `run.cancel` is the only other way out: a paused run waits indefinitely.
+`run.pause` stops the run from dispatching anything new. `run.resume` releases it. Neither takes
+an argument, and `run.cancel` is the only other way out: a paused run otherwise waits
+indefinitely.
 
-**A pause is not a breakpoint.** A breakpoint withholds one nominated step; a pause withholds the
-whole plan. The mechanism is the same one: the scheduler computes what it would dispatch and
-declines, so a paused run answers control requests as fast as a busy one.
+**A pause is not a breakpoint.** A breakpoint withholds one named step; a pause withholds the
+whole plan. The mechanism is the same either way: the scheduler computes what it would dispatch
+next and declines, so a paused run answers control requests just as fast as a busy one.
 
-A step already mid-flight is **not** touched: it runs to completion and settles normally, and its
-`step.finished` lands in the stream while the run is paused. senro cannot suspend a running
-command (no checkpoint, a live sandbox, open log files, a process behind a daemon on containers).
+A step already mid-flight is **not** touched. It runs to completion and settles normally, and its
+`step.finished` event lands in the stream even while the run is paused. senro has no way to
+suspend a running command: there's no checkpoint, and the sandbox, log files, and (on
+containers) the daemon process are all still live.
 
-The only thing "pause the running step" could mean is *kill it*, and a pause that killed work
-would be a cancel that lied about being reversible. A step's own automatic retry policy keeps
-running for the same reason: that is the step's execution continuing, not new work starting.
+The only thing "pause the running step" could actually mean is *kill it*, and a pause that killed
+work would really be a cancel, not a pause. For the same reason, a step's automatic retry policy
+keeps running under a pause: that's the step's own execution continuing, not new work starting.
 
 So the promise is the narrow one, **no new work is dispatched**:
 
-- Settling isn't dispatching, and isn't suppressed. If a step fails while the run is paused, its
-  dependents still settle as `skipped_upstream_failed` right then. If you paused in order to retry
-  that step, `run.rerun_from` is what puts the dependents back.
-- `step.retry` is not vetoed by a pause, exactly as it isn't by a breakpoint: it dispatches an
-  attempt directly. A pause makes room for `step.retry`, `step.skip` and `run.rerun_from`.
-- `run.rerun_from` composes the other way round, because it hands its nodes back to the
-  *scheduler*: ask for a rerun while paused and it is queued, starting when you resume.
-- A paused run is told from a hung one by the `control.applied` event recording the accepted
-  `run.pause`. No second event announces that the scheduler acted, unlike `breakpoint.hit`, which
-  exists because arming a breakpoint and withholding a step are separated in time and in identity.
-  A pause has neither separation, taking effect the instant it is accepted. Clients fold it to
-  `RunInfo.Paused`, and the TUI's footer reads `run: paused`.
+- Settling isn't dispatching, so it isn't suppressed by a pause. If a step fails while the run is
+  paused, its dependents still settle as `skipped_upstream_failed` right away. If you paused in
+  order to retry that step, use `run.rerun_from` to put the dependents back.
+- `step.retry` isn't blocked by a pause, just as it isn't by a breakpoint: it dispatches an
+  attempt directly. A pause still leaves room for `step.retry`, `step.skip`, and `run.rerun_from`.
+- `run.rerun_from` works the other way, because it hands its steps back to the *scheduler* rather
+  than dispatching directly. Ask for a rerun while paused, and it's queued, starting once you
+  resume.
+- You can tell a paused run from a hung one by the `control.applied` event recording the accepted
+  `run.pause`. There's no second event, unlike `breakpoint.hit`: a pause takes effect the instant
+  it's accepted, with no gap between arming and acting. Clients fold this into `RunInfo.Paused`,
+  and the TUI's footer reads `run: paused`.
 
 ## Rerunning part of a live run
 
-`run.rerun_from{step}` puts the named step and its transitive dependents back to pending and hands
-them to the scheduler, which runs them exactly as the first time: same parallelism limits, retry
-policy, timeouts, cache lookup and handlers. Nothing outside that set is touched.
+`run.rerun_from{step}` puts the named step and its transitive dependents back to pending, and
+hands them to the scheduler. They run exactly as they did the first time: same parallelism limits,
+retry policy, timeouts, cache lookup, and handlers. Nothing outside that set is touched.
 
 - Each re-run step announces itself with `step.retried` under a *new* attempt number. Attempt
-  numbers never restart: a step's events and its log files are both filed under one
-  (`runs/<id>/logs/<step>/<attempt>/{stdout,stderr}`), so the previous execution's record stays.
-- The cache isn't bypassed, and doesn't need to be. Only a `Pure` step consults the action cache,
-  and its output is by definition a function of its declared inputs, so serving the cached result
-  *is* re-running it. A step with side effects you want repeated is not `Pure`.
-- Handlers do run again, because a rerun is a genuine second execution of the step. The previous
-  pass isn't rewritten; `handler.superseded` marks it as no longer describing the step's outcome.
+  numbers never restart, and both a step's events and its log files are filed under that number
+  (`runs/<id>/logs/<step>/<attempt>/{stdout,stderr}`), so the previous run's record stays intact.
+- The cache isn't bypassed, and it doesn't need to be. Only a `Pure` step consults the action
+  cache, and a pure step's output is by definition a function of its inputs, so serving the
+  cached result *is* re-running it. If you want a step's side effects repeated, don't mark it
+  `Pure`.
+- Handlers run again too, because a rerun is a genuine second execution of the step. The previous
+  pass isn't rewritten: `handler.superseded` just marks it as no longer describing the step's
+  current outcome.
 
 ## Version negotiation
 
-On first contact (`GET /api/state`, before ever subscribing), a client compares its protocol
-version against the engine's. Equal major and minor is silent. Equal major with a different minor
-warns once and proceeds. A different major is an error naming which side is behind, replacing what
-would otherwise be a confusing JSON decode failure:
+On first contact (`GET /api/state`, before subscribing), a client compares its protocol version to
+the engine's. Matching major and minor versions: nothing happens. Matching major but different
+minor: a one-time warning, then it proceeds. Different major version: an error naming which side
+is out of date, instead of a confusing JSON decode failure:
 
 ```
 api: engine speaks protocol v2.0, this client speaks v1.0: upgrade your CLI

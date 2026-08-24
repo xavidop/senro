@@ -183,6 +183,28 @@ func (c *Client) Exec(ctx context.Context, s ExecSpec) (int, error) {
 	sessionOver := make(chan struct{})
 	defer close(sessionOver)
 	if s.TTY && s.Resize != nil {
+		// The FIRST size goes out synchronously, before any pump is
+		// scheduled and before the read loop below starts. The kubelet asks
+		// the runtime to allocate the pty at the size it has when the
+		// command is exec'd, so a first size that arrives a scheduler tick
+		// late is a first size the command never sees: a full-screen
+		// program reads its size once, at startup, and one that read "0 0"
+		// draws nothing. Handing it to the pump instead loses this race
+		// often enough to be the ordinary outcome on a loaded machine.
+		//
+		// Non-blocking: a caller with no size ready yet has nothing to send
+		// and must not hold the session open waiting for one.
+		select {
+		case size, ok := <-s.Resize:
+			if ok {
+				if b, err := json.Marshal(size); err == nil {
+					// Dropped for pumpResize's reason: a size is advisory,
+					// and ending a session over a cosmetic problem is worse.
+					_ = conn.writeFrame(opBinary, append([]byte{execResize}, b...))
+				}
+			}
+		default:
+		}
 		go pumpResize(conn, s.Resize, sessionOver)
 	}
 

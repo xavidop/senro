@@ -467,6 +467,20 @@ type ContainerSpec struct {
 	// publishing is the only way in.
 	Ports []Port
 
+	// ConsoleSize is the pseudo-terminal's size in {rows, cols}, applied at
+	// CREATE. Meaningful only with Tty and ignored by the daemon otherwise.
+	//
+	// It exists because ContainerResize is too late: the endpoint answers
+	// 500 for a container that is not running, so a session that sized its
+	// terminal after start has already let the command read whatever the
+	// device reported first. A full-screen program reads its size once, at
+	// startup, and one that reads nothing gets no screen. Sizing at create
+	// closes the window entirely; resize still carries every later size.
+	//
+	// The zero value sends nothing, so a step's create request is
+	// byte-identical to what it was before this field existed.
+	ConsoleSize [2]uint16
+
 	// Stdin opens and attaches the container's standard input, for the one
 	// caller that needs it: an interactive session (see ContainerAttach).
 	//
@@ -538,6 +552,12 @@ func createBody(spec ContainerSpec) map[string]any {
 		"StdinOnce":   spec.Stdin,
 		"Labels":      spec.Labels,
 		"HostConfig":  hostConfig,
+	}
+	// Absent unless a caller asked for a size, so a step's create request is
+	// byte-identical to what it was before this field existed. The daemon
+	// takes {height, width}, which is the order ConsoleSize declares.
+	if spec.ConsoleSize[0] > 0 && spec.ConsoleSize[1] > 0 {
+		hostConfig["ConsoleSize"] = []uint16{spec.ConsoleSize[0], spec.ConsoleSize[1]}
 	}
 	// Absent unless overridden, so a step's create request is byte-identical
 	// to what it was before this field existed.
@@ -705,6 +725,68 @@ func (c *Client) ContainerKill(ctx context.Context, id string) error {
 func isNotRunning(err error) bool {
 	var ae *apiError
 	return errors.As(err, &ae) && strings.Contains(ae.message, "is not running")
+}
+
+// StartFailure says why a container could not be started, when the reason is
+// the COMMAND rather than the daemon: the program named is not on the
+// image's PATH, or it is there and is not executable.
+//
+// A senro step means the same thing on every executor, and the ssh and k8s
+// executors run their command through a shell, which answers a bad program
+// name with 127 and an unexecutable file with 126. The daemon answers with
+// a 400 and a sentence. This is what lets containerexec report the same two
+// codes instead of an infrastructure failure that retry.OnInfra() would
+// spend a whole budget on.
+//
+// Matched on the daemon's message, as isNotRunning is and for the same
+// reason: the status code is 400 for every malformed start and the message
+// is the only thing that distinguishes them. Both sentences come from runc
+// and have been stable for years; a message that stops matching costs the
+// distinction and nothing else, since the caller falls back to reporting
+// infrastructure exactly as it did before.
+type StartFailure int
+
+// The three answers ClassifyStartFailure gives, spelled as the exit codes a
+// shell would report so a caller has nothing to translate.
+const (
+	// StartFailureNone means the error is not a command-level one.
+	StartFailureNone StartFailure = 0
+	// StartFailureNotExecutable is a file that exists and cannot be run.
+	StartFailureNotExecutable StartFailure = 126
+	// StartFailureNotFound is a program that is not there at all.
+	StartFailureNotFound StartFailure = 127
+)
+
+// ClassifyStartFailure reports whether err is the daemon refusing a
+// container because of the command it was given.
+//
+// Two conditions, not one: the message must name the container PROCESS as
+// what failed, and only then is the reason read. "no such file or directory"
+// on its own is also what a vanished bind source says, and calling that a
+// mistyped command would tell a pipeline its program was wrong when the
+// problem was a mount — an infrastructure failure retry.OnInfra() should
+// have been given.
+func ClassifyStartFailure(err error) StartFailure {
+	var ae *apiError
+	if !errors.As(err, &ae) {
+		return StartFailureNone
+	}
+	msg := ae.message
+	// runc's own framing for "the process could not be started", in the two
+	// shapes the daemon relays it in.
+	if !strings.Contains(msg, "unable to start container process") &&
+		!strings.Contains(msg, `exec: "`) {
+		return StartFailureNone
+	}
+	switch {
+	case strings.Contains(msg, "executable file not found"),
+		strings.Contains(msg, "no such file or directory"):
+		return StartFailureNotFound
+	case strings.Contains(msg, "permission denied"),
+		strings.Contains(msg, "not a directory"):
+		return StartFailureNotExecutable
+	}
+	return StartFailureNone
 }
 
 // ContainerRemove deletes the container and its writable layer. force,

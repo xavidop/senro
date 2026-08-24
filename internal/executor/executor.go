@@ -183,6 +183,23 @@ type Sandbox interface {
 	//
 	// exit is the workload's verdict; err is infrastructure failure. They
 	// stay separate because retry predicates key off err alone.
+	//
+	// The line between them is drawn by WHOSE mistake it was, not by
+	// whether a process existed. A program that is not there, or is there
+	// and cannot be executed, is the PIPELINE's: a typo, a missing chmod,
+	// a tool the image was never given. No retry fixes any of those, so
+	// every executor reports them as the shell's own codes — 127 not
+	// found, 126 not executable — with a nil error, even where the
+	// substrate refused before a process existed and the code has to be
+	// supplied rather than read. A daemon that would not answer, a node
+	// with no memory, a connection that dropped: those are the
+	// substrate's, and those are ErrInfra.
+	//
+	// It is stated here because it cannot be four separate decisions. It
+	// was, once: a mistyped command consumed a whole retry.OnInfra()
+	// budget on two executors and failed on the first attempt on the other
+	// two, for one pipeline. internal/executor/conformance holds all four
+	// to this.
 	Run(ctx context.Context, c Cmd, stdout, stderr io.Writer) (exit int, err error)
 
 	// Close tears the sandbox down. keep defers teardown so a debugging shell

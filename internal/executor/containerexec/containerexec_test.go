@@ -632,10 +632,18 @@ func TestAnImageThatDoesNotExistFailsAsInfrastructure(t *testing.T) {
 	}
 }
 
-// The daemon rejecting /start itself: a command that does not exist in the
-// image never becomes a process at all, so there is no exit code to be the
-// workload's verdict. Infrastructure, not step 127.
-func TestAContainerThatFailsToStartIsInfrastructure(t *testing.T) {
+// A command the image does not have is the PIPELINE's mistake, not the
+// daemon's, and is reported as the shell's own 127.
+//
+// The daemon refuses /start for it, so there is no process and no exit code
+// to read; senro supplies the code the rest of the world already uses. It
+// has to: the ssh and k8s executors run their command through a shell and
+// answer 127 for exactly this, so reporting infrastructure here would make
+// the same pipeline mean two different things, and retry.OnInfra() would
+// re-run a typo until its budget ran out on two executors of four. See
+// dockerd.ClassifyStartFailure, and the cross-executor case in
+// internal/executor/conformance.
+func TestACommandTheImageDoesNotHaveIsTheWorkloadsVerdict(t *testing.T) {
 	ex := newExecutor(t, plan.ExecutorSpec{Kind: plan.ExecutorContainer, Image: dockertest.Image})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -645,12 +653,21 @@ func TestAContainerThatFailsToStartIsInfrastructure(t *testing.T) {
 	}
 	defer func() { _ = sb.Close(context.Background(), false) }()
 
-	_, err = sb.Run(ctx, executor.Cmd{Args: []string{"/no/such/binary-senro-test"}}, io.Discard, io.Discard)
-	if err == nil {
-		t.Fatal("Run succeeded for a command that does not exist in the image")
+	var errb strings.Builder
+	exit, err := sb.Run(ctx,
+		executor.Cmd{Args: []string{"/no/such/binary-senro-test"}}, io.Discard, &errb)
+	if err != nil {
+		t.Fatalf("Run: %v, want no error: a program the image lacks is the workload's verdict", err)
 	}
-	if !executor.IsInfra(err) {
-		t.Errorf("err = %v, want ErrInfra: a container that cannot start is infrastructure, not a "+
-			"workload failure", err)
+	if exit != 127 {
+		t.Errorf("exit = %d, want 127, the code every shell reports for a command it cannot find",
+			exit)
+	}
+	// The container never ran, so it produced no output of its own: the
+	// daemon's sentence is the only account of what was wrong with the name,
+	// and losing it would leave a step that failed 127 with an empty log.
+	if !strings.Contains(errb.String(), "/no/such/binary-senro-test") {
+		t.Errorf("stderr = %q, want the daemon's account of the name it could not run",
+			errb.String())
 	}
 }

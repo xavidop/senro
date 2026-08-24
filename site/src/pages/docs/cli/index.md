@@ -5,8 +5,8 @@ title: CLI
 
 # CLI
 
-Every `senro` command in one table, then the conventions they share and the exit-code contract a
-script can depend on. Per-command usage, flags and behavior live on the three pages linked below.
+This page lists every `senro` command, the conventions they all share, and the exit codes a script
+can rely on. Full usage, flags, and behavior for each command live on the three pages linked below.
 
 ```bash
 git clone https://github.com/xavidop/senro
@@ -14,7 +14,7 @@ cd senro
 go build -o senro ./cmd/senro
 ```
 
-Linux and macOS. Windows is not a supported target; see
+senro supports Linux and macOS. Windows is not supported; see
 [Attach security](/docs/attach/security/) for why.
 
 ## Every command
@@ -39,26 +39,30 @@ Linux and macOS. Windows is not a supported target; see
 
 Four things hold across the whole CLI.
 
-**Help and version.** `senro help`, `senro -h` and `senro --help` print the synopsis to stdout and
-exit `0`. A subcommand does not repeat it: `senro run --help` is `senro run: unknown flag
-"--help"`, and `senro attach --help`, `senro shell --help` and `senro ui --help` print that
-command's own flag list on stderr. All of those exit `2`. There is no `senro version` and no
-`--version`; both are `senro: unknown command`, exit `2`.
+**Help and version.** `senro help`, `senro -h`, and `senro --help` print the full command list to
+stdout and exit `0`.
 
-**A run ID looks like `20260812T151058-540c8ca44b`**: a UTC timestamp and a short random suffix,
-which is also the directory name under `runs/`.
+Subcommands don't repeat that help. `senro run --help` fails with `senro run: unknown flag
+"--help"`. `senro attach --help`, `senro shell --help`, and `senro ui --help` each print their own
+flag list, but to stderr. All three exit `2`.
 
-**Naming a run.** Every command that takes a run accepts a run ID, a path to a run directory, or
-nothing at all, in which case it takes the newest directory under `./runs`. `senro logs fetch` is
-the one exception, and deliberately: its `RUN` names a key in the shared store rather than
-anything on this machine, so a path there is refused with a message saying which of the two it
-takes.
+There's no `senro version` or `--version` flag. Both fail with `senro: unknown command`, exit `2`.
 
-**Credentials never come from a flag.** A TCP attach server's bearer token is read from
-`$SENRO_ATTACH_TOKEN`, never `--token`: a flag value lands in this process's argv, where `ps(1)`
-shows it to every other user, and in shell history. The one `tls.Config` this CLI builds always
-verifies against the system roots; there is no `--insecure`. A private CA goes in `$SSL_CERT_FILE`
-or `$SSL_CERT_DIR`, which Go's own root pool already reads. See
+**A run ID looks like `20260812T151058-540c8ca44b`.** It's a UTC timestamp plus a short random
+suffix. This is also the directory name under `runs/`.
+
+**Naming a run.** Any command that takes a run accepts a run ID, a path to a run directory, or
+nothing at all. Leave it out and senro uses the newest directory under `./runs`.
+
+`senro logs fetch` is the exception. Its `RUN` argument names a key in the shared store, not
+anything on your machine, so a path is refused there.
+
+**Credentials never come from a flag.** A TCP attach server's bearer token comes from
+`$SENRO_ATTACH_TOKEN`, never `--token`. A flag value would show up in `ps(1)` output for every user
+on the machine, and in shell history.
+
+TLS connections always verify against the system's root certificates. There's no `--insecure`
+flag. If you need a private CA, set `$SSL_CERT_FILE` or `$SSL_CERT_DIR` instead. See
 [Attach security](/docs/attach/security/).
 
 ## Choosing a renderer: `--ui`
@@ -72,49 +76,78 @@ or `$SSL_CERT_DIR`, which Go's own root pool already reads. See
 | `plain` | One line per event, no escape sequences |
 | `none` | No rendering at all; the exit code is still the run's |
 
-`--ui=tui` against a non-TTY fails with `senro: --ui=tui requires a terminal, but stdout is not a
-TTY`, because a TUI's escape sequences in a CI log look like a run that worked and was not. See
+If you pass `--ui=tui` without a real terminal, senro fails with `senro: --ui=tui requires a
+terminal, but stdout is not a TTY`. This is intentional: in a CI log, the TUI's escape sequences
+would look like garbage, or worse, like a run that succeeded when it didn't. See
 [The TUI](/docs/attach/tui/).
 
 ## Exit codes
 
-A public contract: a script wrapping `senro` can depend on these five values meaning exactly this,
-forever. Each is broader than "the run", so test for the value, not for a specific cause.
+These exit codes are a stable contract. A script wrapping `senro` can depend on these values
+meaning exactly this. Each code covers more than just "the run failed" though, so check the value,
+not a specific cause.
 
 | Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | The run failed. Also: `func check` found cgo, `verify --fail-on-mismatch` found a step that did not reproduce its cached result, `cache gc` failed, `ws ls` could not load an index, `ws pull` refused a tar entry that escapes its destination, `logs fetch` could not reach the shared store or was handed an object that did not match its digest, a write to stdout failed, an attach watch errored, or the pipeline process was killed by a signal |
-| `2` | Usage error. Also: `go build` of the pipeline package failed, the pipeline process would not start, the attach socket would not connect, a cache record or workspace index is missing, `ws pull` or `logs fetch` found a non-empty destination without `--force`, `ws diff` could not compare a workspace, `logs fetch` found no shared cache configured, no such run in the store, or credentials the store refused, and `func check`'s own analysis failing to run |
+| `1` | The run failed, or one of the other causes below |
+| `2` | Usage error, or one of the other causes below |
 | `78` | No trigger matched the event (`EX_CONFIG`): nothing to run |
 | `130` | Cancelled (`Ctrl-C`, or an external `SIGINT`/`SIGTERM`) |
 
-`senro ws diff` and `senro verify` both exit `0` whether or not they find anything: a finding is
-an answer, not a failed run.
+`senro ws diff` and `senro verify` always exit `0`, whether or not they find anything. A finding is
+an answer, not a failure.
+
+Besides a failed run, exit `1` also covers:
+
+- `func check` found cgo
+- `verify --fail-on-mismatch` found a step that did not reproduce its cached result
+- `cache gc` failed
+- `ws ls` could not load an index
+- `ws pull` refused a tar entry that escapes its destination
+- `logs fetch` could not reach the shared store, or was handed an object that did not match its
+  digest
+- a write to stdout failed
+- an attach watch errored
+- the pipeline process was killed by a signal
+
+Besides a usage error, exit `2` also covers:
+
+- `go build` of the pipeline package failed
+- the pipeline process would not start
+- the attach socket would not connect
+- a cache record or workspace index is missing
+- `ws pull` or `logs fetch` found a non-empty destination without `--force`
+- `ws diff` could not compare a workspace
+- `logs fetch` found no shared cache configured, no such run in the store, or credentials the
+  store refused
+- `func check`'s own analysis failed to run
 
 ### About `78`
 
-Not a failure and not a success: the pipeline was asked whether an event was its business and
-answered no, which a dispatcher wants to tell apart from both without parsing output.
+Exit `78` is neither success nor failure. It means the pipeline was asked whether an event was its
+business, and it said no. A dispatcher can tell this apart from a real success or failure without
+parsing any output.
 
-`senro` never decides that itself. The pipeline binary is its own matcher, and `senro run`
-propagates its exit code unchanged. On a `78` it adds one line,
-`senro run: no trigger matched the event, so there is nothing to run (exit 78)`, because a bare
-exit `78` with no output reads like a crash. See [Triggers](/docs/triggers/).
+senro itself never makes this decision. The pipeline binary decides whether an event matches, and
+`senro run` passes its exit code through unchanged. On a `78`, senro also prints one line,
+`senro run: no trigger matched the event, so there is nothing to run (exit 78)`. Without that line,
+a bare exit `78` would look like a crash. See [Triggers](/docs/triggers/).
 
 ### About detaching
 
-Detaching (`q` in the TUI) is not a failure **in `senro attach`**: the run was not asked to stop,
-so the exit code reflects the run's actual outcome, or `0` if the client detached before the run
-reached a terminal state.
+Detaching (pressing `q` in the TUI) is not a failure in `senro attach`. Detaching doesn't stop the
+run, so the exit code reflects the run's actual outcome. If the run hasn't finished yet when you
+detach, the exit code is `0`.
 
-`senro run` is different, because it owns the pipeline process: it waits for that process to exit
-and reports its exit code, and so does `--ui=none`. To be able to walk away, start the pipeline
-binary yourself and watch it with a separate `senro attach`.
+`senro run` works differently, because it owns the pipeline process. It waits for that process to
+exit and reports its exit code; `--ui=none` behaves the same way. If you want to walk away without
+waiting, start the pipeline binary yourself and watch it separately with `senro attach`.
 
 ## Where to go next
 
-- **[Reading a failed run](/docs/reference/debugging/)**: the run directory and these errors in
-  context.
+- **[Reading a failed run](/docs/reference/debugging/)**: the run directory and these errors,
+  explained in context.
 - **[Attach](/docs/attach/)**: the protocol `senro attach` speaks.
-- **[Embedding](/docs/reference/embedding/)**: writing a pipeline `senro run` can build.
+- **[Run options and outcomes](/docs/reference/run-options/)**: the `senro.Run` call `senro run`
+  wraps, and its full option list.

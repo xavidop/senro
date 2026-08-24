@@ -5,8 +5,8 @@ title: Monorepos
 
 # Monorepos
 
-One repository, many units: packages, modules, crates, services. senro has four tools for that
-shape, and each one solves a different problem. This page says which one you want.
+One repo, many units: packages, modules, crates, services. senro has four tools built for that
+shape, and each one solves a different problem. This page helps you pick the right one.
 
 ```go
 import (
@@ -25,7 +25,7 @@ verify.Expand("test", gowork.Modules()).
 	})
 ```
 
-One step per Go module, narrowed to the modules this run's change actually reaches, four at a time.
+One step per Go module. Only the modules this run's change actually reaches. Four at a time.
 
 ## The four tools
 
@@ -36,29 +36,37 @@ One step per Go module, narrowed to the modules this run's change actually reach
 | [`NeedsEach`](/docs/monorepo/needs-each/) | One slow module holds up every other module's tests. One edge per unit instead of a barrier. |
 | [`Partition`](/docs/monorepo/partition/) | Fifty units and eight machines. Fewer steps than units, balanced by how long each one took last time. |
 
-They compose. A single expansion can be affected-narrowed, ordered per unit against another
-expansion, and partitioned into shards.
+They work together. A single expansion can be narrowed with `Affected`, ordered per unit against
+another expansion with `NeedsEach`, and split into shards with `Partition`, all at once.
+
+```mermaid
+flowchart LR
+    G["unit graph"] --> E["Expand<br>one step per unit"]
+    E --> Aff["+ Affected<br>narrow to what changed"]
+    Aff --> P["+ Partition<br>group into shards"]
+    O["a second Expand"] -.->|NeedsEach| E
+```
 
 ## Which one is your problem?
 
 - **"I keep adding the same step for each new package."** Start with
-  [`Expand`](/docs/monorepo/fan-out/) and stop there. It is useful on its own.
-- **"CI takes twenty minutes to tell me a docs typo is fine."**
+  [`Expand`](/docs/monorepo/fan-out/) and stop there. It's useful on its own.
+- **"CI takes twenty minutes to tell me a docs typo is fine."** Use
   [`Affected`](/docs/monorepo/affected/), over a graph that reads your ecosystem's manifests.
-- **"The fan-out is fast but the stage after it waits for the slowest child."**
+- **"The fan-out is fast, but the step after it waits for the slowest child."** Use
   [`NeedsEach`](/docs/monorepo/needs-each/).
-- **"Fifty tiny steps, each paying a container pull."**
+- **"Fifty tiny steps, each paying for its own container pull."** Use
   [`Partition`](/docs/monorepo/partition/).
 
 ## What a unit is
 
-A **unit graph** discovers units and, optionally, answers who depends on whom. Eight ship with
-senro; five of them can compute an affected set, and the other three refuse rather than guess. The
-table, and the trap for each ecosystem, are in
+A **unit graph** discovers units and, optionally, tells you who depends on whom. senro ships eight
+of them. Five of those can compute an affected set; the other three won't guess, so they refuse
+if you try. The full list, and the catch for each ecosystem, is in
 [The shipped unit graphs](/docs/monorepo/unit-graphs/).
 
-If no shipped graph fits your layout, a graph is a type in your own module with the right methods:
-see [Implement a unit graph](/docs/monorepo/unit-graphs/custom/).
+If none of the shipped graphs fit your layout, you can write your own. See
+[Implement a unit graph](/docs/monorepo/unit-graphs/custom/).
 
 ## Where to go next
 

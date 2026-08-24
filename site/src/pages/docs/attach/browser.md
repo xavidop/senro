@@ -5,8 +5,8 @@ title: The browser UI
 
 # The browser UI
 
-`senro ui` serves a view of a **live** run in a browser, with controls. Run it beside the
-pipeline; it prints a link that works once.
+`senro ui` shows a **live** run in a browser, with controls. Run it alongside the pipeline. It
+prints a link that works once.
 
 ```console
 $ senro ui
@@ -18,17 +18,17 @@ Open the link. The page it lands on carries no credential in its URL.
 
 ## What it shows
 
-Steps in the fold's own creation order, so the page and the terminal lay a run out identically.
-Each step shows its state, its elapsed time and its dependencies, and expansion children are
-indented under their parent, which carries the fold's group summary.
+Steps appear in the same order as the terminal UI, so the two match. Each step shows its state,
+elapsed time, and dependencies. Steps expanded from a fold are indented under their parent, which
+shows the group's summary.
 
 Selecting a step shows its detail (kind, attempt, exit code, error, any handlers that ran and how
 they ended) and tails its output.
 
 ## Controls
 
-The page offers the control operations [the TUI](/docs/attach/tui/) does, bar one, and decides
-which to show from the folded state rather than from a fixed list:
+The page offers the same control operations [the TUI](/docs/attach/tui/) does, except one. It
+decides which to show based on each step's current state, not a fixed list:
 
 | Scope | Offered | When |
 | --- | --- | --- |
@@ -38,42 +38,42 @@ which to show from the folded state rather than from a fixed list:
 | Step | Retry, Rerun from here | The step has finished. `Rerun from here` asks first |
 | Step | Break before, Skip | The step has not started. `Skip` asks first |
 
-A finished run offers nothing, and neither does a running step: an operation the engine would
-refuse is not drawn, because a button that produces a refusal teaches an operator to distrust it.
+A finished run offers no controls, and neither does a step that's currently running. If the engine
+would refuse an operation, the button for it isn't shown at all. A button that just produces a
+refusal trains people to ignore it.
 
 The one exception is [`ws.snapshot`](/docs/attach/control-ops/#forcing-a-snapshot). The UI server
-forwards it, so it is not withheld from the browser, but no button draws it: whether a step mounts
-a workspace at all is not in the folded state these decisions are made from, so the page cannot
-tell a step the engine would accept it for from one it would answer `no_workspace`. The TUI's `w`
-key, which shows the engine's refusal in its footer, is where that operation lives today.
+can forward this operation, but no button triggers it, because the page can't tell in advance
+whether a step has a workspace to snapshot. Use the TUI's `w` key for this instead: it shows the
+engine's refusal if there's nothing to capture.
 
-Nothing is applied optimistically. A control request's answer is an event in the stream, so the
-page changes when the run does, in the same sequence the TUI shows.
+Nothing is applied optimistically. A control request's answer arrives as an event in the stream,
+so the page updates exactly when the run does, and in the same order the TUI shows.
 
 ### What is not forwarded, and why
 
 `POST /api/shell` has no route on the UI server and no handler in it. Use
 [`senro shell`](/docs/attach/shell/) from `senro attach` instead.
 
-A page that can steer a run is reasonable for whoever holds the one-time link; a page that can run
-arbitrary commands is not, and the boundary is routing rather than a check somebody could forget
-on the next endpoint.
+A page that can steer a run is a reasonable thing to hand to whoever holds the one-time link. A
+page that can run arbitrary commands is not. That boundary is enforced by routing: the shell
+endpoint simply doesn't exist here, rather than by a check that could be forgotten later.
 
-Control is also held to a check the read routes are not: a `POST` must carry an `Origin` header
-that exactly matches the UI server's own, and a request without one is refused.
+Control requests are held to a check the read routes aren't: a `POST` must carry an `Origin`
+header that exactly matches the UI server's own. A request without one is refused.
 
-That is not redundant with the `SameSite=Strict` cookie. A site does not include the port, so a
-page served by any other process on `127.0.0.1` is same-site with this server and its fetches do
-carry the cookie. The origin is what tells them apart.
+This isn't redundant with the `SameSite=Strict` cookie. A "site" doesn't include the port, so a
+page served by any other process on `127.0.0.1` counts as same-site with this server, and its
+requests would still carry the cookie. The `Origin` check is what tells them apart.
 
 ## Where the token goes
 
 The run's bearer credential ([Security](/docs/attach/security/)) never reaches the browser.
 `senro ui` holds it in its own process and adds it to the routes it forwards.
 
-A token in a URL is in browser history, `Referer` headers, and screenshots. A token in
-`localStorage` or a readable cookie is one injected script away from being somebody else's.
-Neither applies to a credential the page never has.
+A token in a URL ends up in browser history, `Referer` headers, and screenshots. A token in
+`localStorage` or a readable cookie is one injected script away from being stolen. Neither risk
+applies here, because the page never has the credential at all.
 
 What the browser holds instead is a session cookie for the UI server alone:
 
@@ -82,89 +82,63 @@ What the browser holds instead is a session cookie for the UI server alone:
 - **Session-scoped**, with no `Expires`: it never reaches disk, and it is meaningless once
   `senro ui` exits anyway.
 
-The cookie is minted by the one-time nonce in the printed link. That nonce is the single place a
-credential touches a URL: it is in the terminal scrollback, and it may be in the browser's
-history, because some browsers record a redirect chain.
+The cookie is minted from the one-time nonce in the printed link. That nonce is the only place a
+credential ever touches a URL: it ends up in your terminal scrollback, and possibly in browser
+history, since some browsers record redirect chains.
 
-It is not reusable. Spent on first use, the response redirects to `/`, and a second attempt gets
-the same fixed 404 an unknown path does.
+It's not reusable. The first use redirects to `/` and spends it; a second attempt gets the same
+404 as any unknown path.
 
 ## What it binds
 
-Loopback, always, with no flag to widen it. A browser UI on a routable address would put a live
-build's view, and the session cookie that opens it, on the network in plaintext. The attach
-server already refuses a non-loopback bind without TLS, with no opt-out; this is the same rule.
+Always loopback. There's no flag to widen it. A browser UI on a routable address would put a live
+build's view, and the session cookie that opens it, on the network in plaintext. The attach server
+already refuses a non-loopback bind without TLS; this follows the same rule.
 
-The `Host` header of every request is checked against the loopback names the server actually
-bound under. That defends against DNS rebinding, where an attacker's domain resolves to
-`127.0.0.1` after their page loaded and the browser then treats it as same-origin. The `Host`
-header is the one thing that arrangement cannot change.
+Every request's `Host` header is checked against the loopback names the server actually bound to.
+That defends against DNS rebinding, where an attacker's domain resolves to `127.0.0.1` after the
+page loads, tricking the browser into treating it as same-origin. The `Host` header is the one
+thing that trick can't fake.
 
-To watch a run on another machine, forward the port (`ssh -L`) and point a local `senro ui --addr`
-at the forward, with the run's token in `$SENRO_ATTACH_TOKEN`. Both the credential and the traffic
-are then protected by something.
+To watch a run on another machine, forward the port (`ssh -L`) and point a local
+`senro ui --addr` at the forward, with the run's token in `$SENRO_ATTACH_TOKEN`. That way both the
+credential and the traffic are protected.
 
 ## Resuming
 
 The client speaks the protocol every other client speaks: `GET /api/state` for a snapshot, then
 `GET /api/stream?from=<state.seq+1>` to tail it.
 
-It also handles the retained ring passing the resume point. Whether that arrives as a `410 Gone`
-before the stream opens or as a terminal `overflowed` marker mid-stream, the client takes a fresh
-snapshot and subscribes from it.
+It also handles the case where the resume point has fallen out of the retained event buffer.
+Whether that shows up as a `410 Gone` before the stream opens or as a terminal `overflowed` marker
+mid-stream, the client just takes a fresh snapshot and subscribes from there.
 
-The snapshot **replaces** the state rather than merging, because the events in between are gone
-and merging would render a run that never happened.
+The new snapshot **replaces** the old state instead of merging with it: the events in between are
+gone, and merging would show a run that never actually happened.
 
-A stream that ends without saying why (the connection died before the server could write its
-marker) is reconnected from where it got to, paced, and bounded: a peer that answers every
-subscription and immediately closes it is reported rather than looped on forever.
+If a stream ends without saying why (the connection died before the server could write its
+marker), the client reconnects from where it left off, with pacing and a limit, so it won't loop
+forever against a server that immediately closes every subscription.
 
 ## What it does not do
 
-A run that has already finished has no attach server, and this client speaks HTTP to one. Read a
-finished run with `senro attach --run <id> --follow`, which tails the run's own files from disk.
+A finished run has no attach server, and this client only speaks HTTP to one. To read a finished
+run, use `senro attach --run <id> --follow`, which tails the run's own files from disk.
 
 It does not open a shell; see [What is not forwarded, and why](#what-is-not-forwarded-and-why).
 
 ## Why the client is Go and not JavaScript
 
-The page is a Go client compiled to WebAssembly, and it folds the run's events with
-`api.RunState.Apply`, the same fold the TUI uses, the attach server keeps its own state with, and
-offline replay runs. `Apply` is a few hundred lines of rules, most of them not obvious:
-
-- A new attempt clears the previous one's terminal state, so a retried step shows as pending, not
-  as the failure it is recovering from.
-- A new attempt drops the previous attempt's log high-water marks, because the next attempt
-  writes a different file starting at byte zero.
-- A log high-water mark comes from the marker's own offset, not from accumulation, so replaying
-  an already-folded event cannot inflate the count.
-- A handler is not a step: it has no dependencies, nothing depends on it, and counting it as one
-  makes every step count wrong.
-- An out-of-order sequence number is an error; a repeat is idempotent; a forward gap is accepted.
-
-A JavaScript reimplementation would be correct until it was not, and the failure would be silent:
-the browser reporting a pass while the terminal reports a fail, on the same run. That is why
-[`api`](/docs/reference/api/) is standard-library only.
-
-A test enforces it: no package the client is built from may name an event type, and the fold is
-called from exactly one file.
+The browser page is a Go client compiled to WebAssembly. It folds the run's events using the exact
+same code the TUI, the attach server, and offline replay all use (`api.RunState.Apply`). That's
+deliberate: a separate JavaScript implementation of that logic could drift out of sync, and the
+failure would be silent: the browser showing a pass while the terminal shows a fail, for the same
+run. Using one shared implementation rules that out.
 
 ## What it costs
 
-The client is **4.0MB** of WebAssembly, **1.12MB gzipped**, which is what the `senro` binary
-embeds and what a browser downloads. Most of that is unavoidable: a hello-world `js/wasm` binary
-is already 1.9MB.
-
-The one large avoidable cost was `net/http`, which on `js/wasm` links the whole HTTP client and
-server tree to reach a wrapper around `fetch`; linking it took the client to **10.9MB (2.9MB
-gzipped)**. So the client calls `fetch` directly through `syscall/js`, and gets its HTTP
-semantics from a transport-agnostic package tested on the host against a real attach server.
-
-It is embedded gzipped rather than compressed on the way out, so the binary grows by the
-compressed figure: **9.1MB to 10.2MB**, all but 28KB of it the client. Everything served carries
-an `ETag`, so a reload is a conditional request answered with `304` and no body.
-
-The compiled client is not committed. `make wasm` builds it and stages it where the binary embeds
-it from, and `make all` and the release build both run it. A tree that has not run it produces a
-`senro` where every command works except this one, which refuses and says exactly what to run.
+The client is about **4.0MB** of WebAssembly (**1.1MB gzipped**), embedded in the `senro` binary
+and downloaded by the browser once per session. Most of that size is unavoidable: a minimal Go
+WebAssembly binary already starts around 2MB. The binary embeds the client gzipped, and everything
+it serves carries an `ETag`, so a reload after the first load is a fast conditional request with no
+body.

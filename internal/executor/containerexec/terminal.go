@@ -26,9 +26,14 @@ var _ senroexec.Terminal = (*sandbox)(nil)
 //   - Resizes go to the daemon's resize endpoint, not an ioctl: the pty is
 //     on the daemon's side and this process never holds its master.
 //
-// Create takes no initial size, so the size is set immediately after start;
-// a program that reads its size once at startup can race it, the honest
-// cost of the daemon owning the device.
+// The size is set at CREATE, through HostConfig.ConsoleSize, and not only
+// after start. ContainerResize is too late by construction: the endpoint
+// answers 500 for a container that is not running, so a terminal sized only
+// afterwards has already let the command read whatever the device reported
+// first — and it does, every time, not occasionally (`stty size` in a
+// session sized after start fails outright). A full-screen program reads
+// its size once, at startup. The resize call after start stays: it costs
+// one request and covers a daemon too old for the create-time field.
 func (s *sandbox) RunTerminal(
 	ctx context.Context, c senroexec.Cmd, stdin io.Reader, out io.Writer,
 	initial senroexec.WinSize, resize <-chan senroexec.WinSize,
@@ -42,6 +47,11 @@ func (s *sandbox) RunTerminal(
 	}
 	spec.Stdin = true
 	spec.Tty = true
+	if initial.Cols > 0 && initial.Rows > 0 {
+		// {rows, cols}: the daemon's own order, which dockerd.ConsoleSize
+		// carries unchanged.
+		spec.ConsoleSize = [2]uint16{initial.Rows, initial.Cols}
+	}
 
 	id, err := s.ex.cli.ContainerCreate(ctx, spec)
 	if err != nil {
@@ -65,8 +75,9 @@ func (s *sandbox) RunTerminal(
 		return 0, fmt.Errorf("containerexec: %w: %w", senroexec.ErrInfra, err)
 	}
 
-	// After start, because the endpoint answers 500 for a container that is
-	// not running. Errors ignored for the reason the resize loop below gives.
+	// Again after start, and errors ignored for the reason the resize loop
+	// below gives. Redundant against the create-time size above on a daemon
+	// that honours it, and the whole of the sizing on one that does not.
 	if initial.Cols > 0 && initial.Rows > 0 {
 		_ = s.ex.cli.ContainerResize(ctx, id, initial.Cols, initial.Rows)
 	}

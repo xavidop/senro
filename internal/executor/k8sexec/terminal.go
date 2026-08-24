@@ -23,16 +23,29 @@ var _ senroexec.Terminal = (*sandbox)(nil)
 //   - The exec asks for a tty and does not ask for stderr: the runtime
 //     merges it into the pty, so out is the one writer.
 //   - Sizes travel on the exec's own resize channel, in order against the
-//     input they belong to. The subresource takes no initial size, so the
-//     first size sent IS the initial one; a program that reads its size once
-//     at startup can race it, the same honest cost containerexec pays for a
-//     pty the daemon owns.
+//     input they belong to.
 //   - End of input is the VEOF byte rather than a closed stream, because a
 //     terminal has no EOF.
 //
 // The pod's container is created without a tty of its own and needs none:
 // an exec allocates one, which is why `kubectl exec -it` works against any
 // pod.
+//
+// The size, though, is a real limitation and not a detail. The exec
+// subresource takes no initial size: the kubelet allocates the pty and
+// starts the command, and the first size reaches it as a frame afterwards.
+// kubeapi.Exec sends that frame synchronously, before the read loop, which
+// is as early as this API permits — and on a loaded machine the command
+// still usually reads the device before it arrives, so `stty size` in a
+// fresh session reports nothing useful and a full-screen program draws at
+// whatever the runtime's default was. Every later size is exact, and the
+// program redraws on SIGWINCH.
+//
+// containerexec does NOT pay this cost: Docker's HostConfig.ConsoleSize
+// sizes the pty at create, before anything runs (see its RunTerminal). The
+// asymmetry is the platform's, not senro's, and internal/executor's
+// conformance suite asserts each side of it rather than pretending they
+// match.
 func (s *sandbox) RunTerminal(
 	ctx context.Context, c senroexec.Cmd, stdin io.Reader, out io.Writer,
 	initial senroexec.WinSize, resize <-chan senroexec.WinSize,

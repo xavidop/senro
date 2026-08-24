@@ -6,9 +6,9 @@ title: The TUI
 # The TUI
 
 `senro attach` (and `senro run`, on a TTY) renders an interactive terminal UI: a step list on the
-left, the focused step's log on the right, a footer with the run's status. It is a plain client
-of the [`Source` interface](/docs/attach/#one-client-two-sources), so it behaves identically
-whether it is watching a live run or replaying a finished one from disk.
+left, the focused step's log on the right, and a footer showing the run's status. It's a plain
+client of the [`Source` interface](/docs/attach/#one-client-two-sources), so it behaves the same
+whether it's watching a live run or replaying a finished one from disk.
 
 ## Choosing a renderer
 
@@ -19,11 +19,11 @@ whether it is watching a live run or replaying a finished one from disk.
 --ui=none    watch the run silently and report only the final status
 ```
 
-`--ui=tui` against a non-TTY (redirected into a file, piped into `less`, most CI logs) refuses
-rather than rendering garbled escape sequences into a log nobody can read afterward.
+`--ui=tui` refuses to run against a non-TTY: redirected into a file, piped into `less`, most CI
+logs. That's better than filling a log with garbled escape sequences nobody can read later.
 
-`--ui=plain` is built on the same `Source` client as the TUI, not a separate code path in the
-engine, so a TTY run and a CI log never disagree about what happened.
+`--ui=plain` is built on the same `Source` client as the TUI. It isn't a separate code path, so a
+TTY run and a CI log never disagree about what happened.
 
 ## What `--ui=plain` prints
 
@@ -40,23 +40,24 @@ test succeeded
 run failed
 ```
 
-A step's lifecycle line is `<step> <state>`, or `<step> <state>: <error>` when it failed. Every
-line the step wrote is relayed as `<step> <stream> | <line>`, so no line can be read as belonging
-to the wrong step.
+A step's lifecycle line reads `<step> <state>`, or `<step> <state>: <error>` when it failed. Every
+line the step wrote is relayed as `<step> <stream> | <line>`, so you always know which step a line
+belongs to.
 
-Interleaving between steps is real: they ran at the same time. Within one step's stream the order
-is the order the step produced, and a step's output always lands above its own lifecycle line.
+Lines from different steps interleave because those steps really did run at the same time. Within
+one step's own stream, though, the order matches what the step produced, and its output always
+appears above its own lifecycle line.
 
-Plain adds no escape sequences of its own, and does not strip a step's either: whatever a
-colourised test runner wrote is what the log says it wrote.
+Plain adds no escape sequences of its own, and doesn't strip a step's either. Whatever a colorized
+test runner wrote is exactly what the log shows.
 
-Secret values are already gone by this point. The engine redacts at the writer, upstream of the
-log file, so `[REDACTED]` is what is on disk and what every renderer can ever fetch (see
-[Secrets](/docs/secrets/)).
+Secret values are already gone by this point. The engine redacts them before they reach the log
+file, so `[REDACTED]` is what's on disk, and it's all any renderer can ever fetch. See
+[Secrets](/docs/secrets/).
 
-The full bytes are on disk regardless of renderer, at
-`runs/<id>/logs/<step>/<attempt>/{stdout,stderr}`, and `senro attach --run <id>` replays a
-finished run from there.
+The full log bytes are on disk no matter which renderer you use, at
+`runs/<id>/logs/<step>/<attempt>/{stdout,stderr}`. `senro attach --run <id>` replays a finished run
+from those files.
 
 ## Keys
 
@@ -81,39 +82,39 @@ finished run from there.
 | `?` | Show the help overlay; `esc` closes it |
 | `q` | Detach. The run keeps going, and is never killed by quitting the UI |
 
-Filter mode passes every other keystroke through to the filter text, so typing `r` while
-filtering edits the query instead of retrying a step. `enter` applies the filter and leaves;
-`esc` discards it and leaves. `?` lists exactly the keys above: no key is reserved and inert.
+In filter mode, every other keystroke goes into the filter text, so typing `r` while filtering edits
+the query instead of retrying a step. `enter` applies the filter and exits; `esc` discards it and
+exits. `?` lists exactly the keys above, and there are no hidden or unused keys.
 
-`a` and `A` are two keys rather than one toggle, like `b`/`B` and `p`/`P`: each maps to exactly
-one wire operation, and the engine's refusal is what the footer shows.
+`a` and `A` are two separate keys rather than one toggle, like `b`/`B` and `p`/`P`. Each maps to
+exactly one wire operation, and if the engine refuses it, the footer shows why.
 
-Whether the run is paused or a step has a breakpoint is the engine's answer, which another client
-may have changed a moment ago, so a toggle keyed off local memory could send the wrong operation.
+Pause state and breakpoints are the engine's call, not the TUI's: another client may have just
+changed them. A toggle based on what the TUI last saw locally could send the wrong operation, so
+these stay as separate keys.
 
-What goes on the wire is the proposal's id, never the step, and the proposal's summary is rendered
-above the focused step's log, because you have to be able to read what `a` approves before you
-press it.
+What goes on the wire is the proposal's id, never the step. The proposal's summary is rendered
+above the focused step's log, so you can read what `a` approves before you press it.
 
 `s` is the only key that takes the terminal away from the TUI. It suspends the renderer for the
-length of the session and redraws afterwards, so the run keeps going and the screen is current
-the moment you leave.
+length of the session and redraws once you're done, so the run keeps going and the screen is up to
+date the moment you leave.
 
-Against a run tailed from disk `s` refuses and says so: there is no engine to host a session, and
-`senro ws pull` is what you want.
+Against a run tailed from disk, `s` refuses and tells you why: there's no engine to host a
+session. Use `senro ws pull` instead.
 
 A step held at a breakpoint renders as `paused`, not as a blank row, and the plain renderer prints
-`<step> paused at breakpoint`: a run stopped on purpose must not look identical to one that hung.
-A run paused with `p` reads the same way one level up, with the footer saying `run: paused`.
+`<step> paused at breakpoint`. A run stopped on purpose shouldn't look identical to one that hung.
+A run paused with `p` reads the same way at the run level, with the footer showing `run: paused`.
 
 ## Exit codes
 
-Whichever renderer you use, the process's exit code is the *run's* exit code, not the UI's: `0`
-succeeded, `1` failed, `2` usage error, `130` cancelled (`Ctrl-C`, or an external
+Whichever renderer you use, the process exits with the *run's* exit code, not the UI's: `0` for
+success, `1` for failure, `2` for a usage error, `130` for cancelled (`Ctrl-C`, or an external
 `SIGINT`/`SIGTERM`).
 
-Detaching with `q` is not a failure: the run was not asked to stop, so a script driving
-`senro attach` and hitting `q` does not read as "the run failed". See
+Detaching with `q` is not a failure. The run was never asked to stop. A script that drives
+`senro attach` and then hits `q` won't be misread as "the run failed." See
 [CLI](/docs/cli/#exit-codes) for the full contract.
 
 ## Where to go next

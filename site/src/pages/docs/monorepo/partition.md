@@ -5,9 +5,9 @@ title: Partition
 
 # `Partition`: fewer steps than units
 
-Some fan-outs want fewer steps than units: fifty modules and eight machines, or a per-unit step
-whose startup cost dwarfs its work. `.Partition(n, history)` groups the units into at most `n`
-buckets and makes **one step per bucket**.
+Some fan-outs want fewer steps than units: fifty modules but only eight machines, say, or a
+per-unit step whose startup cost dwarfs the actual work. `.Partition(n, history)` groups the
+units into at most `n` buckets and makes **one step per bucket**.
 
 ```go
 import "github.com/xavidop/senro/duration"
@@ -21,53 +21,75 @@ verify.Expand("test", gowork.Modules()).
 ```
 
 A partitioned expansion takes `TemplateShard` rather than
-[`Template`](/docs/monorepo/fan-out/#what-a-template-receives), since a bucket holds several units.
-A `senro.Shard` carries `Index`, `Total` and `Units`, plus `IDs()`, `Names()`, `Dirs()` and
+[`Template`](/docs/monorepo/fan-out/#what-a-template-receives), since a bucket holds several
+units. A `senro.Shard` carries `Index`, `Total` and `Units`, plus `IDs()`, `Names()`, `Dirs()` and
 `Sources()` for handing the whole bucket to a command or to `.Inputs(...)`.
 
-> **Why balance by duration.** A round-robin or alphabetical split puts the three slowest modules
-> in one shard often enough to matter, and the fan-out then takes as long as that shard. Weighing
-> each unit by what its step took last time is bounded where the naive split is not.
+> **Why balance by duration.** A round-robin or alphabetical split often puts the three slowest
+> modules in the same shard, and then the whole fan-out takes as long as that one shard. Weighing
+> each unit by how long its step took last time keeps that bounded, where a naive split doesn't.
+
+```mermaid
+flowchart LR
+    subgraph units["units, weighted by last run's duration"]
+        direction TB
+        u1["auth (2m)"]
+        u2["search (2m)"]
+        u3["billing (30s)"]
+        u4["docs (10s)"]
+    end
+    u1 --> s0["shard 0"]
+    u3 --> s0
+    u2 --> s1["shard 1"]
+    u4 --> s1
+```
+
+The two slow units land in different shards instead of stacking up in one, so no single shard is
+stuck carrying both.
 
 ## Where the history comes from
 
-`duration.Record(runDir, path)` folds a previous run's event stream into a small JSON file;
-`duration.FromFile(path)` reads it back. Record once, deliberately, after a run, and **commit the
+`duration.Record(runDir, path)` folds a previous run's event stream into a small JSON file.
+`duration.FromFile(path)` reads it back. Record it deliberately, after a run, and **commit the
 file like a lockfile**.
 
-- Per-machine histories would give two machines two plan digests and two sets of cache keys, and a
-  shared cache would stop being shared. A committed file also makes the effect reviewable.
+- Per-machine histories would give two machines two different plan digests and two sets of cache
+  keys, so your shared cache would stop being shared. A committed file also makes the effect
+  reviewable in a diff.
 - **`Record` merges** rather than replacing, so a run narrowed by
-  [`Affected`](/docs/monorepo/affected/) does not discard the modules it never touched.
+  [`Affected`](/docs/monorepo/affected/) doesn't discard the modules it never touched.
 - **Only steps that ran to completion are recorded.** A cached step finishes in milliseconds, and
-  recording that would call the slowest module free.
+  recording that time would make the slowest module look free.
 
 ## The first run, and unmeasured units
 
-- **No history** (first run, missing file) is ordinary. Every unit weighs the same and the fill
-  degenerates to a round robin over the sorted unit set, the split you would have had anyway.
-- **A unit missing from a non-empty history** is estimated at the **median** of what is there.
-  Zero would make it weightless; the maximum would treat every new module as the slowest.
-- **A file that cannot be read, parsed, or whose format version is unknown** is an **error** that
-  fails the build. Reading it as empty would quietly revert a fleet to balancing by count.
+- **No history** (first run, or a missing file) is fine. Every unit weighs the same, and the split
+  falls back to round robin over the sorted unit set: the same split you'd have had anyway.
+- **A unit missing from a non-empty history** is estimated at the **median** of the units that are
+  there. Zero would make it weightless, and using the maximum would treat every new module as the
+  slowest one.
+- **A file that can't be read or parsed, or whose format version is unknown,** is an **error**,
+  and fails the build. Treating it as empty would quietly revert the whole fleet to balancing by
+  count.
 - **`duration.None()`** is the explicit "there is no history".
 
 ## Shard ids don't move when the history does
 
-A child is `test[shard=0]`, numbered, never named after its contents, and the number of shards is
-`min(n, number of units)`. Two machines with different histories build the same step ids; an id
-that moved with the timing would take every cache key hanging off it along.
+A child is named `test[shard=0]`: numbered, never named after its contents. The number of shards
+is `min(n, number of units)`. Two machines with different histories still build the same step
+ids. If an id moved along with the timing, it would drag every cache key hanging off it along
+too.
 
-What the history *does* move is which unit lands in which bucket, and with it each shard's command,
-inputs, cache key and the plan digest. That is correct: a step that runs three modules is not the
-step that ran two.
+What the history *does* move is which unit lands in which bucket, and with it each shard's
+command, inputs, cache key and the plan digest. That is correct: a step that runs three modules is
+not the step that ran two.
 
 ## Limits of a partitioned run
 
-- A shard's ten minutes cannot be attributed among its five modules, so `duration.Record`
-  **ignores** shard steps. Re-record from a run of the same expansion unpartitioned (a nightly, or
-  a build with the partition off) when the numbers go stale.
-- **`MaxNodes` is still checked against the whole graph**, before partitioning. It is not a way
+- A shard's ten minutes can't be split back out among its five modules, so `duration.Record`
+  **ignores** shard steps. When the numbers go stale, re-record from a run of the same expansion
+  without partitioning: a nightly build, say, or a run with partitioning turned off.
+- **`MaxNodes` is still checked against the whole graph**, before partitioning. It's not a way
   around the guard.
 - [`NeedsEach`](/docs/monorepo/needs-each/) pairs a partitioned expansion by unit **set**: a shard
   waits on every upstream child covering any of its own units.

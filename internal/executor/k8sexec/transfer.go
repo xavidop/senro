@@ -241,6 +241,12 @@ func (s *sandbox) ReadMount(ctx context.Context, name, dest string) error {
 		return fmt.Errorf("k8sexec: %w: step %q cannot read mount %q back before its pod has run",
 			senroexec.ErrInfra, s.spec.StepID, name)
 	}
+	// MountReader's precondition, checked before a byte crosses: see
+	// mountxfer.RequireDir.
+	if err := mountxfer.RequireDir(dest); err != nil {
+		return fmt.Errorf("k8sexec: %w: reading mount %q back for step %q: %w",
+			senroexec.ErrInfra, name, s.spec.StepID, err)
+	}
 	return s.copyOut(ctx, i, m, dest)
 }
 

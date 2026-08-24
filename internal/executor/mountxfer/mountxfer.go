@@ -190,6 +190,28 @@ func Receive(r io.Reader, dest string) error {
 	return err
 }
 
+// RequireDir is executor.MountReader's precondition, in one place: dest must
+// already exist and be a directory.
+//
+// The interface asks for it because a ReadMount that created its own
+// destination would silently succeed for a caller that got the path wrong,
+// and the caller would then store a tree rooted somewhere it never meant
+// under a key it can never rewrite. workspace.ReadTar creates every
+// directory it needs, so nothing below this would ever notice.
+//
+// A directory that exists and is not one is the same mistake and gets the
+// same refusal; the caller wraps this with its own prefix and with ErrInfra.
+func RequireDir(dest string) error {
+	fi, err := os.Stat(dest)
+	if err != nil {
+		return fmt.Errorf("the destination directory must exist: %w", err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("the destination %s is not a directory", dest)
+	}
+	return nil
+}
+
 // stripDotSlash copies a tar stream, rewriting "./x" to "x" and dropping the
 // root entry, and refuses an absolute name outright rather than rewriting it
 // into a relative one that would then look harmless.

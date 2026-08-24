@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1007,3 +1008,52 @@ func read(t *testing.T, path string) string {
 }
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// TestRunInteractiveReturnsWhenItsContextIsCancelledWithAStdinThatNeverEnds
+// is senroexec.Interactive's cancellation contract: "Cancelling ctx MUST
+// kill the command and return, bounded. This is the client-disconnect path:
+// a session's command usually ignores stdin entirely (a tail, a sleep, an
+// editor), so EOF on stdin is not a signal it will ever act on."
+//
+// The stdin here is a client that is connected and typing nothing, which is
+// what an operator who opened a shell and walked away looks like. The local
+// executor keeps the contract by copying stdin on a goroutine of its own
+// (see localexec.RunInteractive's doc: assigning a non-*os.File to
+// cmd.Stdin makes Wait block until the copy finishes, and os/exec's
+// WaitDelay does not interrupt a Read parked on an arbitrary io.Reader).
+func TestRunInteractiveReturnsWhenItsContextIsCancelledWithAStdinThatNeverEnds(t *testing.T) {
+	ex, _ := newExecutor(t)
+	sb := sandboxFor(t, ex, senroexec.SandboxSpec{StepID: "interactive-cancel", Attempt: 1})
+	in, ok := sb.(senroexec.Interactive)
+	if !ok {
+		t.Fatal("the ssh sandbox does not implement Interactive")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// A reader that never yields and never closes: the client is there and
+	// silent. Deliberately NOT closed before the assertion, because the
+	// contract is that cancelling the context is enough.
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = in.RunInteractive(ctx,
+			senroexec.Cmd{Args: []string{"/bin/sh", "-c", "sleep 600"}},
+			pr, io.Discard, io.Discard)
+	}()
+
+	// Long enough for the session to be genuinely running on the host.
+	time.Sleep(2 * time.Second)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("RunInteractive did not return within 30s of its context being cancelled; " +
+			"a `senro shell` session whose run ends under a connected, idle client leaks this " +
+			"goroutine and with it the sandbox teardown that removes the attempt's directory " +
+			"and its secret file from the remote host")
+	}
+}

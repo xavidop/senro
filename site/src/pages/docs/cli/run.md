@@ -5,8 +5,9 @@ title: "CLI: run and watch"
 
 # CLI: run and watch
 
-The four commands that start a run or connect to one: `senro run`, `senro attach`, `senro shell`
-and `senro ui`. For the command table and the exit codes, see [CLI](/docs/cli/).
+This page covers the four commands that start a run or connect to one: `senro run`,
+`senro attach`, `senro shell`, and `senro ui`. For the full command table and exit codes, see
+[CLI](/docs/cli/).
 
 ## `senro run`
 
@@ -17,29 +18,31 @@ senro run ./ci                    # build, exec, auto-attach, render
 senro run ./ci -- --env=staging   # flags after -- go to the pipeline, not to senro
 ```
 
-`go build`s the named package into a temporary binary, execs it, and, if the pipeline registered
-an attach server (called `attach.Listen`, per [Embedding](/docs/reference/embedding/)), attaches
-and renders exactly as `senro attach` would.
+`senro run` builds the named package with `go build` into a temporary binary, then runs it. If the
+pipeline registered an attach server (by calling `attach.Listen`, see
+[Run options and outcomes](/docs/reference/run-options/)), senro attaches to it and renders the
+run exactly like `senro attach` would.
 
-- `--trigger-event PATH` is forwarded to the pipeline binary, which decides for itself whether the
-  event is its business. `PATH` may be `-` for stdin. `--trigger-event=` with no value is a typo,
-  not a request for no event, and is refused; leaving the flag off is how you ask for that.
-- A pipeline that never calls `attach.Listen` still runs, and its exit code is propagated as-is.
-  Its own stdout and stderr are relayed when the resolved UI mode is `plain` or `none`; under
-  `tui` (what `--ui=auto` picks on a TTY) they are not connected at all, because the TUI owns the
-  terminal. Pass `--ui=plain` to see a non-attach pipeline's output.
-- **A Go toolchain must be on `PATH`.** Without one, `senro run` stops before building with
-  `senro run: no Go toolchain found on PATH` and tells you to build the binary yourself and run
-  `./pipeline --tui` instead. Running an already-built binary needs no toolchain.
-- A package that does not compile stops there too, with `go build`'s own errors and then
-  `senro run: go build ./ci: exit status 1`, exit `2`.
-- It sets `$SENRO_FUNC_PKG` on the pipeline process, which is what lets a `Func` step be
-  cross-compiled for another platform with no option in the pipeline's own source. An explicit
-  `senro.WithFuncBuild` wins. See [A Func step off the coordinator](/docs/executors/func-remote/).
+- `--trigger-event PATH` is passed straight to the pipeline binary, which decides for itself
+  whether the event applies. `PATH` can be `-` to read from stdin. `--trigger-event=` with no
+  value is refused as a typo. If you want no event, just leave the flag off.
+- A pipeline that never calls `attach.Listen` still runs, and its exit code is passed through
+  as-is. Its stdout and stderr are relayed when the UI mode is `plain` or `none`. Under `tui` (what
+  `--ui=auto` picks on a real terminal), they're not connected at all, because the TUI owns the
+  terminal. Pass `--ui=plain` if you need to see a non-attach pipeline's output.
+- **A Go toolchain must be on `PATH`.** Without one, `senro run` stops before it even builds, with
+  `senro run: no Go toolchain found on PATH`. It'll tell you to build the binary yourself and run
+  `./pipeline --tui` instead. Running an already-built binary needs no toolchain at all.
+- A package that fails to compile stops there too. You'll see `go build`'s own errors, followed by
+  `senro run: go build ./ci: exit status 1`, and an exit code of `2`.
+- `senro run` sets `$SENRO_FUNC_PKG` on the pipeline process. This lets a `Func` step be
+  cross-compiled for another platform without adding anything to the pipeline's source. An
+  explicit `senro.WithFuncBuild` overrides it. See
+  [A Func step off the coordinator](/docs/executors/func-remote/).
 
-`Ctrl-C` asks the engine to cancel **gracefully** rather than killing the process, so cleanup and
-`Always` handlers still run. A pipeline that ignores the request is killed after five minutes so
-the CLI cannot hang forever.
+`Ctrl-C` asks the engine to cancel gracefully instead of killing the process outright, so cleanup
+and `Always` handlers still get to run. If a pipeline ignores the request, senro kills it after
+five minutes so the CLI never hangs forever.
 
 ## `senro attach`
 
@@ -52,12 +55,31 @@ senro attach --run 20260812T151058-540c8ca44b --follow   # tail a finished run f
 senro attach --addr 127.0.0.1:8443 --tls                 # a TCP attach server directly
 ```
 
-Bare `senro attach` discovers every live run registered on the machine, reaping any whose process
-has died, and attaches to the one it finds. With more than one it does not pick: it lists them
-with pid, run, pipeline, working directory and start time so you can choose with `--pid`.
+Running `senro attach` with no flags discovers every live run registered on the machine, cleaning
+up any whose process has already died, and attaches to the one it finds. If there's more than one,
+it won't guess: it lists them all, with pid, run, pipeline, working directory, and start time, so
+you can pick one with `--pid`.
 
-That listing is the text of an error, printed to **stderr** with exit `2`. With none at all it
-says `senro: no live senro runs found` and how to start one, also exit `2`.
+That listing is printed to stderr as an error, with exit `2`. If there are no live runs at all,
+senro prints `senro: no live senro runs found` along with how to start one, also exit `2`.
+
+Which flag combination you need depends on whether the run you want is still live or already
+finished:
+
+```mermaid
+flowchart TD
+  Q{Which run?}
+  Q -- "no flags" --> L{How many live runs?}
+  L -- "0" --> E["error: no live senro runs found"]
+  L -- "1" --> One["attach to it"]
+  L -- "more than 1" --> List["list them all, exit 2:<br>pick one with --pid"]
+  Q -- "--pid N" --> Pid["attach to that live run"]
+  Q -- "--run ID" --> Live{"Live entry with that ID?"}
+  Live -- yes --> LiveAttach["attach live<br>(handoff to disk on exit)"]
+  Live -- no --> Disk["fall back to runs/ID on disk"]
+  Q -- "--run ID --follow" --> Follow["replay from disk only,<br>no live lookup at all"]
+  Q -- "--addr host:port" --> Addr["dial that TCP attach server directly"]
+```
 
 | Flag | Behavior |
 |---|---|
@@ -68,15 +90,17 @@ says `senro: no live senro runs found` and how to start one, also exit `2`.
 | `--tls` | Says the `--addr` endpoint speaks TLS. Meaningless without `--addr`, and refused there |
 | `--ui MODE` | The renderer; see [CLI](/docs/cli/) |
 
-- `--pid` and `--run` are mutually exclusive, and `--addr` combines with none of `--pid`, `--run`
-  or `--follow`: it names an endpoint outright, while the others go and find one.
-- `--run <id>` resolves `runs/<id>` **relative to your current directory**. Run it from where the
-  pipeline ran.
-- On first contact the client checks protocol versions. An equal major version is silent, a minor
-  mismatch warns on stderr, and a major mismatch stops rather than producing decode garbage.
+- `--pid` and `--run` can't be used together. `--addr` can't be combined with `--pid`, `--run`, or
+  `--follow` either: `--addr` names an endpoint directly, while the other flags search for one.
+- `--run <id>` resolves `runs/<id>` relative to your current directory. Run this command from the
+  same place the pipeline ran.
+- On first contact, the client checks protocol versions. A matching major version is silent. A
+  minor version mismatch prints a warning to stderr. A major version mismatch stops the connection
+  instead of producing garbled output.
 
-Recorded runs and live sockets are two implementations of one `Source` interface, so the client
-renders both identically. Nothing here is a second-class replay. See [Attach](/docs/attach/).
+Recorded runs and live sockets both implement the same interface internally, so the client renders
+them identically. Replaying a finished run isn't a second-class experience. See
+[Attach](/docs/attach/).
 
 ## `senro shell`
 
@@ -89,36 +113,38 @@ senro shell --step build -- cat build.log      # one command, non-interactively
 senro shell --step build --tty                 # a real terminal
 ```
 
-Opens a session inside a **live** run's step: its workspaces, read-only, at the paths the step saw
-them, in the step's own working directory, on the step's own executor. Pair it with a breakpoint
-to stop a run before a step and look at what it was about to run against. See
-[The shell](/docs/attach/shell/) for the whole story; the essentials:
+`senro shell` opens a session inside a step of a live run. You get its workspaces (read-only), at
+the same paths the step saw them, in the step's own working directory, on the step's own executor.
+Pair it with a breakpoint to pause a run before a step and inspect what it's about to run against.
+See [The shell](/docs/attach/shell/) for the full picture. Here are the essentials:
 
-- **`--step` is required.** A session stands in one step's workspaces, so there is no default.
-- **No secrets are delivered into a session.** Not the files, not the `SENRO_SECRET_*` variables,
-  not the alias a step declared: a session lasts as long as you leave it open, and senro is not
-  putting a cleaned-up credential back on disk for that long.
-- **Pipes by default, a terminal with `--tty`.** Without it there is no prompt, no line editing,
-  no job control: type a line, press enter. With it you get a real pty, plus job control, `^C` as
-  a signal, and a window size that follows yours.
-- **`local` and `container` host a terminal; `ssh` does not**, and a terminal is refused rather
-  than downgraded there (`executor_no_terminal`). Either way a banner goes to stderr, so a
-  redirected stdout captures only what the session printed.
-- **It needs a live run.** For a finished run, use [`senro ws pull`](/docs/cli/workspaces/); the
-  refusal says so and names the run.
-- **It reaches a remote run the same way `senro attach` does.** `--addr` plus `--tls`, token from
-  `$SENRO_ATTACH_TOKEN`. There is no `--token` flag.
-- **A read-only attach refuses it.** `attach.Options{ReadOnly: true}` answers a shell with 403, so
-  a shared dashboard hands out no command prompt.
+- **`--step` is required.** A session always runs inside one specific step's workspaces, so
+  there's no default to fall back on.
+- **No secrets reach a session.** Not the files, not the `SENRO_SECRET_*` variables, not any alias
+  a step declared. A session can stay open indefinitely, and senro won't put a credential back on
+  disk for that long.
+- **Pipes by default, a real terminal with `--tty`.** Without `--tty`, there's no prompt and no
+  line editing: you type a line and press enter. With it, you get a real pty, job control, `^C` as
+  a signal, and a window size that follows your own.
+- **`local` and `container` executors support a terminal; `ssh` does not.** On `ssh`, `--tty` is
+  refused outright rather than silently downgraded (`executor_no_terminal`). Either way, a banner
+  is printed to stderr, so a redirected stdout only captures what the session itself printed.
+- **It needs a live run.** For a finished run, use [`senro ws pull`](/docs/cli/workspaces/)
+  instead. If you try `senro shell` against a finished run, it'll tell you and name the run.
+- **It reaches a remote run the same way `senro attach` does**: `--addr` plus `--tls`, with the
+  token from `$SENRO_ATTACH_TOKEN`. There's no `--token` flag.
+- **A read-only attach refuses it.** If the attach server was started with
+  `attach.Options{ReadOnly: true}`, a shell request gets a 403. A shared dashboard never hands out
+  a command prompt.
 
-Everything after `--` is the command to run instead of the default shell, and the session's exit
-code is that command's exit code, so `senro shell --step build -- test -f out/app` is usable in a
-script exactly like the command it ran.
+Everything after `--` runs instead of the default shell, and the session's exit code is that
+command's exit code. That makes `senro shell --step build -- test -f out/app` usable in a script,
+just like running the command directly.
 
-Refusals print the engine's own short reason and exit `1`, in the same vocabulary
-[control operations](/docs/attach/control-ops/) use: `unknown_step`, `run_not_active`,
-`executor_no_shell` (an executor whose sandbox hosts no session at all, which none in this
-build is), `executor_no_terminal` and `sandbox_failed`.
+Refusals print a short reason and exit `1`, using the same vocabulary as
+[control operations](/docs/attach/control-ops/): `unknown_step`, `run_not_active`,
+`executor_no_shell` (an executor whose sandbox can't host a session at all; this build has none),
+`executor_no_terminal`, and `sandbox_failed`.
 
 ## `senro ui`
 
@@ -130,23 +156,24 @@ senro ui --addr 127.0.0.1:9944    # a run reached through a port-forward
 senro ui --port 8730              # pin the loopback port instead of taking a free one
 ```
 
-Serves a browser view of a **live** run on loopback, prints a one-time link to stdout, and blocks
-until interrupted. The page is a Go client compiled to WebAssembly that folds the run's events
-with the same `api.RunState.Apply` the TUI uses, so the two cannot disagree about what a stream
-means.
+`senro ui` serves a browser view of a live run on loopback. It prints a one-time link to stdout
+and keeps running until interrupted. The page itself is a Go client compiled to WebAssembly, and
+it processes the run's events using the same logic the TUI does, so the two views never disagree
+about what a stream means.
 
-- It offers the control operations the TUI does: cancel, pause, resume, retry, skip, breakpoint
-  set and clear, rerun-from, and analysis accept and reject. `ws.snapshot` is forwarded but has no
-  button (see [the browser UI](/docs/attach/browser/#controls)). It deliberately does not offer
-  `senro shell`, enforced by the set of routes the server forwards.
-- The run's bearer token stays in this process and never reaches the browser. A control request is
-  accepted only from the page itself, carrying its session cookie and a matching `Origin`.
-- **Loopback only**, with no flag to widen it. `--port 0` (the default) takes a free port.
-- There is no `--follow`. A finished run has no attach server; read one with
-  `senro attach --run <id> --follow`.
+- It offers the same controls as the TUI: cancel, pause, resume, retry, skip, set and clear
+  breakpoints, rerun-from, and accept/reject an analysis. `ws.snapshot` is available but has no
+  button for it (see [the browser UI](/docs/attach/browser/#controls)). It does not offer
+  `senro shell`.
+- The run's bearer token stays in this process and never reaches the browser. senro only accepts a
+  control request from the page itself, checked by its session cookie and a matching `Origin`.
+- **Loopback only**, with no flag to widen that. `--port 0` (the default) picks a free port for
+  you.
+- There's no `--follow` flag here. A finished run has no attach server to connect to; read one
+  with `senro attach --run <id> --follow` instead.
 
-See [The browser UI](/docs/attach/browser/), including where the one-time link's nonce does and
-does not end up.
+See [The browser UI](/docs/attach/browser/) for more, including where the one-time link's nonce
+does and doesn't end up.
 
 ## Where to go next
 

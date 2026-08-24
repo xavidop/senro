@@ -5,9 +5,9 @@ title: Caching a step
 
 # Caching a step
 
-The action cache skips a step whose inputs have not changed and restores what it produced last
-time. It is **opt-in per step**: mark the step `Pure()`, say what it reads with `Inputs`, and
-optionally say what it produces with `Outputs`.
+The action cache skips a step if its inputs haven't changed, and restores what it produced last
+time. It's **opt-in per step**: mark the step `Pure()`, declare what it reads with `Inputs`, and
+optionally declare what it produces with `Outputs`.
 
 ```go
 verify.Step("test", exec.Command("go", "test", "./...")).
@@ -21,12 +21,12 @@ verify.Step("test", exec.Command("go", "test", "./...")).
 
 ## 1. Mark the step `Pure()`
 
-`Pure()` declares a step **eligible** for the action cache. Steps are impure by default, since
-senro can also SSH into production and restart a service, so caching a step is a visible, reviewable
-act rather than something that happens to you.
+`Pure()` marks a step as **eligible** for the action cache. Steps are impure by default: senro can
+also SSH into production and restart a service, so caching has to be something you explicitly opt
+into, not something that happens without your knowledge.
 
-A `Pure()` step must declare `Inputs`. `Build()` rejects one that does not, because a cache key that
-cannot change when the sources change is worse than no cache at all.
+A `Pure()` step must declare `Inputs`. `Build()` rejects one that doesn't, because a cache key that
+can't change when the sources change is worse than no cache at all.
 
 ## 2. Declare `Inputs`, and `Outputs` if you have them
 
@@ -34,28 +34,28 @@ cannot change when the sources change is worse than no cache at all.
 `artifact.File(path)` and `artifact.Glob(pattern)`, with the
 [pattern syntax](/docs/data/workspaces/#pattern-syntax) senro uses everywhere.
 
-- **Inputs are hashed into the cache key.** Anything the step reads and you did not declare is
-  invisible to the key, which is exactly how a wrongly-pure step goes wrong.
-- **Outputs are stored on a save and restored on a hit.** They also enter the key by shape, since
-  they decide what a saved result contains.
-- **`Outputs` needs a mounted workspace.** `Build()` refuses otherwise: `plan: step "compile"
+- **Inputs are hashed into the cache key.** If the step reads something you didn't declare, the key
+  can't see it. This is the usual way a wrongly-marked-`Pure()` step causes problems.
+- **Outputs are stored on a save and restored on a hit.** They also affect the key's shape, since
+  they determine what a saved result contains.
+- **`Outputs` needs a mounted workspace.** Otherwise `Build()` refuses it: `plan: step "compile"
   declares Outputs but mounts no workspace, so nothing would survive the step to be stored: mount a
-  workspace and write the outputs into it`. A step whose outputs land in a workspace mounts it
-  `senro.RW`.
+  workspace and write the outputs into it`. If a step's outputs land in a workspace, mount that
+  workspace with `senro.RW`.
 
 ## 3. Add `CacheEnv` for variables that matter
 
 `CacheEnv(names ...string)` names environment variables that enter the cache key **by digest, never
-by value**, so a credential in a step's environment cannot reach a cache entry. Nothing else from
-the environment enters the key at all.
+by value**. That way a credential in a step's environment can never leak into a cache entry. No
+other environment variable affects the key at all.
 
 Declaring the same variable in both `SecretEnv` and `CacheEnv` is refused at `Build()`.
 
 ## What a hit does
 
-A cache-entry hit **skips the step entirely**: its declared outputs and mounted workspaces are
-restored from the store, its recorded logs are replayed, and a `cache.hit` event says so in the
-ledger. A miss simply runs the step and saves the result.
+A cache hit **skips the step entirely**. senro restores its declared outputs and mounted workspaces
+from the store, replays its recorded logs, and records a `cache.hit` event in the ledger. A miss
+just runs the step normally and saves the result.
 
 Two things are worth knowing about the boundary:
 
@@ -65,9 +65,9 @@ Two things are worth knowing about the boundary:
 
 ## Verify the claim with `senro verify --recheck-pure`
 
-`Pure()` is **trusted, not enforced**. Nothing sandboxes a step's network access, so a step that
-claims purity and then downloads something is believed, and its result is served to every future run
-with the same key.
+`Pure()` is **trusted, not enforced**. senro doesn't sandbox a step's network access, so if a step
+claims purity but downloads something anyway, senro believes it and serves that result to every
+future run with the same key.
 
 ```sh
 senro verify --recheck-pure                              # what it WOULD re-run; nothing executes
@@ -75,26 +75,27 @@ senro verify --recheck-pure --rerun                      # re-run the latest run
 senro verify --recheck-pure --rerun --fail-on-mismatch   # exit 1 on a finding, for CI
 ```
 
-It puts a cached step back in front of the exact input its own cache key records, runs it again, and
-compares the digests of the declared outputs, the mounted workspaces and the exit code. What that
-proves, and does not:
+This command re-runs a cached step against the exact input its own cache key recorded, then
+compares the digests of the declared outputs, the mounted workspaces, and the exit code. Here's what
+that does and doesn't prove:
 
 - **`verified`**: the re-run reproduced the entry exactly.
-- **`mismatch`**: the re-run differed from the entry **and a second re-run agreed with the first**.
-  The step is deterministic and still did not reproduce what the cache holds, so it depends on
-  something its key does not cover: the network, a file outside its workspace, an environment
-  variable it never declared in `CacheEnv`, or the clock.
-- **`nondeterministic`**: the re-run differed from the entry **and from a second re-run of itself**,
-  so its disagreement is not evidence about purity. An archive embedding a build timestamp lands
-  here, which is what keeps the report free of alarms you learn to ignore.
+- **`mismatch`**: the re-run differed from the entry, **and a second re-run agreed with the first**.
+  The step is deterministic, but it still didn't reproduce what's in the cache. That means it
+  depends on something its key doesn't cover: the network, a file outside its workspace, an
+  environment variable it never declared in `CacheEnv`, or the clock.
+- **`nondeterministic`**: the re-run differed from the entry, **and from a second re-run of
+  itself**. This disagreement isn't evidence about purity: it's just the step being
+  nondeterministic. An archive that embeds a build timestamp lands here, for example. This category
+  keeps the report free of false alarms.
 - **Logs are never compared**, since a step's output legitimately carries timestamps, durations,
   PIDs and temp paths.
-- A step with **no workspace**, a **`Func` step**, or an entry whose workspace bodies `cache gc` has
-  collected is reported as `skipped` with the reason, never silently passed.
+- A step with **no workspace**, a **`Func` step**, or an entry whose workspace data `cache gc` has
+  since collected is reported as `skipped`, with the reason given. It is never silently passed.
 
-`senro cache explain` will call that same caught step a clean `HIT`, because it is one: the key did
-not change. That gap is the whole reason this command exists. The flags, bounds and verdict table
-are in [Cache commands](/docs/cli/cache/).
+`senro cache explain` will still call that step a clean `HIT`, because it is one: the key didn't
+change. That gap between "the key matched" and "the step actually reproduced" is the whole reason
+this command exists. The flags, bounds, and verdict table are in [Cache commands](/docs/cli/cache/).
 
 ## Where to go next
 

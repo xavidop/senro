@@ -155,8 +155,8 @@ stream you can attach to.
 | [Running and watching](/docs/cli/run/) | `senro run`, `attach`, `shell`, `ui` |
 | [Cache commands](/docs/cli/cache/) | `cache gc`, `cache explain`, `verify` |
 | [Workspace commands](/docs/cli/workspaces/) | `ws ls/pull/diff`, `logs fetch`, `func check` |
-| [The event stream](/docs/reference/event-stream/) | The event envelope, and the fold |
+| [The event stream](/docs/reference/event-stream/) | The event envelope, and turning it into live state |
 | [`api`](/docs/reference/api/) | The `api` package as a wire contract |
-| [Embedding](/docs/reference/embedding/) | Embedding senro in your own program |
+| [Run options and outcomes](/docs/reference/run-options/) | Every `senro.Run` option, and reading `RunError` |
 | [Reading a failed run](/docs/reference/debugging/) | The run directory, file by file |
 | [Agent skill](/docs/reference/skill/) | The skill that teaches an AI agent senro |

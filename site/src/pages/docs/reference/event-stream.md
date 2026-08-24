@@ -6,8 +6,8 @@ title: The event stream
 # The event stream
 
 Every observable fact about a run is one `api.Event`, appended to an ordered, append-only stream.
-This page is the envelope, the event types sent today, and `Apply`, the function that folds the
-stream into something a client can render. The types live in
+This page covers the envelope, the event types senro sends today, and `Apply`, the function that
+turns the stream into something a client can render. The types live in
 [`github.com/xavidop/senro/api`](/docs/reference/api/).
 
 Every view of a run reads this one stream:
@@ -38,34 +38,32 @@ type Event struct {
 }
 ```
 
-The routing fields (`Type`, `Step`, `Attempt`, `Group`) are flat so you can filter without
-decoding `Payload`, whose shape is specific to `Type` and evolves additively. `(Event).Decode(v
-any)` unmarshals `Payload` into a typed struct and is a no-op on a nil payload, so call it
-unconditionally.
+The routing fields (`Type`, `Step`, `Attempt`, `Group`) sit outside `Payload` so you can filter
+events without decoding the payload first. `(Event).Decode(v any)` unmarshals `Payload` into a
+typed struct; it's safe to call even when there's no payload, so just call it every time.
 
 ### The trace
 
-`TraceID` is the [W3C Trace Context](https://www.w3.org/TR/trace-context/) trace the run belongs
-to: 32 lowercase hex characters, never the all-zero reserved value, identical on every event of a
-run and different for every run.
+`TraceID` identifies the [W3C Trace Context](https://www.w3.org/TR/trace-context/) trace the run
+belongs to: 32 lowercase hex characters, the same on every event of a run, and different for every
+run.
 
-It is taken from a valid inbound `traceparent`, so a run started by a CI job or a webhook delivery
-joins that job's trace rather than starting its own.
+If the run was started by a CI job or a webhook delivery that carried a `traceparent` header, the
+run joins that job's trace instead of starting its own.
 
-The span structure lives in the payloads, because unlike the trace ID it is not constant:
+The span details live in the payloads, not in the envelope, because they change per event:
 
 - `run.started` carries `span_id`, `parent_span_id`, `trace_flags` and `tracestate`.
 - `step.started`, `step.finished` and the `handler.*` events carry their own `span_id` and
   `parent_span_id`.
 
-The same context goes back **out**, into the environment of every step's command, so a traced tool
-inside a step joins the run's trace as a child of that step. See
-[Writing a trace exporter](/docs/extend/exporter/) for how these fold into spans.
+The same trace context is also passed into every step's command as environment variables, so a
+traced tool running inside a step joins the run's trace. See
+[Writing a trace exporter](/docs/extend/exporter/) for how this turns into spans.
 
 ## Types sent today
 
-All thirty-four, which is what `api.DeclaredTypes()` returns (sorted, straight from the code, not
-a hand-maintained list):
+All thirty-four, from `api.DeclaredTypes()`:
 
 ```
 run.started              run.finished
@@ -85,55 +83,44 @@ notify.delivered         notify.failed            notify.dropped
 analysis.proposed        analysis.applied         analysis.rejected
 ```
 
-Some appear only under specific configurations:
+Some only show up in certain situations:
 
-- **`notify.*`**: the outcome of one outbound notification; a run with no notifier emits none.
-  See [Notifications](/docs/notifications/), including the one delivery outcome that cannot be an
-  event at all.
-- **`cache.degraded`**: a **shared** cache stopped being used (unreachable, refused credentials,
-  or returned something other than promised) and the run carried on: slower than it should have
-  been, correct regardless, neither a failure nor a miss. Run-scoped, because which step held the
-  connection when it broke is an accident of scheduling. See
-  [Shared cache](/docs/data/shared-cache/).
-- **`breakpoint.hit`**: emitted once per arming, when the scheduler first withholds a step a
-  client set a breakpoint on. It is the only thing distinguishing a run stopped on purpose from
-  one that has hung (a held step has no `step.started`, no `step.finished`, no state); clients
-  fold it into `StepState.Paused`. See [Control operations](/docs/attach/control-ops/).
-- **`shell.opened` / `shell.closed`**: bracket one interactive session on a step's workspaces
-  (`senro shell`, or the TUI's `s` key). Exactly one close follows every open, so an open with
-  nothing after it means the engine died mid-session; neither carries a byte the session produced.
-  See [The shell](/docs/attach/shell/).
-- **`ws.evicted`**: a [persistent workspace](/docs/data/persistent/) was emptied for going unused
-  past its `MaxAge` or growing past its `MaxSize`. It carries the measurement, the bound it hit,
-  and a `when` field separating an eviction before the first step from one after the last.
-  Run-scoped: nothing is deleted while a step is reading it.
-- **`binary.staged`**: one copy of the engine's own binary made available on a target, which a
-  [func step off the coordinator](/docs/executors/func-remote/) needs before it can run. Watch
-  `reused`: an SSH run whose every func step reports `false` pays a transfer per step instead of
-  per host. On the container executor it is `true` every time; the binary is bind-mounted from the
-  coordinator's own filesystem.
+- **`notify.*`**: the outcome of one outbound notification. A run with no notifier configured
+  emits none. See [Notifications](/docs/notifications/).
+- **`cache.degraded`**: a **shared** cache stopped working (unreachable, bad credentials, or an
+  unexpected response) and the run kept going anyway. It's not a failure or a miss, just slower
+  than it should have been. See [Shared cache](/docs/data/shared-cache/).
+- **`breakpoint.hit`**: fires once, when the scheduler first holds back a step that has a
+  breakpoint set on it. It's the only way to tell "stopped on purpose" apart from "hung," since a
+  held step never gets a `step.started` or `step.finished`. Clients show it as
+  `StepState.Paused`. See [Control operations](/docs/attach/control-ops/).
+- **`shell.opened` / `shell.closed`**: mark the start and end of an interactive session on a
+  step's workspaces (`senro shell`, or the TUI's `s` key). See [The shell](/docs/attach/shell/).
+- **`ws.evicted`**: a [persistent workspace](/docs/data/persistent/) was cleared out because it
+  went unused past its `MaxAge`, or grew past its `MaxSize`. The event carries the measurement and
+  which limit it hit.
+- **`binary.staged`**: senro copied its own binary onto a target host so a
+  [func step off the coordinator](/docs/executors/func-remote/) can run there. Its `reused` field
+  tells you whether that copy was already there: on SSH, watch for `false` on every step, which
+  means you're paying for a fresh transfer each time instead of once per host. On the container
+  executor `reused` is always `true`, since the binary is mounted straight from the coordinator.
 
 ## Reserved names
 
-`api.Type.Known()` also recognises three names reserved for later, declared now so emitting them
-later is additive rather than a breaking change:
+`api.Type.Known()` also recognizes a few names reserved for future use:
 
 ```
 plan.generated
 client.attached          client.detached
 ```
 
-`breakpoint.hit`, `shell.opened`, `shell.closed` and `binary.staged` all sat on this list until
-their features landed: every client already recognised the names, so emitting them was additive,
-not a schema revision.
+These exist so that when the matching feature ships, adding the event is a compatible change for
+existing clients rather than one they need to update for. `breakpoint.hit`, `shell.opened`,
+`shell.closed` and `binary.staged` all went through this before their features landed.
 
-`client.attached` and `client.detached` stay reserved because a client connecting is observed by
-the attach server, and an event is not real until it is in the run's persisted ledger, which only
-the engine writes.
-
-> **Clients must ignore types they don't recognise.** A newer engine will emit types this build
-> has never heard of; erroring instead of skipping breaks forward compatibility. This is why `api`
-> stays dependency-free, and `api/nodeps_test.go` enforces it rather than merely asserting it.
+> **Clients should ignore types they don't recognize.** A newer engine may emit event types this
+> build has never seen. Skip them instead of erroring, so your client keeps working across
+> versions.
 
 ## Turning events into `RunState`
 
@@ -141,26 +128,25 @@ the engine writes.
 func (s *RunState) Apply(e Event) error
 ```
 
-`Apply` **folds** each event into `RunState`, in the functional-programming sense: a sequence of
-events becomes one running summary (the run's status, every step's state, every expansion, every
-handler). A renderer never replays the stream itself; it just keeps calling `Apply`. Its rules:
+`Apply` takes each event, one at a time, and updates `RunState` with it: the run's status, every
+step's state, every expansion, every handler. A renderer never has to replay the raw stream
+itself; it just keeps calling `Apply`. Its rules:
 
 - **A sequence number that goes backwards is an error**: `api: out-of-order event: seq 4 after 7`.
-  Silently applying it would produce a state that never existed.
-- **The same sequence number twice is allowed**, so a client resuming one seq early replays the
-  event it already folded, idempotently.
-- **A forward gap is accepted silently.** `Apply` is not a gap detector; if you need one, compare
-  sequence numbers yourself.
+- **The same sequence number twice is fine.** If a client resumes one event early, replaying an
+  event it already applied doesn't change anything.
+- **A forward gap is accepted silently.** `Apply` doesn't detect missing events; check sequence
+  numbers yourself if you need that.
 - **An unknown `Type` is ignored**, and so is an unknown field inside a payload.
-- **A malformed payload on a type `Apply` does know is an error**, returned rather than skipped.
+- **A malformed payload on a type `Apply` does recognize is an error**, not something it skips.
 
-This one function backs every client: the live attach server's in-memory state, the terminal UI,
-offline replay, and [the browser UI](/docs/attach/browser/), a Go client compiled to WebAssembly
-that imports the same `api` package. One fold, so they cannot disagree about what a stream means.
+The same function backs every client: the attach server's own state, the terminal UI, offline
+replay, and [the browser UI](/docs/attach/browser/). They all call `Apply`, so they can't disagree
+about what a stream means.
 
 ## Attach is a different layer
 
-The event stream is what gets written to disk and folded into `RunState`. **Attach** is the live
-protocol a second process speaks to a running engine: request and response frames, a subscription
-that streams events, and a resumable snapshot-then-tail sequence. See [Attach](/docs/attach/), and
-[Step states](/docs/steps/states/) for what a step's terminal `State` means.
+This page covers the event stream: what's written to disk and turned into `RunState`. **Attach**
+is the live protocol a second process uses to talk to a running engine: sending commands,
+subscribing to events, and resuming a stream after a disconnect. See [Attach](/docs/attach/), and
+[Step states](/docs/steps/states/) for what a step's final `State` means.

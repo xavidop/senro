@@ -5,9 +5,9 @@ title: Per-unit edges
 
 # Per-unit edges: `NeedsEach`
 
-`.Needs(...)` on an expansion and the workflow-level `senro.Needs` are both **barriers**: nothing
-downstream starts until *every* child of the fan-out has settled. `.NeedsEach(expansions ...string)`
-is the other shape, one edge per unit.
+`.Needs(...)` on an expansion, and the workflow-level `senro.Needs`, are both **barriers**:
+nothing downstream starts until *every* child of the fan-out has finished. `.NeedsEach(expansions
+...string)` works differently. It adds one edge per unit.
 
 ```go
 verify := p.Workflow("verify")
@@ -22,8 +22,8 @@ verify.Expand("test", gowork.Modules()).
 	})
 ```
 
-`test[unit=api]` waits on `build[unit=api]` and nothing else, so it starts the moment that one
-finishes, while `build[unit=web]` is still running. The fan-out pipelines instead of stalling.
+`test[unit=api]` waits only on `build[unit=api]`. It starts the moment that one finishes, even
+while `build[unit=web]` is still running. The fan-out pipelines instead of stalling.
 
 ## The two shapes
 
@@ -44,31 +44,32 @@ flowchart LR
 ```
 
 A barrier is right when the downstream step consumes the whole fan-out, for example a step that
-publishes a manifest of every built image. It is wrong when the downstream work is itself per
+publishes a manifest of every built image. It's wrong when the downstream work is itself per
 unit: one slow module then holds up every other module's tests.
 
 ## Rules
 
-- It takes **expansion ids**, the id you gave `Expand`, not step ids (`Needs` takes those). A name
-  matching no expansion is refused at build time, since a `NeedsEach` that quietly added no edges
-  would be a fan-out with no ordering at all.
-- It is an **addition**. The barrier is still available, the two compose (a child can have both
-  `Needs("install")` and `NeedsEach("build")`), and a pipeline using neither behaves as before.
-- **Naming an empty expansion** (a glob that matched nothing) gains no edges.
+- It takes **expansion ids**: the id you gave `Expand`, not step ids (`Needs` takes those). A
+  name that matches no expansion is rejected at build time. Otherwise a `NeedsEach` could silently
+  add no edges at all, leaving the fan-out with no ordering.
+- It's an **addition**, not a replacement. The barrier is still available, and the two work
+  together: a child can have both `Needs("install")` and `NeedsEach("build")`. A pipeline that
+  uses neither behaves exactly as before.
+- **Naming an empty expansion** (a glob that matched nothing) adds no edges.
 
-> **Put both expansions in one workflow.** Two expansions in two workflows joined by the
-> workflow-level `senro.Needs` get entry-to-exit edges on top of the per-unit ones, and those
-> edges *are* the barrier, so nothing pipelines.
+> **Put both expansions in the same workflow.** If they're in two separate workflows joined by
+> the workflow-level `senro.Needs`, you get entry-to-exit edges on top of the per-unit ones.
+> Those edges *are* a barrier, so nothing pipelines.
 
 ## When the two unit sets differ
 
-A module with no tests, or two expansions over two different graphs, leaves units without a
-counterpart. Dropping the edge would let a step run before its input exists; dropping the step
-would silently drop work. So neither happens:
+A module with no tests, or two expansions built over different graphs, can leave some units
+without a counterpart. Dropping the edge would let a step run before its input exists. Dropping
+the step would silently drop work. So senro does neither:
 
-- **A unit here with no counterpart there** keeps its step and falls back to the whole-expansion
-  barrier: it waits for *every* child of the named expansion. That can only order more, never
-  less. Two fully disjoint expansions degenerate back to the plain barrier.
+- **A unit here with no counterpart there** keeps its step, and falls back to the whole-expansion
+  barrier: it waits for *every* child of the named expansion. This can only add ordering, never
+  remove it. If the two expansions are fully disjoint, this degenerates back to a plain barrier.
 - **A unit there with no counterpart here** is ordinary, not an error. It has no per-unit
   dependent.
 

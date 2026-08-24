@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -319,19 +320,49 @@ func (s *sandbox) classifyRunError(ctx context.Context, cmd *exec.Cmd, err error
 		return 0, nil
 	}
 
-	// A non-zero exit is the workload's verdict; anything else (missing
-	// binary, permission denied, cancelled context) is infrastructure. A
-	// context cancelled before the process starts surfaces as ctx.Err()
-	// directly (not an *exec.ExitError, so it falls to the final branch);
-	// one cancelled while the process runs surfaces as an *exec.ExitError
-	// from the kill signal, which the ctx.Err() check below classifies as
-	// infra too, so a cancelled run is infrastructure regardless of timing.
+	// A non-zero exit is the workload's verdict, and so is a program that
+	// could not be started at all (see below). A cancelled context is
+	// infrastructure: cancelled before the process starts it surfaces as
+	// ctx.Err() directly (not an *exec.ExitError, so it falls to the final
+	// branch); cancelled while the process runs it surfaces as an
+	// *exec.ExitError from the kill signal, which the ctx.Err() check here
+	// classifies as infra too, so a cancelled run is infrastructure
+	// regardless of timing.
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
 		if ctx.Err() != nil {
 			return ee.ExitCode(), fmt.Errorf("localexec: %w: %w", senroexec.ErrInfra, ctx.Err())
 		}
 		return ee.ExitCode(), nil
+	}
+
+	// A program that is not there, or is there and cannot be executed, is
+	// the PIPELINE's mistake and not the substrate's: it is a typo, a
+	// missing chmod, or a tool the image was never given, and no number of
+	// retries changes any of those. Reported with the shell's own codes, so
+	// a step means the same thing on every executor (the ssh and k8s
+	// executors run their command through a shell and report exactly these)
+	// and so retry.OnInfra() cannot spend a whole budget on a name.
+	//
+	// 127 not found, 126 found and not executable: the POSIX convention
+	// every shell, CI system and container runtime already uses, which is
+	// what makes them readable without consulting senro's documentation.
+	var ee2 *exec.Error
+	if errors.As(err, &ee2) {
+		switch {
+		case errors.Is(ee2.Err, exec.ErrNotFound), errors.Is(ee2.Err, fs.ErrNotExist):
+			return 127, nil
+		case errors.Is(ee2.Err, fs.ErrPermission):
+			return 126, nil
+		}
+	}
+	// The same two answers for an absolute path, which never reaches
+	// LookPath: os/exec returns the syscall's own error unwrapped.
+	if errors.Is(err, fs.ErrNotExist) {
+		return 127, nil
+	}
+	if errors.Is(err, fs.ErrPermission) {
+		return 126, nil
 	}
 
 	// exec.ErrWaitDelay means the grace period elapsed with the pipes still

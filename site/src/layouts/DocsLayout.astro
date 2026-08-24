@@ -164,11 +164,11 @@ const groups = [
   {
     label: "Reference",
     items: [
-      { slug: "reference/event-stream", title: "The event stream" },
-      { slug: "reference/api", title: "api: the wire contract" },
-      { slug: "reference/embedding", title: "Embedding" },
       { slug: "reference/debugging", title: "Reading a failed run" },
       { slug: "reference/skill", title: "Agent skill" },
+      { slug: "reference/run-options", title: "Run options and outcomes" },
+      { slug: "reference/event-stream", title: "The event stream" },
+      { slug: "reference/api", title: "api: the wire contract" },
     ],
   },
 ];
@@ -586,13 +586,20 @@ const next = idx >= 0 && idx < flat.length - 1 ? flat[idx + 1] : null;
     color: var(--ink);
     margin: 0;
   }
+  /* A table is a block scroll container so a genuinely wide one can be
+     dragged sideways rather than clipped. The scrollbar is asked for
+     explicitly: macOS hides overlay scrollbars until something scrolls, so a
+     table that overflowed simply looked cut off, with nothing to say the rest
+     was still there. */
   .doc table {
     width: 100%;
+    max-width: 100%;
     border-collapse: collapse;
     margin: 1.2rem 0;
     font-size: 0.86rem;
     display: block;
     overflow-x: auto;
+    scrollbar-width: thin;
   }
   .doc th,
   .doc td {
@@ -608,8 +615,17 @@ const next = idx >= 0 && idx < flat.length - 1 ? flat[idx + 1] : null;
     font-size: 0.74rem;
     letter-spacing: 0.02em;
   }
-  .doc td code {
-    white-space: nowrap;
+  /* Code in a table cell WRAPS. It used to be nowrap, which reads well for a
+     short identifier and is why it was written that way — but the cells here
+     also hold import paths like github.com/xavidop/senro/executor/container,
+     and one of those forces the whole table wider than the content column.
+     The table then scrolled, invisibly, and the last column looked truncated.
+     Wrapping at any character rather than only at spaces, because a path has
+     none. */
+  .doc td code,
+  .doc th code {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
   .doc hr {
     border: 0;
@@ -994,7 +1010,14 @@ const next = idx >= 0 && idx < flat.length - 1 ? flat[idx + 1] : null;
       ty = 0,
       dragging = false,
       startX = 0,
-      startY = 0;
+      startY = 0,
+      downX = 0,
+      downY = 0,
+      // Set once a pointer has travelled far enough to be a PAN rather than a
+      // click. Without it, letting go of a drag over the empty part of the
+      // stage would close the viewer, which is the one thing a person panning
+      // a diagram never wants.
+      panned = false;
 
     const apply = () => {
       const svg = stage.firstElementChild as SVGElement | null;
@@ -1034,6 +1057,16 @@ const next = idx >= 0 && idx < flat.length - 1 ? flat[idx + 1] : null;
     });
 
     modal.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", close));
+    // Clicking outside the diagram closes the viewer. The backdrop element
+    // alone is not enough: the stage sits ON TOP of it at 94vw x 88vh, so
+    // nearly everything a person would call "outside the chart" is the stage,
+    // and clicking there did nothing at all. A click whose target is the
+    // stage itself landed on none of the diagram, since the SVG is the
+    // stage's only child.
+    stage.addEventListener("click", (e: MouseEvent) => {
+      if (panned || e.target !== stage) return;
+      close();
+    });
     modal.querySelector("[data-zoom-in]")?.addEventListener("click", () => setScale(scale * 1.25));
     modal.querySelector("[data-zoom-out]")?.addEventListener("click", () => setScale(scale / 1.25));
     modal.querySelector("[data-zoom-reset]")?.addEventListener("click", () => {
@@ -1055,12 +1088,19 @@ const next = idx >= 0 && idx < flat.length - 1 ? flat[idx + 1] : null;
     );
     stage.addEventListener("pointerdown", (e: PointerEvent) => {
       dragging = true;
+      panned = false;
+      downX = e.clientX;
+      downY = e.clientY;
       startX = e.clientX - tx;
       startY = e.clientY - ty;
       stage.setPointerCapture(e.pointerId);
     });
     stage.addEventListener("pointermove", (e: PointerEvent) => {
       if (!dragging) return;
+      // A few pixels of slack: a click on a trackpad rarely lands on exactly
+      // one coordinate, and treating that jitter as a pan would leave the
+      // click-outside-to-close gesture failing at random.
+      if (Math.abs(e.clientX - downX) > 4 || Math.abs(e.clientY - downY) > 4) panned = true;
       tx = e.clientX - startX;
       ty = e.clientY - startY;
       apply();

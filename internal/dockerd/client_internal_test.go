@@ -601,3 +601,101 @@ func TestSplitRefHandlesTagsDigestsAndRegistryPorts(t *testing.T) {
 		}
 	}
 }
+
+// ClassifyStartFailure decides whether a refused /start was the COMMAND's
+// fault or the daemon's, and the difference is what senro reports: a step
+// verdict for the first, an infrastructure failure retry.OnInfra() can act
+// on for the second. Getting the boundary wrong in either direction is
+// expensive — a mistyped command retried until its budget is gone, or a
+// node out of memory recorded as the pipeline's mistake — so the boundary
+// is pinned here rather than left to whatever the daemon last said.
+func TestClassifyStartFailureSeparatesTheCommandFromTheDaemon(t *testing.T) {
+	// The runc sentences, as the daemon relays them. Both have been stable
+	// for years; a message that stops matching costs the distinction and
+	// nothing else, since the caller then reports infrastructure exactly as
+	// it did before this existed.
+	cases := []struct {
+		name    string
+		message string
+		want    StartFailure
+	}{
+		{
+			name: "not on PATH",
+			message: `failed to create task for container: failed to create shim task: OCI ` +
+				`runtime create failed: runc create failed: unable to start container process: ` +
+				`exec: "senro-no-such": executable file not found in $PATH`,
+			want: StartFailureNotFound,
+		},
+		{
+			name: "absolute path that is not there",
+			message: `failed to create task for container: OCI runtime create failed: runc create ` +
+				`failed: unable to start container process: error during container init: exec: ` +
+				`"/no/such/binary": stat /no/such/binary: no such file or directory`,
+			want: StartFailureNotFound,
+		},
+		{
+			name: "there and not executable",
+			message: `failed to create task for container: OCI runtime create failed: runc create ` +
+				`failed: unable to start container process: exec: "/app/run.sh": permission denied`,
+			want: StartFailureNotExecutable,
+		},
+		{
+			name:    "the node is out of memory",
+			message: "failed to create task for container: cannot allocate memory",
+			want:    StartFailureNone,
+		},
+		{
+			name:    "the daemon is shutting down",
+			message: "cannot start a container that is being removed",
+			want:    StartFailureNone,
+		},
+		{
+			name:    "a device the host does not have",
+			message: "error gathering device information while adding custom device: no such device",
+			want:    StartFailureNone,
+		},
+		{
+			// The false positive the process-framing check exists to stop: a
+			// bind whose source went away says exactly what a mistyped
+			// command says, and it is infrastructure.
+			name: "a bind mount whose source vanished",
+			message: `error while creating mount source path '/var/run/senro/ws-1': ` +
+				`mkdir /var/run/senro/ws-1: no such file or directory`,
+			want: StartFailureNone,
+		},
+		{
+			name: "a working directory the image does not have",
+			message: `failed to create task for container: OCI runtime create failed: runc create ` +
+				`failed: unable to start container process: error during container init: ` +
+				`chdir to cwd ("/nope") set in config.json failed: no such file or directory`,
+			want: StartFailureNotFound,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := &apiError{
+				method: "POST", path: "/containers/abc/start",
+				statusCode: 400, status: "400 Bad Request", message: tc.message,
+			}
+			if got := ClassifyStartFailure(err); got != tc.want {
+				t.Errorf("ClassifyStartFailure = %d, want %d\nmessage: %s", got, tc.want, tc.message)
+			}
+		})
+	}
+}
+
+// An error that is not the daemon's answer at all — a dial failure, a
+// cancelled context — is never a command-level verdict: reporting 127 for a
+// daemon that never answered would tell a pipeline its command was wrong
+// when nothing ever tried to run it.
+func TestClassifyStartFailureIgnoresErrorsThatAreNotTheDaemons(t *testing.T) {
+	for _, err := range []error{
+		nil,
+		errors.New("dial unix /var/run/docker.sock: connect: connection refused"),
+		context.Canceled,
+	} {
+		if got := ClassifyStartFailure(err); got != StartFailureNone {
+			t.Errorf("ClassifyStartFailure(%v) = %d, want %d", err, got, StartFailureNone)
+		}
+	}
+}
