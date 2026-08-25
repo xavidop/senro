@@ -289,10 +289,23 @@ func (e *Executor) Sandbox(ctx context.Context, spec senroexec.SandboxSpec) (sen
 				senroexec.ErrInfra, m.Name, m.Path)
 		}
 		s.mounts[m.Name] = m
+		// A declared, non-default User is the only case a bind mount's host
+		// ownership can fail to satisfy: see relaxperm.go.
+		if e.spec.User != "" {
+			if err := relaxMountForDeclaredUser(m.Path, m.RO); err != nil {
+				return nil, fmt.Errorf("containerexec: %w: %w", senroexec.ErrInfra, err)
+			}
+		}
 	}
 	if len(spec.Secrets) > 0 {
-		if _, err := s.secrets.Ensure(); err != nil {
+		dir, err := s.secrets.Ensure()
+		if err != nil {
 			return nil, fmt.Errorf("containerexec: %w: %w", senroexec.ErrInfra, err)
+		}
+		if e.spec.User != "" {
+			if err := relaxSecretDirForDeclaredUser(dir); err != nil {
+				return nil, fmt.Errorf("containerexec: %w: %w", senroexec.ErrInfra, err)
+			}
 		}
 	}
 	return s, nil
@@ -372,8 +385,14 @@ func (s *sandbox) Snapshot(ctx context.Context, name string) (senroexec.Snapshot
 // engine puts that returned path in the step's environment, so returning the
 // host path would hand the container a path it cannot open.
 func (s *sandbox) PutSecret(_ context.Context, name string, v []byte) (string, error) {
-	if _, err := s.secrets.Put(name, v); err != nil {
+	p, err := s.secrets.Put(name, v)
+	if err != nil {
 		return "", fmt.Errorf("containerexec: %w: %w", senroexec.ErrInfra, err)
+	}
+	if s.ex.spec.User != "" {
+		if err := relaxSecretFileForDeclaredUser(p); err != nil {
+			return "", fmt.Errorf("containerexec: %w: %w", senroexec.ErrInfra, err)
+		}
 	}
 	return SecretMountPath + "/" + secretdir.FileName(name), nil
 }
