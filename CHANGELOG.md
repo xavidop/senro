@@ -2,6 +2,13 @@
 
 All notable changes to senro are documented here. This file is generated from Conventional Commits by semantic-release.
 
+# [1.4.0](https://github.com/xavidop/senro/compare/v1.3.2...v1.4.0) (2026-08-28)
+
+
+### Features
+
+* Errnomatch and senro runs cli command ([8f55921](https://github.com/xavidop/senro/commit/8f55921c649164c18ca5d17b07bb4258e38673f6))
+
 ## [1.3.2](https://github.com/xavidop/senro/compare/v1.3.1...v1.3.2) (2026-08-25)
 
 
