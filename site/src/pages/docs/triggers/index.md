@@ -63,7 +63,10 @@ flowchart LR
 The third row is the one worth understanding, because it is what keeps the second row honest:
 
 - **No trigger matched** means the filters worked and the answer was no. This event is simply not
-  one you asked to run for, such as a push to a branch other than `main`.
+  one you asked to run for, such as a push to a branch other than `main`. `ErrNoMatch`'s message
+  says why, one line per declared trigger — which kind it only answers, or which predicate
+  rejected the event (`branches=[main]`, say) — so `os.Stderr` alone answers "why didn't this
+  fire" without adding a flag or a second binary to run.
 - **The wiring is wrong** means senro could not work out an answer at all, and refuses to report
   that as a no.
 

@@ -33,15 +33,34 @@ func resolveRunDir(flag string) (string, error) {
 		return "", fmt.Errorf("no run %q (looked for %s)", flag, p)
 	}
 
+	found, err := runCandidates()
+	if err != nil {
+		return "", err
+	}
+	if len(found) == 0 {
+		return "", fmt.Errorf("no runs found under ./runs")
+	}
+	return absRunDir(filepath.Join("runs", found[0].name))
+}
+
+// runCandidate is one entry under ./runs: its directory name and the time
+// to sort it by. Not yet resolved to an absolute path or read for its
+// state, so listing every run costs one os.ReadDir and nothing else.
+type runCandidate struct {
+	name string
+	when time.Time
+}
+
+// runCandidates lists every run directory under ./runs, newest first. The
+// one shared implementation behind resolveRunDir's "newest, given nothing"
+// default and `senro runs`' listing, so the two can never disagree about
+// what "newest" means or which entries count as a run.
+func runCandidates() ([]runCandidate, error) {
 	entries, err := os.ReadDir("runs")
 	if err != nil {
-		return "", fmt.Errorf("no runs directory here: name a run with --run, or run from the directory a pipeline ran in")
+		return nil, fmt.Errorf("no runs directory here: name a run with --run, or run from the directory a pipeline ran in")
 	}
-	type candidate struct {
-		name string
-		when time.Time
-	}
-	var found []candidate
+	var found []runCandidate
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -50,10 +69,7 @@ func resolveRunDir(flag string) (string, error) {
 		if err != nil {
 			continue
 		}
-		found = append(found, candidate{name: e.Name(), when: info.ModTime()})
-	}
-	if len(found) == 0 {
-		return "", fmt.Errorf("no runs found under ./runs")
+		found = append(found, runCandidate{name: e.Name(), when: info.ModTime()})
 	}
 	sort.Slice(found, func(i, j int) bool {
 		if found[i].when.Equal(found[j].when) {
@@ -61,7 +77,7 @@ func resolveRunDir(flag string) (string, error) {
 		}
 		return found[i].when.After(found[j].when)
 	})
-	return absRunDir(filepath.Join("runs", found[0].name))
+	return found, nil
 }
 
 // absRunDir makes p absolute. filepath.Abs's only failure mode is Getwd

@@ -100,6 +100,25 @@ Loopback only, with no flag to widen it. To watch a run on another machine,
 forward the port and point a local `senro ui --addr` at the forward, with the
 run's token in `$SENRO_ATTACH_TOKEN`.
 
+## `senro runs`
+
+```
+senro runs [-n LIMIT]
+```
+
+Lists what's under `./runs`, newest first: run ID, pipeline, status, when it
+started, and duration (`running` for a status still in progress). `-n` caps
+how many print (default 20). This is where a `RUN` argument comes from for
+every other command on this page when you don't already have an ID —
+`senro attach --run`, `senro ws ls`, `senro cache explain`. Answered from the
+same `events.jsonl` fold every other view of a run uses
+(`source.OpenFile(dir, false).State(ctx)`), so its status column can never
+disagree with what `senro attach` reports for the same run. An empty
+`./runs` prints `no runs under ./runs` and exits `0`; no `./runs` directory
+at all is a usage error (exit `2`), the same one `resolveRunDir` gives every
+other command that defaults to "the newest run" when there is nothing to
+default to.
+
 ## `senro cache gc`
 
 ```

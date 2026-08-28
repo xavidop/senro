@@ -749,6 +749,7 @@ senro ws diff [--cache-dir DIR] [--json] RUN-A RUN-B [NAME]
 senro logs fetch [--force] RUN [DEST]
 senro func check [--dir DIR] [packages...]
 senro ui [--pid <pid> | --run <id> | --addr <host:port>] [--tls] [--port N]
+senro runs [-n LIMIT]
 ```
 
 - `senro run` builds the target package, execs it, and attaches automatically
@@ -764,3 +765,6 @@ senro ui [--pid <pid> | --run <id> | --addr <host:port>] [--tls] [--port N]
   link, and blocks until interrupted; the page is a Go client compiled to
   WebAssembly folding events with the same `api.RunState.Apply` the TUI uses. It
   offers the TUI's control operations. See `references/cli.md` for every flag.
+- `senro runs` lists what's under `./runs`, newest first, so a `RUN` argument
+  for any command above has somewhere to come from without already knowing an
+  ID.

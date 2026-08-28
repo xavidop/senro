@@ -403,6 +403,7 @@ func Select(ev *Event, ts ...Trigger) (*Match, error) {
 	if ev.Kind == "" {
 		return nil, errors.New("trigger: the event says nothing about what happened (empty kind)")
 	}
+	var reasons []string
 	for _, t := range ts {
 		ok, err := t.matches(ev)
 		if err != nil {
@@ -417,8 +418,30 @@ func Select(ev *Event, ts ...Trigger) (*Match, error) {
 				Params:  mergeParams(ev.Params, t.params),
 			}, nil
 		}
+		reasons = append(reasons, fmt.Sprintf("  %s: %s", t.String(), t.rejection(ev)))
 	}
-	return nil, fmt.Errorf("trigger: %w: %s", ErrNoMatch, describe(ev))
+	return nil, fmt.Errorf("trigger: %w: %s\n%s", ErrNoMatch, describe(ev), strings.Join(reasons, "\n"))
+}
+
+// rejection names why t, specifically, did not claim ev: a kind it does not
+// answer, a deleted ref (which matches nothing, before any predicate runs),
+// or the first predicate that said no. matches() already stops at the first
+// failing predicate for the same reason: an operator wants the one true
+// cause, not every predicate that would also have failed.
+func (t Trigger) rejection(ev *Event) string {
+	if ev.Kind != t.kind {
+		return fmt.Sprintf("only answers %s events, this was %s", t.kind, ev.Kind)
+	}
+	if ev.Deleted {
+		return "the ref was deleted, which never matches"
+	}
+	for _, p := range t.preds {
+		ok, err := p.match(ev)
+		if err != nil || !ok {
+			return fmt.Sprintf("rejected by %s=[%s]", p.name, strings.Join(p.args, " "))
+		}
+	}
+	return "did not match"
 }
 
 // describe names the event for an operator reading a log: what happened and

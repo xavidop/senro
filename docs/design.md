@@ -1165,7 +1165,17 @@ senro attach                          # auto-discover the one live run
 senro attach --pid 4711
 senro attach --run 01JQ…              # post-mortem over FileSource
 senro ui --run latest                 # browser instead of terminal
+senro runs                            # what's under ./runs, newest first, when you have no ID yet
 ```
+
+> **As implemented (v1):** `senro runs [-n LIMIT]` lists every run directory under `./runs`,
+> newest first, folding each one's `events.jsonl` through the same `api.RunState.Apply` fold every
+> other view uses (`internal/source.FileSource.State`), so its status column can never disagree
+> with what `senro attach --run` reports for the same run. It closes the one real gap in "any
+> command that takes a run accepts a run ID, or nothing at all, and defaults to the newest": until
+> now the only way to get an ID for a run that ISN'T the newest was to already have it written
+> down somewhere. No new state, and no queue or database (§8.1.2, §11.1): it is
+> `os.ReadDir("runs")` plus the fold every command already had.
 
 Four rules that are easy to get wrong:
 
@@ -1402,6 +1412,13 @@ Path filters at the trigger level and affected-set computation inside the run ar
 Keep both: the trigger filter is cheap and avoids starting a run at all, the affected set is precise and
 handles transitive dependencies. Do not try to unify them.
 
+> **As implemented (v1):** `trigger.Select`'s `ErrNoMatch` names, for every declared trigger, why
+> THAT trigger did not claim the event — a kind it does not answer, a deleted ref, or the named
+> predicate that rejected it (`branches=[main]`) — not just a description of the event itself. No
+> new function and no new flag: every pipeline already prints this error on stderr
+> ([examples/trigger](https://github.com/xavidop/senro/tree/main/examples/trigger)), so every
+> existing pipeline gets the diagnosis for free. See §11.1 item 9.
+
 ### 8.3 Outbound notifications are just another `Sink`
 
 This part is nearly free, because the event stream and the `Sink` interface already exist (§6.5). A
@@ -1632,9 +1649,13 @@ distinguished later if it ever arrives.
    reasoning. Current lean: keep `Expand` as the sugar and implement it *on top of* the fragment splice
    once generators exist, so there is one mechanism and two surfaces.
 9. **How are trigger definitions kept honest?** A `Trigger` is Go code, so nothing stops it from doing I/O
-   or being nondeterministic, and a mis-matched trigger is invisible: no run starts and nobody knows why.
-   `senro triggers test --event ./fixtures/push.json` covers most of it, but there is no answer yet for
-   "why did this push not trigger anything".
+   or being nondeterministic. That half is still open. **"Why did this push not trigger anything" is
+   resolved (v1)**, and not the way this item originally proposed: `senro triggers test` was never
+   buildable as a `senro` CLI subcommand, since a trigger's predicates are Go closures compiled into
+   the *pipeline's own* binary and `senro` never sees them (§8.1.1). What shipped instead costs less and
+   covers more: `trigger.Select`'s `ErrNoMatch` now names, per declared trigger, exactly why it did not
+   claim the event (§8.2), so the diagnosis is in the error every pipeline already prints, with no new
+   flag and no migration for pipelines that existed before this line was added.
 
 
 ## 12. A worked example
