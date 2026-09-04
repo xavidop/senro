@@ -5,12 +5,33 @@ title: "CLI: workspaces and runs"
 
 # CLI: workspaces and runs
 
-This page covers the commands for reading what a run left behind: `ws ls`, `ws pull`, `ws diff`,
-`logs fetch`, and `func check`. For the full command table and exit codes, see [CLI](/docs/cli/).
+This page covers `senro runs` and the commands for reading what a run left behind: `ws ls`,
+`ws pull`, `ws diff`, `logs fetch`, and `func check`. For the full command table and exit codes,
+see [CLI](/docs/cli/).
 
 `--cache-dir` resolves the same way in every command below: the flag if given, else
 `$SENRO_CACHE_DIR`, else `os.UserCacheDir()/senro`. It only matters for a run whose pipeline used
 `senro.WithCacheDir`.
+
+## `senro runs`
+
+```bash
+senro runs [-n LIMIT]
+
+senro runs          # the 20 most recent runs under ./runs, newest first
+senro runs -n 100    # more of them
+```
+
+Lists what's under `./runs` without your having to already know a run ID: each run's ID, pipeline
+name, status, when it started, and how long it took (or `running` for one still in progress).
+Every other command on this page and on [Cache and verify](/docs/cli/cache/) takes a `RUN`
+argument; this is where that ID comes from when you don't already have it pasted somewhere.
+
+Reads the same `events.jsonl` fold every other view of a run uses, so its status column can never
+disagree with what `senro attach --run` would show for the same run. An empty `./runs` prints
+`no runs under ./runs` and exits `0`; a directory with no `./runs` at all is a usage error, the
+same message `senro attach` and `senro ws ls` give you when they default to "the newest run" and
+find nothing to default to.
 
 Which of these to reach for depends on where the run lives and what you're trying to answer:
 

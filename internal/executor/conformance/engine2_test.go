@@ -126,6 +126,17 @@ func TestCancellingARunEndsItBoundedAndHonestly(t *testing.T) {
 	for _, tg := range targets() {
 		t.Run(tg.name, func(t *testing.T) {
 			t.Parallel()
+			// The substrate check has to happen HERE, on the test's own
+			// goroutine, and not wait for runPlanOn to reach it inside the
+			// goroutine below: (*testing.T).Skip unwinds only the goroutine
+			// that calls it (runtime.Goexit), so a missing Docker daemon or
+			// kind cluster discovered down there would vanish that goroutine
+			// silently, `done` would never be written, and this test would
+			// hang for the full 6-minute fallback below instead of skipping.
+			// TestCancellingRunKillsTheCommand and its siblings call
+			// tg.new(t) up here for exactly this reason.
+			_, _ = tg.new(t)
+
 			p := &plan.Plan{
 				Version: 1,
 				Nodes: []plan.Node{{

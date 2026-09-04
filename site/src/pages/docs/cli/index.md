@@ -25,6 +25,7 @@ senro supports Linux and macOS. Windows is not supported; see
 | `senro attach` | Watch a live run, or replay a finished one from disk | [Run and watch](/docs/cli/run/) |
 | `senro ui` | Serve a browser view of a live run on loopback | [Run and watch](/docs/cli/run/) |
 | `senro shell` | Open a session inside a live run's step | [Run and watch](/docs/cli/run/) |
+| `senro runs` | List runs under `./runs`, newest first | [Workspaces and runs](/docs/cli/workspaces/) |
 | `senro cache gc` | Reclaim disk in the local content-addressed store | [Cache and verify](/docs/cli/cache/) |
 | `senro cache explain` | Why a `Pure()` step hit or missed the action cache | [Cache and verify](/docs/cli/cache/) |
 | `senro cache scratch` | List the scratch entries in the shared bucket | [Cache and verify](/docs/cli/cache/) |
@@ -53,7 +54,8 @@ There's no `senro version` or `--version` flag. Both fail with `senro: unknown c
 suffix. This is also the directory name under `runs/`.
 
 **Naming a run.** Any command that takes a run accepts a run ID, a path to a run directory, or
-nothing at all. Leave it out and senro uses the newest directory under `./runs`.
+nothing at all. Leave it out and senro uses the newest directory under `./runs`. Don't have an ID
+yet? `senro runs` lists what's there.
 
 `senro logs fetch` is the exception. Its `RUN` argument names a key in the shared store, not
 anything on your machine, so a path is refused there.

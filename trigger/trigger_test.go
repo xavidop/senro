@@ -552,6 +552,51 @@ func TestNoMatchIsErrNoMatchAndNamesTheEvent(t *testing.T) {
 	}
 }
 
+// TestNoMatchExplainsWhyEachTriggerWasRejected: the sentinel names the event
+// (TestNoMatchIsErrNoMatchAndNamesTheEvent), but an operator staring at "no
+// trigger matched" still has to guess why. Every declared trigger's own
+// rejection reason must be in the error: which predicate it failed, or that
+// it only answers a different kind of event.
+func TestNoMatchExplainsWhyEachTriggerWasRejected(t *testing.T) {
+	ev := &trigger.Event{Kind: trigger.Push, Ref: "refs/heads/wip", Branch: "wip"}
+	_, err := trigger.Select(ev,
+		trigger.OnPush(trigger.Branches("main")),
+		trigger.OnPullRequest(trigger.Actions("opened")),
+	)
+	if !errors.Is(err, trigger.ErrNoMatch) {
+		t.Fatalf("Select = %v, want ErrNoMatch", err)
+	}
+	if !strings.Contains(err.Error(), "branches=[main]") {
+		t.Errorf("error must name the predicate that rejected the push trigger; got %q", err)
+	}
+	if !strings.Contains(err.Error(), "pull_request") || !strings.Contains(err.Error(), "push") {
+		t.Errorf("error must say the pull_request trigger only answers pull_request events, not push; got %q", err)
+	}
+}
+
+// TestNoMatchExplainsADeletedRef: Deleted rejects before any predicate runs
+// (a push to a since-deleted branch has nothing to build), and that reason
+// must say so rather than blaming a predicate that never ran.
+func TestNoMatchExplainsADeletedRef(t *testing.T) {
+	ev := &trigger.Event{Kind: trigger.Push, Ref: "refs/heads/wip", Branch: "wip", Deleted: true}
+	_, err := trigger.Select(ev, trigger.OnPush(trigger.Branches("wip")))
+	if !errors.Is(err, trigger.ErrNoMatch) {
+		t.Fatalf("Select = %v, want ErrNoMatch", err)
+	}
+	// Not just the event's own "(deleted)" tag: the trigger's own line must
+	// say deletion, specifically, is why THIS trigger did not claim it,
+	// rather than blaming the branches predicate that never ran.
+	got := err.Error()
+	line := "push(branches=[wip]):"
+	i := strings.Index(got, line)
+	if i < 0 {
+		t.Fatalf("error must contain a per-trigger line starting %q; got %q", line, got)
+	}
+	if !strings.Contains(got[i+len(line):], "deleted") {
+		t.Errorf("the push trigger's own reason must say the ref was deleted; got %q", got)
+	}
+}
+
 // TestAnEventWithNoTriggersDeclaredIsAWiringError: being handed an event and
 // nothing to compare it against is a half-wired pipeline, not a no-match.
 func TestAnEventWithNoTriggersDeclaredIsAWiringError(t *testing.T) {

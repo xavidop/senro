@@ -1,8 +1,9 @@
 // Command senro is the CLI companion to the senro pipeline engine: it builds
 // and runs an embedded pipeline (senro run), attaches to one already running
-// or finished (senro attach), opens a session on a live step (senro shell),
-// reads what a run left behind (senro cache, senro ws, senro logs, senro
-// verify), and serves a browser view of a live run (senro ui).
+// or finished (senro attach), lists what's under ./runs (senro runs), opens
+// a session on a live step (senro shell), reads what a run left behind
+// (senro cache, senro ws, senro logs, senro verify), and serves a browser
+// view of a live run (senro ui).
 package main
 
 import (
@@ -36,6 +37,11 @@ Usage:
       ten control operations the TUI does, and deliberately not senro shell.
       A run that has already finished has no attach server; read one with
       senro attach --follow.
+
+  senro runs [-n LIMIT]
+      List runs recorded under ./runs, newest first: run ID, pipeline,
+      status, started, duration. Answers "what ran" without already knowing
+      a run ID. -n caps how many are printed (default 20).
 
   senro cache gc [--max-size 50G] [--keep-failed 168h] [--dry-run] [--cache-dir DIR]
       Reclaim disk. Least recently used entries go first; the workspaces of a
@@ -135,6 +141,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdAttach(args[1:], stdout, stderr, stdoutIsTTY())
 	case "ui":
 		return cmdUI(args[1:], stdout, stderr)
+	case "runs":
+		return cmdRuns(args[1:], stdout, stderr)
 	case "cache":
 		return cmdCache(args[1:], stdout, stderr)
 	case "verify":
