@@ -1,4 +1,4 @@
-// The tests define their model in-process with genkit.DefineModel, so the
+// The tests define their model in-process with genkit.DefineModelAction, so the
 // whole package is exercised through the real genkit.Generate path with no
 // plugin, no credential and no network. A test that needs an API key is not a
 // test: it cannot run in CI, it cannot run on a fork, and what it proves
@@ -48,8 +48,8 @@ func (m *model) seen() []string {
 // plugin supplies, which is exactly why nothing here can reach a network.
 func define(g *genkit.Genkit, name string, reply func(context.Context, string) (string, error)) *model {
 	m := &model{reply: reply}
-	genkit.DefineModel(g, name, &ai.ModelOptions{Label: name},
-		func(ctx context.Context, req *ai.ModelRequest, _ ai.ModelStreamCallback) (*ai.ModelResponse, error) {
+	genkit.DefineModelAction[any](g, name, &ai.ModelOptions{Label: name},
+		func(ctx context.Context, req *ai.ModelRequest, _ any, _ ai.ModelStreamCallback) (*ai.ModelResponse, error) {
 			prompt := promptText(req)
 			m.mu.Lock()
 			m.prompts = append(m.prompts, prompt)
