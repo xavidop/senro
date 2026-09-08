@@ -3,7 +3,7 @@ module github.com/xavidop/senro/contrib/genkitanalyzer
 go 1.26.6
 
 require (
-	github.com/firebase/genkit/go v1.12.0
+	github.com/firebase/genkit/go v1.13.1
 	github.com/xavidop/senro v0.0.0
 )
 

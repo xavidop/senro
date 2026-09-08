@@ -7,8 +7,8 @@ github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XL
 github.com/coder/websocket v1.8.14 h1:9L0p0iKiNOibykf283eHkKUHHrpG7f65OE3BhhO7v9g=
 github.com/coder/websocket v1.8.14/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/firebase/genkit/go v1.12.0 h1:+KK9k6Qn/yQe+/JsOI0QaBJk8AfUFSKQMT7a9/1dES8=
-github.com/firebase/genkit/go v1.12.0/go.mod h1:IGNo1DC/Itw4dquouuilxa7AxQ0WDi/+2sUB0uN0KM0=
+github.com/firebase/genkit/go v1.13.1 h1:6fgQ0ogxG+SIgtYQD/yf8T0+39lacioB5voFdFYk1tI=
+github.com/firebase/genkit/go v1.13.1/go.mod h1:nWewix7d2O+oikJ035XPmY4mrO2phXwmk6NekKmaDLU=
 github.com/fsnotify/fsnotify v1.10.1 h1:b0/UzAf9yR5rhf3RPm9gf3ehBPpf0oZKIjtpKrx59Ho=
 github.com/fsnotify/fsnotify v1.10.1/go.mod h1:TLheqan6HD6GBK6PrDWyDPBaEV8LspOxvPSjC+bVfgo=
 github.com/gabriel-vasile/mimetype v1.4.13 h1:46nXokslUBsAJE/wMsp5gtO500a4F3Nkz9Ufpk2AcUM=
