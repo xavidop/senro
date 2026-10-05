@@ -12,7 +12,7 @@ import (
 // server that failed to start.
 func TestPublishedPortsReachTheHostConfig(t *testing.T) {
 	body := createBody(ContainerSpec{
-		Image: "minio/minio",
+		Image: "pgsty/minio",
 		Ports: []Port{{Container: 9000}},
 	})
 	b, err := json.Marshal(body)
@@ -81,7 +81,7 @@ func TestNoPublishedPortsLeavesTheCreateBodyAsItWas(t *testing.T) {
 // real program starts.
 func TestAnOverriddenEntrypointReachesTheCreateBody(t *testing.T) {
 	b, err := json.Marshal(createBody(ContainerSpec{
-		Image:      "minio/minio",
+		Image:      "pgsty/minio",
 		Entrypoint: []string{"sh", "-c"},
 		Cmd:        []string{"mkdir -p /data/b && exec minio server /data"},
 	}))

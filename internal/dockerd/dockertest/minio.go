@@ -29,7 +29,12 @@ import (
 //
 // Pinned to a dated release: an oracle that changes underneath the suite is
 // not an oracle.
-const MinIOImage = "minio/minio:RELEASE.2025-09-07T16-13-09Z"
+//
+// pgsty/minio, not minio/minio: upstream stopped publishing images and the
+// minio/minio repository is gone from Docker Hub, so every pull of it fails.
+// pgsty/minio is a community fork built from the same source, with the same
+// binary, entrypoint and environment variables.
+const MinIOImage = "pgsty/minio:RELEASE.2026-08-04T00-00-00Z"
 
 // minioRoot are the credentials the server is started with. They are a test
 // fixture and nothing else: they never leave this machine, and the point of
