@@ -1953,7 +1953,20 @@ func TestControlRerunFromRefusesWhileAnythingInTheClosureIsRunning(t *testing.T)
 }
 
 func TestControlRerunFromRefusesAStepThatHasNotRunYet(t *testing.T) {
-	p, release := rerunPlan(t)
+	// "after" needs "gate", so while gate runs it cannot even be dispatched.
+	// rerunPlan cannot pin this: its roots race for MaxParallel's one slot,
+	// and when root and mid win it, leaf is dispatched and parked waiting on
+	// the slot, which the engine rightly reports as step_running.
+	gate := filepath.Join(t.TempDir(), "open")
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{
+		{ID: "gate", Kind: "exec", Cmd: []string{"sh", "-c", "while [ ! -f " + gate + " ]; do sleep 0.01; done"}},
+		{ID: "after", Kind: "exec", Needs: []string{"gate"}, Cmd: []string{"echo", "after-ran"}},
+	}}
+	release := func() {
+		if err := os.WriteFile(gate, nil, 0o600); err != nil {
+			t.Fatalf("release the gate: %v", err)
+		}
+	}
 	defer release()
 	dir := t.TempDir()
 	csink := newControlSink()
@@ -1975,10 +1988,10 @@ func TestControlRerunFromRefusesAStepThatHasNotRunYet(t *testing.T) {
 		t.Fatal("gate never started")
 	}
 
-	// MaxParallel is 1 and "gate" is holding the only slot, so nothing else
-	// in this plan has settled: there is nothing to re-run.
+	// "gate" is still running, so "after" has neither run nor been
+	// dispatched: there is nothing to re-run.
 	resp := send(t, csink, sink.ControlRequest{
-		ID: "f1", Op: api.OpRunRerunFrom, ClientID: "tester", Args: map[string]string{"step": "leaf"},
+		ID: "f1", Op: api.OpRunRerunFrom, ClientID: "tester", Args: map[string]string{"step": "after"},
 	})
 	if resp.OK {
 		t.Error("run.rerun_from on a step that has never run must be refused")
