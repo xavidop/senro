@@ -183,6 +183,16 @@ func provision() (*Cluster, error) {
 	); err != nil {
 		return nil, fmt.Errorf("creating the kind cluster: %w", err)
 	}
+	// kind's --wait only warns when it runs out, and run swallows that
+	// warning, so a node still tainted not-ready would surface as every
+	// executor test failing on "no schedulable node". Wait here, explicitly,
+	// and fail here, once, if the node never comes up.
+	if _, err := run(create, kubeconfigPath,
+		"kubectl", "wait", "--for=condition=Ready", "nodes", "--all", "--timeout=180s",
+	); err != nil {
+		_, _ = run(del, kubeconfigPath, "kind", "delete", "cluster", "--name", ClusterName())
+		return nil, fmt.Errorf("the kind cluster's node never became Ready: %w", err)
+	}
 
 	c, err := connect(kubeconfigPath)
 	if err != nil {

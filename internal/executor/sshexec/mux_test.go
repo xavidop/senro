@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/xavidop/senro/internal/attachsrv"
 	senroexec "github.com/xavidop/senro/internal/executor"
@@ -164,6 +165,19 @@ func TestAStaleControlSocketDoesNotStopTheRun(t *testing.T) {
 	}
 	if _, err := controlCommand(srv, sock, "exit"); err != nil {
 		t.Fatalf("stopping the master out from under the executor: %v", err)
+	}
+	// `-O exit` returns once the master acknowledges, not once it has
+	// unlinked its socket. Writing over a socket that is still there fails
+	// with ENXIO, so wait for the master to actually let go of the path.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Lstat(sock); os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the stopped master never removed its socket at %s", sock)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if err := os.WriteFile(sock, nil, 0o600); err != nil {
 		t.Fatalf("leaving a stale file at %s: %v", sock, err)
