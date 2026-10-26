@@ -225,6 +225,13 @@ func Elapsed(started, finished, now time.Time) string {
 		// would be a claim about causality.
 		return ""
 	}
+	return duration(d)
+}
+
+// duration renders a non-negative span at the precision its magnitude
+// deserves, which is Elapsed's formatting with the clock taken out, so a
+// test's reported time and a step's elapsed time read the same way.
+func duration(d time.Duration) string {
 	switch {
 	case d < time.Second:
 		return fmt.Sprintf("%dms", d.Milliseconds())
@@ -284,6 +291,9 @@ func Detail(st *api.RunState, id string, now time.Time) []Field {
 	if s.Error != "" {
 		fields = append(fields, Field{Label: "error", Value: s.Error})
 	}
+	if t := testSummary(s.TestCounts()); t != "" {
+		fields = append(fields, Field{Label: "tests", Value: t})
+	}
 	for _, name := range logStreams(s) {
 		fields = append(fields, Field{
 			Label: name,
@@ -305,6 +315,122 @@ func Detail(st *api.RunState, id string, now time.Time) []Field {
 		})
 	}
 	return fields
+}
+
+// testSummary tallies a step's tests into one line, naming only the outcomes
+// that occurred: "0 skipped" on every passing step is noise, and a step that
+// reported no tests gets no line at all rather than "0 passed", which would
+// claim a test run that never happened. The tally is api.TestCounts, so this
+// says exactly what every other client says.
+func testSummary(c api.TestCounts) string {
+	if c.Total == 0 {
+		return ""
+	}
+	out := ""
+	for _, clause := range []struct {
+		n    int
+		word string
+	}{
+		{c.Passed, "passed"},
+		{c.Failed, "failed"},
+		{c.Skipped, "skipped"},
+		{c.Recovered, "recovered"},
+	} {
+		if clause.n == 0 {
+			continue
+		}
+		if out != "" {
+			out += ", "
+		}
+		out += fmt.Sprintf("%d %s", clause.n, clause.word)
+	}
+	return out
+}
+
+// TestRow is one line in a step's test list.
+type TestRow struct {
+	// Name is "suite.name", or the bare name for a test with no suite.
+	Name  string
+	Badge Badge
+	// Duration is empty for a test that reported none, rather than "0ms":
+	// absent is not instantaneous.
+	Duration string
+	// Output is set only for a failed test. A passing test's output is
+	// chatter, and a recovered test's failure output belongs to an attempt
+	// the fold has already replaced.
+	Output string
+}
+
+// testRank orders outcomes by what somebody opening a step's tests is looking
+// for: the failures, then the flakes that took a retry to pass, then what
+// did not run, then the passes. An outcome api adds later sorts last.
+func testRank(o api.TestOutcome) int {
+	switch o {
+	case api.TestFailed:
+		return 0
+	case api.TestRecovered:
+		return 1
+	case api.TestSkipped:
+		return 2
+	case api.TestPassed:
+		return 3
+	default:
+		return 4
+	}
+}
+
+// Tests lists one step's tests, failures first (see testRank). The sort is
+// stable, so within an outcome the fold's own order holds and the list does
+// not reshuffle itself between frames.
+func Tests(st *api.RunState, id string) []TestRow {
+	if st == nil {
+		return nil
+	}
+	s := st.Steps[id]
+	if s == nil || len(s.Tests) == 0 {
+		return nil
+	}
+	tests := make([]*api.TestResult, 0, len(s.Tests))
+	for _, t := range s.Tests {
+		if t != nil {
+			tests = append(tests, t)
+		}
+	}
+	sort.SliceStable(tests, func(i, j int) bool {
+		return testRank(tests[i].Outcome) < testRank(tests[j].Outcome)
+	})
+	rows := make([]TestRow, 0, len(tests))
+	for _, t := range tests {
+		r := TestRow{
+			Name:  t.Name,
+			Badge: Badge{Label: string(t.Outcome), Tone: TestTone(t.Outcome)},
+		}
+		if t.Suite != "" {
+			r.Name = t.Suite + "." + t.Name
+		}
+		if t.Duration > 0 {
+			r.Duration = duration(t.Duration)
+		}
+		if t.Outcome == api.TestFailed {
+			r.Output = t.Output
+		}
+		rows = append(rows, r)
+	}
+	return rows
+}
+
+// TestTone maps a test's outcome to its tone, making the call StateTone makes
+// for a step: recovered is a pass that took a retry, not a failure. An
+// unknown outcome comes out neutral.
+func TestTone(o api.TestOutcome) Tone {
+	switch o {
+	case api.TestFailed:
+		return ToneFailed
+	case api.TestPassed, api.TestRecovered:
+		return ToneOK
+	default:
+		return ToneNeutral
+	}
 }
 
 // logStreams lists a step's log streams in a stable order, so the detail
