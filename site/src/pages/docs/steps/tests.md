@@ -166,10 +166,12 @@ again.
   `(N tests, F failed, R recovered)`.
 - **[The browser UI](/docs/attach/browser/)**: the step's detail pane gets a `tests` field with the
   counts and a Tests list, failures first.
-- **[GitHub Checks](/docs/notifications/github-checks/)**: each failed test becomes its own
-  annotation, on its file and line when the report had them and on `.senro` otherwise, ahead of the
-  step's own annotation and within the same 50-annotation budget. The check title says
-  `N test(s) failed`.
+- **[GitHub Checks](/docs/notifications/github-checks/)**: each test still failed once the run
+  ends becomes its own annotation, on its file and line when the report had them and on `.senro`
+  otherwise, ahead of the step's own annotation and within the same 50-annotation budget. The
+  notifier folds the stream like every other client, so a recovered test is not annotated and a
+  test that failed on every attempt is annotated once. The check title says `N test(s) failed`,
+  and adds `M step(s) failed` when steps failed too.
 
 ## Rerunning only the failed tests
 

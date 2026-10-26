@@ -50,7 +50,8 @@ func GitHubChecks(owner, repo, sha, token, name string, opts ...DestinationOptio
 	}
 	r := &GitHubChecksRequester{
 		owner: owner, repo: repo, sha: sha, name: name,
-		api: "https://api.github.com",
+		api:   "https://api.github.com",
+		state: api.NewRunState(),
 	}
 	base := []DestinationOption{
 		Named("github-checks"),
@@ -88,15 +89,27 @@ type GitHubChecksRequester struct {
 	// response. Zero until then, which is what tells Request whether the
 	// next event is a create or an update.
 	id int64
-	// annotations accumulate from failed tests and steps, sent with the
-	// completion.
-	annotations []ghAnnotation
-	// dropped counts annotations past MaxAnnotations, for the summary.
+	// steps accumulate one annotation per failed step.finished, in arrival
+	// order, sent with the completion.
+	steps []stepAnnotation
+	// state folds test.finished and step.finished through api.Apply, the
+	// one fold every client uses. Tests are read from it at completion, not
+	// annotated per event: a test that failed on attempt 1 and passed on
+	// attempt 2 is recovered, and one that failed on three attempts is one
+	// failure, and only the fold knows either.
+	state *api.RunState
+	// dropped counts annotations past MaxAnnotations, for the summary. Set by
+	// complete, which is where the budget is spent.
 	dropped int
 	// done and failed count finished steps, for the summary.
 	done, failed int
-	// failedTests counts failed tests, annotated or not, for the title.
-	failedTests int
+}
+
+// stepAnnotation is a failed step's annotation and the step it is about, so
+// complete can put the step's failed tests ahead of it.
+type stepAnnotation struct {
+	step string
+	ann  ghAnnotation
 }
 
 // Request builds the create, the updates and the completion. Three event
@@ -116,12 +129,18 @@ func (g *GitHubChecksRequester) Request(e api.Event) (*Request, error) {
 		return g.create(e)
 
 	case api.TestFinished:
-		// Same rule as steps: accumulated, not sent. A test's event
-		// precedes its step's, so test annotations come first.
-		g.recordTest(e)
+		// Same rule as steps: accumulated, not sent. Folded rather than
+		// annotated here, so retries settle before anything is reported. The
+		// error is ignored like every other best-effort decode in this file:
+		// an event the fold refuses is one fewer annotation, not a stuck
+		// check.
+		_ = g.state.Apply(e)
 		return nil, nil
 
 	case api.StepFinished:
+		// Folded too, so the state's step order and its tests stay coherent
+		// with the steps this check reports.
+		_ = g.state.Apply(e)
 		g.record(e)
 		// Not sent per step (rate limits); accumulated and sent with the
 		// run's completion.
@@ -186,10 +205,7 @@ func (g *GitHubChecksRequester) complete(e api.Event) (*Request, error) {
 	// check in progress forever would be worse.
 	_ = e.Decode(&b)
 
-	ann := g.annotations
-	if len(ann) > MaxAnnotations {
-		ann = ann[:MaxAnnotations]
-	}
+	ann, failedTests := g.annotations()
 	body, err := json.Marshal(ghCheckRun{
 		Name:        g.name,
 		HeadSHA:     g.sha,
@@ -197,8 +213,8 @@ func (g *GitHubChecksRequester) complete(e api.Event) (*Request, error) {
 		Conclusion:  conclusionFor(b.Status),
 		CompletedAt: ghTime(e.TS),
 		Output: &ghOutput{
-			Title:       titleFor(b.Status, g.failed, g.failedTests),
-			Summary:     g.summary(b.Status),
+			Title:       titleFor(b.Status, g.failed, failedTests),
+			Summary:     g.summary(b.Status, failedTests),
 			Annotations: ann,
 		},
 	})
@@ -223,33 +239,66 @@ func (g *GitHubChecksRequester) record(e api.Event) {
 		return
 	}
 	g.failed++
-	if len(g.annotations) >= MaxAnnotations {
-		g.dropped++
-		return
-	}
 	// Path is required by the API and a step is not a line of source;
 	// ".senro" rather than a real path, so the failure is not read as being
 	// about some unrelated file.
-	g.annotations = append(g.annotations, ghAnnotation{
+	g.steps = append(g.steps, stepAnnotation{step: e.Step, ann: ghAnnotation{
 		Path: ".senro", StartLine: 1, EndLine: 1,
 		AnnotationLevel: "failure",
 		Title:           "step " + e.Step + " " + string(b.State),
 		Message:         annotationMessage(e.Step, b),
-	})
+	}})
 }
 
-// recordTest folds one test.finished into the check's state. Only failures
-// are annotated; passes and skips would bury the failures in the budget.
-func (g *GitHubChecksRequester) recordTest(e api.Event) {
-	var b api.TestFinishedBody
-	if err := e.Decode(&b); err != nil || b.Outcome != api.TestFailed {
-		return
+// annotations builds the completion's annotation list and counts the failed
+// tests, spending the MaxAnnotations budget and setting dropped.
+//
+// Steps are walked in the fold's order, and each step's failed tests go
+// ahead of its own annotation: the test is the more specific location, and
+// the step's annotation only says the step went red. Only tests the fold
+// left failed are annotated. Recovered ones passed in the end, and passes and
+// skips would bury the failures in the budget. A step annotation the fold
+// never placed (its event refused) still goes out, last.
+func (g *GitHubChecksRequester) annotations() ([]ghAnnotation, int) {
+	var out []ghAnnotation
+	g.dropped = 0
+	add := func(a ghAnnotation) {
+		if len(out) >= MaxAnnotations {
+			g.dropped++
+			return
+		}
+		out = append(out, a)
 	}
-	g.failedTests++
-	if len(g.annotations) >= MaxAnnotations {
-		g.dropped++
-		return
+	byStep := make(map[string][]int, len(g.steps))
+	for i, s := range g.steps {
+		byStep[s.step] = append(byStep[s.step], i)
 	}
+	failedTests := 0
+	placed := make([]bool, len(g.steps))
+	for _, id := range g.state.Order {
+		if st := g.state.Steps[id]; st != nil {
+			for _, t := range st.Tests {
+				if t.Outcome == api.TestFailed {
+					failedTests++
+					add(testAnnotation(t))
+				}
+			}
+		}
+		for _, i := range byStep[id] {
+			placed[i] = true
+			add(g.steps[i].ann)
+		}
+	}
+	for i, s := range g.steps {
+		if !placed[i] {
+			add(s.ann)
+		}
+	}
+	return out, failedTests
+}
+
+// testAnnotation is one failed test's annotation.
+func testAnnotation(b *api.TestResult) ghAnnotation {
 	// A test without a source location is annotated on ".senro" for the
 	// same reason a step is: Path is required and must not point at an
 	// unrelated file.
@@ -274,12 +323,12 @@ func (g *GitHubChecksRequester) recordTest(e api.Event) {
 		// GitHub rejects an annotation with no message.
 		msg = title
 	}
-	g.annotations = append(g.annotations, ghAnnotation{
+	return ghAnnotation{
 		Path: path, StartLine: line, EndLine: line,
 		AnnotationLevel: "failure",
 		Title:           title,
 		Message:         msg,
-	})
+	}
 }
 
 func annotationMessage(step string, b api.StepFinishedBody) string {
@@ -298,14 +347,14 @@ func annotationMessage(step string, b api.StepFinishedBody) string {
 	return sb.String()
 }
 
-func (g *GitHubChecksRequester) summary(status api.RunStatus) string {
+func (g *GitHubChecksRequester) summary(status api.RunStatus, failedTests int) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "senro finished %s: %d step(s) completed", status, g.done)
 	if g.failed > 0 {
 		fmt.Fprintf(&sb, ", %d failed", g.failed)
 	}
-	if g.failedTests > 0 {
-		fmt.Fprintf(&sb, ", %d test(s) failed", g.failedTests)
+	if failedTests > 0 {
+		fmt.Fprintf(&sb, ", %d test(s) failed", failedTests)
 	}
 	sb.WriteString(".")
 	if g.dropped > 0 {
@@ -341,7 +390,14 @@ func conclusionFor(s api.RunStatus) string {
 	}
 }
 
+// titleFor is the check's one-line headline. Failed tests lead because they
+// are the more specific news; failed steps are still named alongside them,
+// since a step can fail for reasons no test reports (a build error, a
+// timeout) and leaving it out would understate the run.
 func titleFor(s api.RunStatus, failed, failedTests int) string {
+	if failedTests > 0 && failed > 0 {
+		return fmt.Sprintf("%s, %d test(s) failed, %d step(s) failed", s, failedTests, failed)
+	}
 	if failedTests > 0 {
 		return fmt.Sprintf("%s, %d test(s) failed", s, failedTests)
 	}

@@ -3,6 +3,7 @@ package notify_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -363,11 +364,13 @@ func TestATestWithoutAFileAnnotatesDotSenro(t *testing.T) {
 }
 
 // Test and step annotations share one budget, and the overflow is said out
-// loud.
+// loud. The tests are distinct: the same name reported again is the same test
+// (see TestATestFailedOnEveryAttemptIsOneAnnotation).
 func TestTestAnnotationsShareTheBudgetWithSteps(t *testing.T) {
 	events := []api.Event{ghEvent(t, api.RunStarted, 1, "", `{"pipeline":"p"}`)}
 	for i := 0; i < notify.MaxAnnotations; i++ {
-		events = append(events, ghEvent(t, api.TestFinished, uint64(2+i), "t", `{"name":"T","outcome":"failed"}`))
+		events = append(events, ghEvent(t, api.TestFinished, uint64(2+i), "t",
+			fmt.Sprintf(`{"name":"T%d","outcome":"failed"}`, i)))
 	}
 	events = append(events,
 		ghEvent(t, api.StepFinished, 100, "t", `{"state":"failed"}`),
@@ -378,5 +381,88 @@ func TestTestAnnotationsShareTheBudgetWithSteps(t *testing.T) {
 	}
 	if !strings.Contains(out["summary"].(string), "1 further failure(s) are not annotated here") {
 		t.Errorf("summary %q does not report the dropped step", out["summary"])
+	}
+}
+
+// attemptEvent is ghEvent for a step-scoped event on a given attempt.
+func attemptEvent(t *testing.T, typ api.Type, seq uint64, step string, attempt int, payload string) api.Event {
+	t.Helper()
+	e := ghEvent(t, typ, seq, step, payload)
+	e.Attempt = attempt
+	return e
+}
+
+// A test that failed on attempt 1 and passed on attempt 2 is recovered, not
+// failed. The check must agree with every other client, which all fold, so it
+// neither annotates the test nor counts it in the title.
+func TestARecoveredTestIsNotAnnotated(t *testing.T) {
+	out := completionOutput(t,
+		ghEvent(t, api.RunStarted, 1, "", `{"pipeline":"p"}`),
+		attemptEvent(t, api.TestFinished, 2, "t", 1, `{"name":"TestX","outcome":"failed","output":"boom"}`),
+		attemptEvent(t, api.StepRetried, 3, "t", 2, `{"attempt":2}`),
+		attemptEvent(t, api.TestFinished, 4, "t", 2, `{"name":"TestX","outcome":"passed"}`),
+		attemptEvent(t, api.StepFinished, 5, "t", 2, `{"state":"recovered"}`),
+		ghEvent(t, api.RunFinished, 6, "", `{"status":"succeeded"}`),
+	)
+	if ann, _ := out["annotations"].([]any); len(ann) != 0 {
+		t.Errorf("annotations = %v, want none for a recovered test", ann)
+	}
+	if title := out["title"].(string); strings.Contains(title, "test(s) failed") {
+		t.Errorf("title %q counts a recovered test as failed", title)
+	}
+}
+
+// A test that failed on all three attempts is one failing test, annotated
+// once with its last attempt's output, not three.
+func TestATestFailedOnEveryAttemptIsOneAnnotation(t *testing.T) {
+	events := []api.Event{ghEvent(t, api.RunStarted, 1, "", `{"pipeline":"p"}`)}
+	seq := uint64(1)
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			seq++
+			events = append(events, attemptEvent(t, api.StepRetried, seq, "t", attempt,
+				fmt.Sprintf(`{"attempt":%d}`, attempt)))
+		}
+		seq++
+		events = append(events, attemptEvent(t, api.TestFinished, seq, "t", attempt,
+			fmt.Sprintf(`{"name":"TestX","outcome":"failed","output":"boom %d"}`, attempt)))
+	}
+	events = append(events,
+		attemptEvent(t, api.StepFinished, seq+1, "t", 3, `{"state":"failed","exit_code":1}`),
+		ghEvent(t, api.RunFinished, seq+2, "", `{"status":"failed"}`))
+	out := completionOutput(t, events...)
+
+	ann, _ := out["annotations"].([]any)
+	var tests int
+	for _, a := range ann {
+		m := a.(map[string]any)
+		if !strings.HasPrefix(m["title"].(string), "test ") {
+			continue
+		}
+		tests++
+		if m["message"] != "boom 3" {
+			t.Errorf("test annotation message = %v, want the last attempt's output", m["message"])
+		}
+	}
+	if tests != 1 {
+		t.Errorf("test annotations = %d, want 1: %v", tests, ann)
+	}
+	if title := out["title"].(string); !strings.Contains(title, "1 test(s) failed") {
+		t.Errorf("title %q, want it to count one failed test", title)
+	}
+}
+
+// With both a failed test and a failed step that reported none (a build
+// error, say), the title names both, so neither is understated.
+func TestTheTitleCountsFailedTestsAndSteps(t *testing.T) {
+	out := completionOutput(t,
+		ghEvent(t, api.RunStarted, 1, "", `{"pipeline":"p"}`),
+		ghEvent(t, api.TestFinished, 2, "unit", `{"name":"TestX","outcome":"failed"}`),
+		ghEvent(t, api.StepFinished, 3, "unit", `{"state":"failed","exit_code":1}`),
+		ghEvent(t, api.StepFinished, 4, "build", `{"state":"failed","exit_code":2}`),
+		ghEvent(t, api.RunFinished, 5, "", `{"status":"failed"}`),
+	)
+	if want := "failed, 1 test(s) failed, 2 step(s) failed"; out["title"] != want {
+		t.Errorf("title = %q, want %q", out["title"], want)
 	}
 }
