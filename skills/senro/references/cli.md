@@ -367,12 +367,18 @@ its tests. Both need `--step`, they combine, and a name given twice runs once.
 recorded run's `events.jsonl` is `failed`. The step's declared
 `testreport.Spec.Select` is appended to its command with `{tests}` replaced
 by the names joined by `Join`, so `GoTestJSON()` adds
-`-run '^(TestA|TestB)$'`. The command is a cache-key component, so the
-narrowed step is never served from the full run's entry. Refused up front as a
-usage error (exit `2`): either flag without `--step`, a step with no `Tests`
-declaration or an empty `Select` (`TAP()` and `JUnitXML` have none until
-`Selecting`), and `--failed-tests` when nothing on that step failed. The
-library form is `senro.WithTestSelection(step, names...)`.
+`-run '^(TestA|TestB)$'`. For `GoTestJSON()` each name is
+`regexp.QuoteMeta`'d and a subtest `Parent/sub` collapses to `Parent` (go
+test splits `-run` on `/`), deduped; for other formats names are substituted
+verbatim and the `Select` argv owns quoting. Rerunning an already narrowed run
+appends a second `Select` (for go, the last `-run` wins). The command is a
+cache-key component, so the narrowed step is never served from the full run's
+entry. Refused up front as a usage error (exit `2`): either flag without
+`--step`, a step with no `Tests` declaration or an empty `Select` (`TAP()` and
+`JUnitXML` have none until `Selecting`), `--failed-tests` when nothing on that
+step failed, and a `--test` name the recorded run did not report on that step
+(bare `Name` or `suite.name` are accepted): `senro rerun: step "S" recorded no
+test "NAME"`. The library form is `senro.WithTestSelection(step, names...)`.
 
 ## `senro verify`
 

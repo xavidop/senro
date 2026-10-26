@@ -53,6 +53,35 @@ func TestWithTestSelectionRefusesAnUnknownStep(t *testing.T) {
 	}
 }
 
+// go test splits -run on "/" outside parentheses, so a subtest inside the
+// anchored group would match nothing; it collapses to its parent, once.
+// Metacharacters are quoted so a name selects itself and nothing else.
+func TestWithTestSelectionShapesGoTestNames(t *testing.T) {
+	p := selPlan(&plan.TestsSpec{Format: "gotest", Select: []string{"-run", "^({tests})$"}})
+	got, err := applyTestSelection(p, map[string][]string{
+		"t": {"TestP/sub (x)", "TestP", "TestP/other", "TestA+B"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := got.Nodes[0].Cmd; c[len(c)-1] != `^(TestP|TestA\+B)$` {
+		t.Errorf("Cmd = %v", c)
+	}
+}
+
+// Outside go test senro does not know the selector's syntax, so names are
+// substituted verbatim and quoting is the Select argv's business.
+func TestWithTestSelectionLeavesOtherFormatsVerbatim(t *testing.T) {
+	p := selPlan(&plan.TestsSpec{Format: "tap", Select: []string{"--only", "{tests}"}})
+	got, err := applyTestSelection(p, map[string][]string{"t": {"a/b", "c+d"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := got.Nodes[0].Cmd; c[len(c)-1] != "a/b|c+d" {
+		t.Errorf("Cmd = %v", c)
+	}
+}
+
 func TestWithTestSelectionUsesTheSpecsJoin(t *testing.T) {
 	p := selPlan(&plan.TestsSpec{Format: "junit", Path: "r.xml", Select: []string{"-k", "{tests}"}, Join: " or "})
 	got, err := applyTestSelection(p, map[string][]string{"t": {"a", "b"}})

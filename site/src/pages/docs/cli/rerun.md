@@ -31,7 +31,7 @@ mostly cache hits.
 | --- | --- |
 | `--run RUN` | The run to re-execute. Defaults to the most recent one here. |
 | `--step STEP` | Re-execute this step, what it needs, and everything below it. |
-| `--test NAME` | With `--step`, run only the named test of that step. Repeatable. |
+| `--test NAME` | With `--step`, run only the named test of that step. Repeatable. `NAME` must be a test the recorded run reported on that step, bare (`TestCheckout`) or as `suite.name`. |
 | `--failed-tests` | With `--step`, run only the tests that failed on that step in the run being re-executed. Combines with `--test`. |
 | `--regenerate` | Ask generators for a fresh subgraph instead of replaying the recorded one. |
 | `--dir DIR` | Where to write this run. Defaults to a new run directory. |
@@ -70,6 +70,21 @@ ledger; `--test` names them yourself; the two combine, and a name given twice ru
 selection is appended to its command with `{tests}` replaced by the names, so for
 `testreport.GoTestJSON()` the step runs with `-run '^(TestCheckout)$'` added.
 
+Each name is checked against the tests the recorded run reported on that step, by its bare name
+or as `suite.name` (the form every client prints). A name the run never reported would select
+nothing, and a test run that runs nothing exits 0, so the rerun would come back green having
+checked nothing; it is refused instead. A test added since the recorded run cannot be rerun by
+name: rerun the whole step.
+
+For `GoTestJSON()` the names are shaped for `-run`: each is regexp-quoted, so `TestA+B` selects
+itself, and a subtest such as `TestParent/sub` reruns its parent `TestParent`, because `go test`
+splits `-run` on `/` outside parentheses and the subtest's own name inside the group would match
+nothing. Several failed subtests of one parent run it once. For other formats the names are
+substituted as they are, and your `Selecting` argv owns any quoting.
+
+Rerunning a run that was itself narrowed appends a second selection to the already narrowed
+command. For `go test` the last `-run` wins, so the newer selection is the one that runs.
+
 The command changes, and the command is part of the cache key, so the narrowed step is never served
 from the full run's cache entry. A hit there would replay the full run's output and the selection
 would silently do nothing.
@@ -80,6 +95,8 @@ Each of these is a usage error (exit `2`), refused before anything runs:
 - A step with no `Tests` declaration, or one with no selection (`TAP()` and `JUnitXML` carry none
   until you add `Selecting`).
 - `--failed-tests` when no test on that step failed.
+- `--test NAME` for a test the recorded run did not report on that step:
+  `senro rerun: step "unit" recorded no test "TestNope"`.
 
 ## `--regenerate` is a separate verb, deliberately
 

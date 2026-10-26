@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -183,6 +184,11 @@ func WithOnlySteps(ids ...string) Option {
 // The step must declare a Tests spec with a Select; RunPlan refuses, naming
 // the step, when it does not or when the step is not in the plan. Repeated
 // calls for one step accumulate their names.
+//
+// For a go test step (testreport.GoTestJSON) each name is regexp-quoted and a
+// subtest "Parent/sub" selects its parent, since go test cannot select a
+// subtest inside the anchored group; see selectNames. For every other format
+// names are substituted verbatim and the Select argv owns quoting.
 func WithTestSelection(step string, names ...string) Option {
 	return func(c *runConfig) {
 		if c.testSelect == nil {
@@ -882,15 +888,50 @@ func applyTestSelection(p *plan.Plan, sel map[string][]string) (*plan.Plan, erro
 			return nil, fmt.Errorf("step %q declares Tests but no Select, so it has no way to run only some tests. "+
 				"Selecting needs argv that takes {tests}", step)
 		}
+		names = selectNames(n.Tests.Format, names)
 		n.Cmd = append(append([]string(nil), n.Cmd...), expandSelect(n.Tests.Select, n.Tests.Join, names)...)
 	}
 	return &out, nil
 }
 
+// selectNames turns recorded test names into what the step's own Select
+// takes, which depends on the runner.
+//
+// For go test the Select is a -run regular expression, so each name is
+// regexp.QuoteMeta'd: a test name with a regexp metacharacter in it ("+",
+// "(", "." in a subtest's name) would otherwise match some other test or
+// nothing at all. A subtest "Parent/sub" collapses to "Parent" first,
+// because go test splits -run on "/" outside parentheses, so a subtest name
+// inside the anchored group matches nothing and the rerun would pass having
+// run no tests. Rerunning the parent reruns the subtest with it. Names are
+// deduped after the collapse, since several failed subtests share a parent.
+//
+// For every other format the names go into Select verbatim: senro does not
+// know the runner's selection syntax, so the Select argv owns any quoting.
+func selectNames(format string, names []string) []string {
+	if format != testreport.FormatGoTest {
+		return names
+	}
+	seen := make(map[string]bool, len(names))
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if parent, _, ok := strings.Cut(n, "/"); ok {
+			n = parent
+		}
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, regexp.QuoteMeta(n))
+	}
+	return out
+}
+
 // expandSelect replaces every "{tests}" in sel, including inside a longer
 // token such as "^({tests})$", with the names joined by join. An empty join
 // means "|", the spec's default, which is the alternation both go's -run and
-// most regexp-based selectors take.
+// most regexp-based selectors take. names arrive already shaped for the
+// runner by selectNames; expandSelect itself quotes nothing.
 func expandSelect(sel []string, join string, names []string) []string {
 	if join == "" {
 		join = "|"

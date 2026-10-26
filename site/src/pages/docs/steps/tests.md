@@ -182,13 +182,20 @@ senro rerun --step unit --test TestCheckout --test TestRefund
 ```
 
 `--failed-tests` reads every test still `failed` on that step in the recorded run. `--test` names
-them yourself, and the two combine. Either way the step's `Selecting` is appended to its command
-with `{tests}` replaced by the names, so the run above executes
+them yourself, and the two combine. Each `--test` name must be one the recorded run reported on
+that step, bare or as `suite.name`: a name that selects nothing would run no tests and pass, so it
+is refused. Either way the step's `Selecting` is appended to its command with `{tests}` replaced
+by the names, so the run above executes
 `go test -json ./... -run '^(TestCheckout|TestRefund)$'`. The narrowed command is part of the cache
 key, so the rerun is never served from the full run's cache entry.
 
-With `go test`, name a top-level test. `go test` splits `-run` on `/` outside parentheses, so a
-subtest name inside the anchored group matches nothing; rerun the parent instead.
+With `go test`, each name is regexp-quoted, and a subtest reruns its parent: `go test` splits
+`-run` on `/` outside parentheses, so `TestParent/sub` inside the anchored group would match
+nothing, and senro selects `TestParent` instead. For TAP and JUnit the names are substituted as
+they are, and your `Selecting` argv owns any quoting.
+
+Rerunning a run that was itself narrowed appends a second `Selecting` to the already narrowed
+command. For `go test` the last `-run` wins, so the newer selection is the one that runs.
 
 From Go, the same thing is an option to `senro.RunPlan`:
 

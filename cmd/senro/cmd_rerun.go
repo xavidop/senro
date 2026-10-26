@@ -16,8 +16,8 @@ import (
 // here, in site/src/pages/docs/cli/rerun.md and in
 // skills/senro/references/cli.md, and changing either is a breaking change.
 const rerunUsage = `Usage:
-  senro rerun [--run RUN] [--step STEP [[--test NAME ...] [--failed-tests]]
-      [--regenerate] [--cache-dir DIR] [--dir DIR] [--local-class CLASS]
+  senro rerun [--run RUN] [--step STEP [--test NAME ...] [--failed-tests]]
+      [--regenerate] [--dir DIR] [--cache-dir DIR] [--local-class CLASS]
 
       Re-execute the plan a previous run recorded, from <run>/plan.json rather
       than by rebuilding the pipeline package: rebuilding would re-resolve a
@@ -39,10 +39,14 @@ const rerunUsage = `Usage:
                          re-executed. All of it is read from the recorded plan,
                          so "below it" means what it meant in the original run.
     --test NAME          with --step, run only the named test of that step
-                         (repeatable). The step's declared test selection is
-                         appended to its command, so the step must declare
-                         one. The command changes, so the narrowed step is
-                         never served from the full run's cache entry.
+                         (repeatable). NAME is a test the run being
+                         re-executed recorded on that step, bare or as
+                         suite.name; any other name is a usage error. The
+                         step's declared test selection is appended to its
+                         command, so the step must declare one. For go test
+                         a subtest reruns its top-level parent. The command
+                         changes, so the narrowed step is never served from
+                         the full run's cache entry.
     --failed-tests       with --step, run only the tests that failed on that
                          step in the run being re-executed, read from its
                          ledger. It is a usage error when none failed. It
@@ -142,12 +146,17 @@ func cmdRerun(args []string, stdout, stderr io.Writer) int {
 					"run only some of them; it needs a Tests spec with a Select\n", step)
 				return exitUsage
 			}
+			recorded, err := recordedTests(runDir, step)
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "senro rerun: %v\n", err)
+				return exitUsage
+			}
+			if tests, err = resolveTestNames(step, recorded, tests); err != nil {
+				_, _ = fmt.Fprintf(stderr, "senro rerun: %v\n", err)
+				return exitUsage
+			}
 			if failedOnly {
-				failed, err := failedTests(runDir, step)
-				if err != nil {
-					_, _ = fmt.Fprintf(stderr, "senro rerun: %v\n", err)
-					return exitUsage
-				}
+				failed := failedTests(recorded)
 				if len(failed) == 0 {
 					_, _ = fmt.Fprintf(stderr, "senro rerun: no test on step %q failed in run %s\n", step, runDir)
 					return exitUsage
