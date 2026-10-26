@@ -176,27 +176,39 @@ func TestBreakOnFailureHoldsEveryFailingAttempt(t *testing.T) {
 }
 
 // TestCancelReleasesAHeldStep: a held step must never keep a cancelled run
-// alive, and cancelling does not rewrite what the attempt did.
+// alive. What the step settles as is what it would have settled as had the
+// cancel landed with no hold: with retries left, the run's cancel is what
+// stops the next attempt, so cancelled, and never a step.retried announcing
+// an attempt that will not run; with none left, the attempt's own failure.
 func TestCancelReleasesAHeldStep(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	// A step with retries left: the cancel must not be followed by a
-	// step.retried announcing an attempt that will never run.
-	out, s, hits := breakOnFailureRun(t, ctx, failingWorkspacePlan(
-		&plan.RetrySpec{MaxAttempts: 3, Predicate: "exit_code:3", BackoffBaseMS: 1}))
-	waitFailureHit(t, hits, 1)
-	cancel()
-	res := waitRun(t, out)
-	for _, e := range s.Events() {
-		if e.Type == api.StepRetried {
-			t.Errorf("step.retried after the run was cancelled during a hold: %+v", e)
-		}
+	cases := []struct {
+		name  string
+		retry *plan.RetrySpec
+		want  api.State
+	}{
+		{"retries remain", &plan.RetrySpec{MaxAttempts: 3, Predicate: "exit_code:3", BackoffBaseMS: 1}, api.StateCancelled},
+		{"last attempt", nil, api.StateFailed},
 	}
-	if res.status == api.RunSucceeded {
-		t.Errorf("run status = %s after a cancelled hold", res.status)
-	}
-	if got := finalStates(t, s.Events())["build"]; got != api.StateFailed {
-		t.Errorf("build final state = %q, want failed", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			out, s, hits := breakOnFailureRun(t, ctx, failingWorkspacePlan(tc.retry))
+			waitFailureHit(t, hits, 1)
+			cancel()
+			res := waitRun(t, out)
+			for _, e := range s.Events() {
+				if e.Type == api.StepRetried {
+					t.Errorf("step.retried after the run was cancelled during a hold: %+v", e)
+				}
+			}
+			if res.status == api.RunSucceeded {
+				t.Errorf("run status = %s after a cancelled hold", res.status)
+			}
+			if got := finalStates(t, s.Events())["build"]; got != tc.want {
+				t.Errorf("build final state = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

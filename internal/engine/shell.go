@@ -276,8 +276,17 @@ func (rc *runCore) runShellSession(
 		// a sibling's cache-hit restore queued behind the held step blocks
 		// every NEW shared hold (Go's RWMutex favours a waiting writer), so
 		// the shell would wait for the release the operator has not given.
-		// whileHeld keeps the step from being released mid-read.
-		if !rc.holds.whileHeld(n.ID, func() { mounts, err = rc.ws.handlerMounts(n) }) {
+		//
+		// The read is covered only if the SAME hold (not a later attempt's)
+		// was in place before and after it; otherwise the step may have
+		// let go mid-read, and it is redone under our own lock, which no
+		// longer has a held step to wait behind. Checked rather than
+		// pinned, so a breakpoint.clear never waits on this read.
+		tok, held := rc.holds.token(n.ID)
+		if held {
+			mounts, err = rc.ws.handlerMounts(n)
+		}
+		if !held || !rc.holds.stillHeld(n.ID, tok) {
 			unlock := rc.ws.lockMounts(workspaceMountNames(n))
 			mounts, err = rc.ws.handlerMounts(n)
 			unlock()

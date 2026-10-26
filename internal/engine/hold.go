@@ -65,19 +65,22 @@ func (h *holds) release(step string) bool {
 	return true
 }
 
-// whileHeld runs fn only if step is held, with the hold pinned until fn
-// returns: release waits on the same mutex, so the held step (and with it
-// its workspace mount locks) cannot go away mid-fn. It reports whether fn
-// ran. fn must be short and must not call back into h; a release blocks
-// for as long as it runs.
-func (h *holds) whileHeld(step string, fn func()) bool {
+// token identifies step's current hold, if it has one, so a caller can
+// tell afterwards (stillHeld) whether that same hold lasted across some
+// work. Each hold is a fresh channel, so a hold released and replaced by
+// a retried attempt's never compares equal to the one before it.
+func (h *holds) token(step string) (chan struct{}, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if _, ok := h.wait[step]; !ok {
-		return false
-	}
-	fn()
-	return true
+	ch, ok := h.wait[step]
+	return ch, ok
+}
+
+// stillHeld reports whether tok, from token, is still step's hold.
+func (h *holds) stillHeld(step string, tok chan struct{}) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.wait[step] == tok
 }
 
 // held reports whether step is held right now.

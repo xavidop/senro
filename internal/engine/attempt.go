@@ -184,8 +184,11 @@ func (rc *runCore) runStep(ctx context.Context, n *plan.Node, opts Options, logs
 			// A run cancelled while the attempt was held (or in the instant
 			// after it failed) gets no next attempt, so announcing one with
 			// step.retried would put a retry in the ledger that never runs.
-			// The failed attempt stays the step's outcome.
-			if ctx.Err() != nil {
+			// Settled cancelled, as the backoff select below settles it: the
+			// predicate wanted another try and the run's cancel is what
+			// stopped it. The failed attempt's tail and snapshots are kept.
+			if err := ctx.Err(); err != nil {
+				res = attemptResult{state: api.StateCancelled, err: err, logTail: res.logTail, snapshots: res.snapshots}
 				break retryLoop
 			}
 
