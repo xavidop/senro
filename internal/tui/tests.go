@@ -2,8 +2,11 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/xavidop/senro/api"
 )
@@ -44,20 +47,35 @@ type testLine struct {
 	outcome api.TestOutcome
 }
 
+// outputIndent is how far a failed test's output sits under its name.
+const outputIndent = "    "
+
 // testLines renders the step's tests for the tests pane: one line per test,
 // grouped in testOrder and stable within a group (first-seen order), with a
 // failed test's captured output indented four spaces beneath it. Only a
 // failed test shows output: a recovered test's earlier failure is history,
 // and printing it would bury the current failures.
 //
+// A test whose outcome is none of the four (from a newer engine) is listed
+// last rather than dropped: testSuffix counts it in the total, and a pane
+// that showed fewer tests than the row claims would look like a lost result.
+//
+// width is the pane's text width, 0 when the terminal size is not known.
+// An output line wider than that is cut with a trailing "…": the pane does
+// not wrap (logPaneStyle sets no width), so a long line would otherwise run
+// off the right edge of the terminal. Name lines are left whole, since the
+// name is what a reader needs to rerun it.
+//
 // Like testSuffix it takes the StepState and does no locking; the caller
 // holds Model.mu. The outcome word is styled after padding so the columns
 // still line up once the escape codes are added.
-func testLines(s *api.StepState) []testLine {
+func testLines(s *api.StepState, width int) []testLine {
 	var lines []testLine
-	for _, outcome := range testOrder {
+	groups := append(slices.Clone(testOrder), "")
+	for _, outcome := range groups {
 		for _, t := range s.Tests {
-			if t.Outcome != outcome {
+			known := slices.Contains(testOrder, t.Outcome)
+			if (outcome != "" && t.Outcome != outcome) || (outcome == "" && known) {
 				continue
 			}
 			name := t.Name
@@ -77,12 +95,26 @@ func testLines(s *api.StepState) []testLine {
 			})
 			if t.Outcome == api.TestFailed && t.Output != "" {
 				for _, l := range strings.Split(strings.TrimRight(t.Output, "\n"), "\n") {
-					lines = append(lines, testLine{text: "    " + l})
+					lines = append(lines, testLine{text: outputIndent + clipLine(l, width-len(outputIndent))})
 				}
 			}
 		}
 	}
 	return lines
+}
+
+// clipLine cuts l to width terminal cells, the last one an ellipsis, and
+// leaves it alone when it fits or width is not known. lipgloss measures and
+// cuts by cell, not byte, and skips escape codes, so a wide rune or a
+// colored line from the test's own output is cut where it shows.
+func clipLine(l string, width int) string {
+	if width <= 0 || lipgloss.Width(l) <= width {
+		return l
+	}
+	if width == 1 {
+		return "…"
+	}
+	return lipgloss.NewStyle().MaxWidth(width-1).Render(l) + "…"
 }
 
 // minTestRows is the fewest pane rows clipTestLines leaves, so a tiny or

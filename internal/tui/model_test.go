@@ -13,6 +13,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/xavidop/senro/api"
 	"github.com/xavidop/senro/internal/eventlog"
@@ -2356,5 +2357,76 @@ func TestModelTestsPaneIsClippedToTheTerminal(t *testing.T) {
 	}
 	if want := fmt.Sprint(200 - shown); more[2] != want {
 		t.Errorf("marker says %s passed hidden, want %s", more[2], want)
+	}
+}
+
+// testsModel has two steps, "a" with a failing test whose output is one
+// very long line and "b" with no tests, on an 80-column terminal.
+func testsModel(t *testing.T) *tui.Model {
+	t.Helper()
+	m := tui.New(&fakeSource{state: seedState("r1")})
+	m = update(t, m, tui.StateMsg{State: seedState("r1")})
+	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 30})
+	seq := uint64(0)
+	for _, step := range []string{"a", "b"} {
+		seq++
+		e := stepStarted("r1", step, 1)
+		e.Seq = seq
+		m = update(t, m, tui.EventMsg{Event: e})
+	}
+	raw, err := json.Marshal(api.TestFinishedBody{
+		Name: "TestLong", Outcome: api.TestFailed, Output: strings.Repeat("y", 300) + "\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq++
+	m = update(t, m, tui.EventMsg{Event: api.Event{
+		V: api.Version, Seq: seq, Type: api.TestFinished, Run: "r1", Step: "a", Attempt: 1, Payload: raw,
+	}})
+	return m
+}
+
+// The tests mode is a pane mode, not a property of one step: focusing
+// another step keeps it, so an operator walking the failed steps does not
+// press t again on each. A step with no tests says so in place of its log.
+func TestModelTestsModeSurvivesFocusingAnotherStep(t *testing.T) {
+	m := testsModel(t)
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // focus a
+	m = pressT(t, m)
+	if out := plain(m.View()); !strings.Contains(out, "TestLong") {
+		t.Fatalf("tests pane not shown for a:\n%s", out)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // focus b
+	out := plain(m.View())
+	if !strings.Contains(out, "b: (no tests reported)") {
+		t.Errorf("focusing b left the tests mode or did not say b has no tests:\n%s", out)
+	}
+	if strings.Contains(out, "(no log output yet)") {
+		t.Errorf("the log pane came back on enter:\n%s", out)
+	}
+}
+
+// A test output line wider than the pane is cut there, so it ends inside the
+// terminal instead of running off its right edge. Trailing padding is
+// ignored: JoinVertical pads every row to the footer's width.
+func TestModelTestsPaneCutsAnOutputLineAtTheTerminalWidth(t *testing.T) {
+	m := pressT(t, update(t, testsModel(t), tea.KeyMsg{Type: tea.KeyEnter}))
+	out := plain(m.View())
+	if !strings.Contains(out, "y…") {
+		t.Fatalf("the long output line was not cut with an ellipsis:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(strings.TrimRight(line, " ")); w > 80 && strings.Contains(line, "yyy") {
+			t.Errorf("an output line is %d cells on an 80-cell terminal: %q", w, line)
+		}
+	}
+}
+
+func TestModelHelpAdvertisesTheTestsKey(t *testing.T) {
+	m := update(t, testsModel(t), tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	if out := plain(m.View()); !regexp.MustCompile(`(?m)^\s+t\s+show the focused step's tests in place of its log`).MatchString(out) {
+		t.Errorf("help has no line for t:\n%s", out)
 	}
 }

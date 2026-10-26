@@ -89,11 +89,18 @@ func (m *Model) View() string {
 	}
 
 	rows := filterRows(topLevelRows(st), m.filter)
+	steps := m.renderSteps(st, rows)
 	right := m.renderLog()
 	if m.showTests && m.focused != "" {
-		right = m.renderTests(st)
+		// The pane's text width: what the steps pane leaves, less
+		// logPaneStyle's padding. 0 before the terminal size is known.
+		width := 0
+		if m.width > 0 {
+			width = max(m.width-lipgloss.Width(steps)-logPaneStyle.GetHorizontalPadding(), 1)
+		}
+		right = m.renderTests(st, width)
 	}
-	body := lipgloss.JoinHorizontal(lipgloss.Top, m.renderSteps(st, rows), right)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, steps, right)
 	return lipgloss.JoinVertical(lipgloss.Left, body, m.renderFooter(st))
 }
 
@@ -197,12 +204,13 @@ func (m *Model) renderLog() string {
 // The pane is clipped to the terminal: a step with thousands of tests would
 // otherwise push its failures, and the footer, off the top of the screen.
 // The rows left are the height minus the footer, the step's header line and
-// the proposal line when there is one.
-func (m *Model) renderTests(st *api.RunState) string {
+// the proposal line when there is one. width is the pane's text width; see
+// testLines.
+func (m *Model) renderTests(st *api.RunState, width int) string {
 	prop := m.proposalLine()
 	var lines []testLine
 	if s := st.Steps[m.focused]; s != nil {
-		lines = testLines(s)
+		lines = testLines(s, width)
 	}
 	if len(lines) == 0 {
 		return logPaneStyle.Render(prop + m.focused + ": (no tests reported)")
