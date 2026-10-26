@@ -182,8 +182,9 @@ func WithOnlySteps(ids ...string) Option {
 // complete run's output and the selection would silently do nothing.
 //
 // The step must declare a Tests spec with a Select; RunPlan refuses, naming
-// the step, when it does not or when the step is not in the plan. Repeated
-// calls for one step accumulate their names.
+// the step, when it does not, when the step is not in the plan, or when
+// WithOnlySteps leaves it out (a selection that can never run is a mistake,
+// not a no-op). Repeated calls for one step accumulate their names.
 //
 // For a go test step (testreport.GoTestJSON) each name is regexp-quoted and a
 // subtest "Parent/sub" selects its parent, since go test cannot select a
@@ -535,7 +536,7 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 	// Refused here, with the other up-front checks, so a bad selection leaves
 	// no run directory or manifest behind.
 	if len(cfg.testSelect) > 0 {
-		narrowed, err := applyTestSelection(p, cfg.testSelect)
+		narrowed, err := applyTestSelection(p, cfg.testSelect, cfg.only)
 		if err != nil {
 			return fmt.Errorf("senro: %w", err)
 		}
@@ -859,7 +860,10 @@ func registryAuthRefusal(stepID, image, field string, set *secrets.Set) error {
 // is often a recorded plan the caller reads again, and editing it would make
 // a second call narrow an already narrowed command. Only p.Nodes and the
 // affected nodes' Cmd are cloned; everything else is shared.
-func applyTestSelection(p *plan.Plan, sel map[string][]string) (*plan.Plan, error) {
+//
+// only is WithOnlySteps' set, empty for the whole plan. A selected step
+// outside it would be skipped, so the narrowing would silently do nothing.
+func applyTestSelection(p *plan.Plan, sel map[string][]string, only map[string]bool) (*plan.Plan, error) {
 	out := *p
 	out.Nodes = append([]plan.Node(nil), p.Nodes...)
 	// Sorted so that two bad selections always report the same one first.
@@ -879,6 +883,10 @@ func applyTestSelection(p *plan.Plan, sel map[string][]string) (*plan.Plan, erro
 		}
 		if idx < 0 {
 			return nil, fmt.Errorf("test selection names step %q, which the plan does not have", step)
+		}
+		if len(only) > 0 && !only[step] {
+			return nil, fmt.Errorf("test selection names step %q, which WithOnlySteps leaves out, "+
+				"so its tests would never run", step)
 		}
 		n := &out.Nodes[idx]
 		if n.Tests == nil {
