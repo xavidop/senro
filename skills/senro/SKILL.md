@@ -153,6 +153,55 @@ step using one rather than silently retrying on every failure. Use
 `retry.RegisterPredicate` + `retry.Named` for the same Go code with a name a
 plan can record; `retry.Func` remains for a `retry.Policy` applied directly.
 
+## Test results: `Tests`
+
+A step that runs tests declares how they are reported, so the run records one
+result per test instead of one exit code for the step. senro never sniffs the
+format from argv; a wrong guess would turn a green step red or report no
+tests, which reads as "all passed".
+
+```go
+import "github.com/xavidop/senro/testreport"
+
+verify.Step("unit", exec.Command("go", "test", "-json", "./...")).
+	Tests(testreport.GoTestJSON())
+verify.Step("pytest", exec.Command("pytest", "--junitxml=report.xml")).
+	Tests(testreport.JUnitXML("report.xml").Selecting("-k", "{tests}").JoinedBy(" or "))
+```
+
+- `testreport.GoTestJSON()`: Go's `-json` stream on stdout (the command must
+  pass `-json` itself). Carries `Select` `["-run", "^({tests})$"]` and `Join`
+  `|`, anchored so `TestFoo` does not also select `TestFooBar`.
+- `testreport.TAP()`: TAP on stdout. No `Select`.
+- `testreport.JUnitXML(path)`: a file read after the step exits, resolved
+  against the directory it ran in. No `Select`. **Local executor only**: it is
+  read from the coordinator's filesystem, so `Build` refuses it on container,
+  Kubernetes and SSH and points at the two stdout formats.
+- `.Selecting(args...)` replaces `Select`, which must contain `{tests}`
+  (`testreport.Placeholder`); `.JoinedBy(sep)` replaces `Join` (empty means
+  `|`). Argv, not a closure, because `senro rerun` reads it from `plan.json`.
+
+`Build` also refuses `Tests` on a func step, an unknown format and a JUnit
+spec with no path. Each test is one step-scoped `test.finished` event, before
+its attempt's `step.finished`: `name`, `suite`, `outcome`
+(`passed`/`failed`/`skipped`), `duration_ns`, `file`/`line` when the report
+has them, and for failed tests only the redacted last 4096 bytes of `output`.
+A JUnit step that exits 0 with a missing or malformed report fails, naming the
+path; on a non-zero exit the report is ignored. A test that failed and then
+passed on a later attempt folds to `recovered` in `StepState.Tests`, never on
+the wire, and stays recovered.
+
+Clients: the TUI row reads ` [N tests · F failed · R recovered]` and `t`
+toggles a tests pane (failed first, with output); the plain renderer prints
+`<step> test <suite>.<name> failed` and suffixes the step line with
+`(N tests, F failed, R recovered)`; the browser detail pane lists tests,
+failures first; the GitHub Checks notifier annotates each failed test (its
+file and line, else `.senro`) inside the same 50-annotation budget.
+`senro rerun --step S --test NAME` or `--failed-tests` reruns only those
+tests (`senro.WithTestSelection` from Go); see `references/cli.md`. Not
+supported: sharding by per-test timing, a `test.started` event, rerunning one
+test from the TUI.
+
 ## `Timeout`, `OnFailure`, `Always`
 
 - `.Timeout(d)` bounds one attempt, not the sum of all retries.
@@ -743,6 +792,7 @@ senro cache gc [--max-size 50G] [--keep-failed 168h] [--dry-run] [--cache-dir DI
     (--max-size has no default: without it, nothing is evicted for size)
 senro cache explain [--run RUN] [STEP]
 senro verify --recheck-pure [--run RUN] [--rerun] [--step STEP] [--limit N]
+senro rerun [--run RUN] [--step STEP [--test NAME ...] [--failed-tests]] [--regenerate]
 senro ws ls [--cache-dir DIR] [RUN] [NAME]
 senro ws pull [--cache-dir DIR] [--force] RUN NAME [DEST]
 senro ws diff [--cache-dir DIR] [--json] RUN-A RUN-B [NAME]

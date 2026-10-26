@@ -8,8 +8,8 @@ title: rerun
 Re-execute the plan a previous run recorded.
 
 ```
-senro rerun [--run RUN] [--step STEP] [--regenerate] [--dir DIR]
-            [--cache-dir DIR] [--local-class CLASS]
+senro rerun [--run RUN] [--step STEP [--test NAME ...] [--failed-tests]]
+            [--regenerate] [--dir DIR] [--cache-dir DIR] [--local-class CLASS]
 ```
 
 Reach for this when you need to reproduce a past run exactly: replaying a failure to debug it, or
@@ -31,6 +31,8 @@ mostly cache hits.
 | --- | --- |
 | `--run RUN` | The run to re-execute. Defaults to the most recent one here. |
 | `--step STEP` | Re-execute this step, what it needs, and everything below it. |
+| `--test NAME` | With `--step`, run only the named test of that step. Repeatable. |
+| `--failed-tests` | With `--step`, run only the tests that failed on that step in the run being re-executed. Combines with `--test`. |
 | `--regenerate` | Ask generators for a fresh subgraph instead of replaying the recorded one. |
 | `--dir DIR` | Where to write this run. Defaults to a new run directory. |
 | `--cache-dir DIR` | The storage root. Defaults to `$SENRO_CACHE_DIR`. |
@@ -54,6 +56,30 @@ didn't run. Including the dependencies costs little, since the unchanged ones ar
 
 The dependency graph comes from the recorded plan, so "everything below it" means exactly what it
 meant in the run you're repeating.
+
+## Rerunning one test
+
+```
+senro rerun --step unit --test TestCheckout
+senro rerun --step unit --failed-tests
+```
+
+When the step declares [`Tests`](/docs/steps/tests/) with a selection, these narrow it to the tests
+you name. `--failed-tests` names every test still `failed` on that step in the recorded run's
+ledger; `--test` names them yourself; the two combine, and a name given twice runs once. The step's
+selection is appended to its command with `{tests}` replaced by the names, so for
+`testreport.GoTestJSON()` the step runs with `-run '^(TestCheckout)$'` added.
+
+The command changes, and the command is part of the cache key, so the narrowed step is never served
+from the full run's cache entry. A hit there would replay the full run's output and the selection
+would silently do nothing.
+
+Each of these is a usage error (exit `2`), refused before anything runs:
+
+- `--test` or `--failed-tests` without `--step`.
+- A step with no `Tests` declaration, or one with no selection (`TAP()` and `JUnitXML` carry none
+  until you add `Selecting`).
+- `--failed-tests` when no test on that step failed.
 
 ## `--regenerate` is a separate verb, deliberately
 
@@ -93,5 +119,7 @@ the step writes, so re-running the step produces a fresh one.
 
 - **[Generated subgraphs](/docs/monorepo/generators/)**: what is being replayed, and why recording
   it is what lets a generator be nondeterministic.
+- **[Test results](/docs/steps/tests/)**: declaring how a step reports its tests, which is what
+  `--test` and `--failed-tests` need.
 - **[cache & verify](/docs/cli/cache/)**: why a step hit or missed, and re-checking a `Pure()`
   claim.

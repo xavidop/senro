@@ -63,13 +63,14 @@ traced tool running inside a step joins the run's trace. See
 
 ## Types sent today
 
-All thirty-four, from `api.DeclaredTypes()`:
+All thirty-five, from `api.DeclaredTypes()`:
 
 ```
 run.started              run.finished
 plan.resolved            plan.expanded            plan.expansion_skipped
 step.created             step.started             step.finished
 step.retried             step.log.appended
+test.finished
 cache.hit                cache.miss               cache.saved
 cache.degraded
 ws.snapshot              ws.restored              ws.evicted
@@ -87,6 +88,14 @@ Some only show up in certain situations:
 
 - **`notify.*`**: the outcome of one outbound notification. A run with no notifier configured
   emits none. See [Notifications](/docs/notifications/).
+- **`test.finished`**: one test's verdict for one attempt of a step that declares
+  [`Tests`](/docs/steps/tests/), sent once per test and always before that attempt's
+  `step.finished`. It carries the test's `name` and `suite`, an `outcome` of `passed`, `failed` or
+  `skipped`, its `duration_ns`, a `file` and `line` when the report has them, and, for a failed test
+  only, the redacted last 4096 bytes of its `output`. A step that declares no `Tests` emits none.
+  `Apply` folds them into `StepState.Tests`, and a test that passes on a later attempt after
+  failing becomes `recovered` there. That fourth outcome exists only in the fold, never on the
+  wire, because no single event sees both attempts.
 - **`cache.degraded`**: a **shared** cache stopped working (unreachable, bad credentials, or an
   unexpected response) and the run kept going anyway. It's not a failure or a miss, just slower
   than it should have been. See [Shared cache](/docs/data/shared-cache/).

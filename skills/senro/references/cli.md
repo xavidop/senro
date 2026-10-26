@@ -53,7 +53,9 @@ it (`POST /api/shell`, which is a route of its own and not a control
 operation), `a` and `A` approve and reject a failure analyzer's proposal for
 it (`analysis.accept` / `analysis.reject`, which take the proposal's `id`
 rather than a step), `c` / `Ctrl-C` cancel the run (`run.cancel`), `up`/`k`
-and `down`/`j` move the selection, `pgup` load older logs, `/` filter
+and `down`/`j` move the selection, `pgup` load older logs, `t` swap the
+focused step's log for its tests pane (failed first, with output; a view
+toggle with no wire operation behind it), `/` filter
 (`enter` applies it, `esc` cancels), `q` detach, `?` help. No key is reserved
 and inert any more: `a` was the last one, and the help screen's reserved list
 is now empty. A step held at a breakpoint renders as `paused`, and the
@@ -109,7 +111,7 @@ senro runs [-n LIMIT]
 Lists what's under `./runs`, newest first: run ID, pipeline, status, when it
 started, and duration (`running` for a status still in progress). `-n` caps
 how many print (default 20). This is where a `RUN` argument comes from for
-every other command on this page when you don't already have an ID —
+every other command on this page when you don't already have an ID:
 `senro attach --run`, `senro ws ls`, `senro cache explain`. Answered from the
 same `events.jsonl` fold every other view of a run uses
 (`source.OpenFile(dir, false).State(ctx)`), so its status column can never
@@ -339,6 +341,38 @@ terminal instead, which local, container and Kubernetes host and ssh does not
 pod of its own, with the step's workspaces staged into it read-only. It is
 refused on a finished run (use `senro ws pull`) and against a read-only attach
 server. Other refusals: `unknown_step`, `run_not_active`, `sandbox_failed`.
+
+## `senro rerun`
+
+```
+senro rerun [--run RUN] [--step STEP [--test NAME ...] [--failed-tests]]
+    [--regenerate] [--dir DIR] [--cache-dir DIR] [--local-class CLASS]
+```
+
+Re-executes the plan a previous run recorded, read from `<run>/plan.json`
+rather than by rebuilding the pipeline package, so a pipeline edited since
+cannot change what the re-run means. `--run` defaults to the most recent run.
+Unchanged steps are served from the action cache, and a generator replays the
+subgraph it recorded unless `--regenerate` asks for a fresh one (a Go
+`senro.Generate` closure cannot be regenerated from a plan and fails, naming
+the step).
+
+`--step STEP` re-executes that step, everything it transitively needs, and
+everything below it, all read from the recorded plan. The dependencies are in
+because a step cannot run without its inputs; the cache makes them cheap.
+
+`--test NAME` (repeatable) and `--failed-tests` narrow that step to some of
+its tests. Both need `--step`, they combine, and a name given twice runs once.
+`--failed-tests` takes every test whose folded verdict on that step in the
+recorded run's `events.jsonl` is `failed`. The step's declared
+`testreport.Spec.Select` is appended to its command with `{tests}` replaced
+by the names joined by `Join`, so `GoTestJSON()` adds
+`-run '^(TestA|TestB)$'`. The command is a cache-key component, so the
+narrowed step is never served from the full run's entry. Refused up front as a
+usage error (exit `2`): either flag without `--step`, a step with no `Tests`
+declaration or an empty `Select` (`TAP()` and `JUnitXML` have none until
+`Selecting`), and `--failed-tests` when nothing on that step failed. The
+library form is `senro.WithTestSelection(step, names...)`.
 
 ## `senro verify`
 

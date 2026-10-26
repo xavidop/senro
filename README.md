@@ -98,6 +98,9 @@ debugger.
 - **Honest failure states.** A step ends in one of ten states, never a boolean; `recovered` (flaky
   but passed on retry) is not `succeeded`, and `retry.OnInfra()` retries broken infrastructure but
   never a failing test. See [Failure handling](site/src/pages/docs/steps/states.md).
+- **Per-test results.** A step declares that it speaks `go test -json`, TAP or JUnit XML, and every
+  client names the test that failed, with its output; `senro rerun --failed-tests` reruns just
+  those. See [Test results](site/src/pages/docs/steps/tests.md).
 - **Embeddable.** senro is a library first: no global state, no `os.Exit`, no reading your argv;
   attach is one opt-in call. The wire contract lives in `github.com/xavidop/senro/api` with no
   dependency beyond the standard library. See [Embedding](site/src/pages/docs/reference/embedding.md).
