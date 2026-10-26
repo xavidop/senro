@@ -53,6 +53,7 @@ import (
 	"github.com/xavidop/senro/internal/stepid"
 	"github.com/xavidop/senro/internal/unit"
 	"github.com/xavidop/senro/retry"
+	"github.com/xavidop/senro/service"
 	"github.com/xavidop/senro/testreport"
 )
 
@@ -210,6 +211,33 @@ func (w *WorkflowBuilder) Step(id string, a Action) *StepBuilder {
 	sb := &StepBuilder{id: id, action: a}
 	w.steps = append(w.steps, sb)
 	return sb
+}
+
+// Service adds a step that is a long-running service: a process that stays
+// up while other steps use it, such as a database, instead of a command that
+// runs to completion. The options declare the ports it listens on and how to
+// tell it is ready (see package service); at least one port is required, and
+// Build refuses a service without one.
+//
+// A service is an ordinary step in every other respect: Needs, Env, WorkDir,
+// Mount, Timeout and When all work on the returned builder. Retry, Pure,
+// Generates, OnFailure and Always do not, and Build says so, because each
+// assumes a step that finishes.
+func (w *WorkflowBuilder) Service(id string, a Action, opts ...service.Option) *StepBuilder {
+	sb := w.Step(id, a)
+	sb.service = toServiceSpec(service.Resolve(opts...))
+	return sb
+}
+
+// toServiceSpec lowers a resolved service.Spec into its plan form. It copies
+// Ports so the plan never aliases the caller's slice.
+func toServiceSpec(s service.Spec) *plan.ServiceSpec {
+	return &plan.ServiceSpec{
+		Ports:          append([]int(nil), s.Ports...),
+		Probe:          plan.ProbeSpec{Kind: s.Probe.Kind, Port: s.Probe.Port, Path: s.Probe.Path},
+		ReadyTimeoutMS: s.ReadyTimeout.Milliseconds(),
+		StopGraceMS:    s.StopGrace.Milliseconds(),
+	}
 }
 
 // Unit is what an expansion's Template is called with: one thing a unit
@@ -1384,6 +1412,11 @@ func toNode(sb *StepBuilder, path map[*StepBuilder]bool) (plan.Node, error) {
 		t.Select = append([]string(nil), sb.tests.Select...)
 		n.Tests = &t
 	}
+	if sb.service != nil {
+		svc := *sb.service
+		svc.Ports = append([]int(nil), sb.service.Ports...)
+		n.Service = &svc
+	}
 	n.Pure = sb.pure
 	n.NoSnapshot = sb.noSnapshot
 	n.CacheEnv = append([]string(nil), sb.cacheEnv...)
@@ -1732,6 +1765,10 @@ type StepBuilder struct {
 	// tests is set by Tests and nil for every step that reports no
 	// individual results; toNode lowers it into plan.Node.Tests.
 	tests *plan.TestsSpec
+
+	// service is set by WorkflowBuilder.Service and nil for every ordinary
+	// step; toNode lowers it into plan.Node.Service.
+	service *plan.ServiceSpec
 
 	mounts     []Mount
 	pure       bool

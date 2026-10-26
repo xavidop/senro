@@ -26,6 +26,7 @@ import (
 	"github.com/xavidop/senro/internal/plan"
 	"github.com/xavidop/senro/internal/redact"
 	"github.com/xavidop/senro/retry"
+	"github.com/xavidop/senro/service"
 	"github.com/xavidop/senro/testreport"
 	"github.com/xavidop/senro/unit/glob"
 )
@@ -2701,5 +2702,44 @@ func TestTestsLowersIntoThePlan(t *testing.T) {
 	want := &plan.TestsSpec{Format: "gotest", Select: []string{"-run", "^({tests})$"}, Join: "|"}
 	if !reflect.DeepEqual(n.Tests, want) {
 		t.Fatalf("Tests = %+v, want %+v", n.Tests, want)
+	}
+}
+
+func TestServiceLowersIntoThePlan(t *testing.T) {
+	p := senro.New("p")
+	w := p.Workflow("w")
+	w.Service("db", exec.Command("postgres"), service.Ports(5432))
+
+	pl, err := p.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	n, _ := pl.Node("db")
+	want := &plan.ServiceSpec{
+		Ports: []int{5432}, Probe: plan.ProbeSpec{Kind: "tcp", Port: 5432},
+		ReadyTimeoutMS: 60000, StopGraceMS: 10000,
+	}
+	if !reflect.DeepEqual(n.Service, want) {
+		t.Fatalf("Service = %+v, want %+v", n.Service, want)
+	}
+	if !n.IsService() {
+		t.Fatal("IsService = false")
+	}
+}
+
+func TestServiceCopiesItsPorts(t *testing.T) {
+	ports := []int{5432}
+	p := senro.New("p")
+	w := p.Workflow("w")
+	w.Service("db", exec.Command("postgres"), service.Ports(ports...))
+	ports[0] = 1
+
+	pl, err := p.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	n, _ := pl.Node("db")
+	if n.Service.Ports[0] != 5432 {
+		t.Fatalf("plan ports = %v, the caller's slice was aliased", n.Service.Ports)
 	}
 }

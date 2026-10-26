@@ -160,10 +160,87 @@ func nodeShape(n Node) error {
 	if err := validateTests(n); err != nil {
 		return err
 	}
+	if err := validateService(n); err != nil {
+		return err
+	}
 	if err := validateExecutor(n); err != nil {
 		return err
 	}
 	return validateSecrets(n)
+}
+
+// validateService checks a node's service declaration. Each refusal is a
+// declaration that would otherwise compile and then hang a run, retry a
+// process that is meant to stay up, or cache something that is not a result.
+func validateService(n Node) error {
+	s := n.Service
+	if s == nil {
+		return nil
+	}
+	if n.Kind == "func" {
+		// A function runs in-process and returns; there is no process to
+		// keep up and no port for it to listen on.
+		return fmt.Errorf(
+			"plan: step %q is a func step and declares Service, which only an exec step can: "+
+				"a service is a process that stays up and listens on a port", n.ID)
+	}
+	if k := n.ExecutorKey(); k != ExecutorLocal && k != ExecutorContainer {
+		// The probe runs from the coordinator and dependents reach the
+		// service by a port on it. Only these two put a listening process
+		// where the coordinator can connect.
+		return fmt.Errorf(
+			"plan: step %q is a service and runs on the %s executor: a service is only supported "+
+				"on the local and container executors, the two whose ports the coordinator can reach",
+			n.ID, k)
+	}
+	if len(s.Ports) == 0 {
+		return fmt.Errorf(
+			"plan: step %q is a service with no ports: the readiness probe needs a port and "+
+				"dependents reach the service through one; declare it with service.Ports", n.ID)
+	}
+	declared := false
+	for _, p := range s.Ports {
+		if p == s.Probe.Port {
+			declared = true
+		}
+	}
+	if !declared {
+		return fmt.Errorf(
+			"plan: step %q probes port %d, which is not in its Ports %v: a probe can only check a "+
+				"port the service declared", n.ID, s.Probe.Port, s.Ports)
+	}
+	switch s.Probe.Kind {
+	case ServiceProbeTCP:
+	case ServiceProbeHTTP:
+		if !strings.HasPrefix(s.Probe.Path, "/") {
+			return fmt.Errorf("plan: step %q has an HTTP probe path %q that does not start with \"/\"",
+				n.ID, s.Probe.Path)
+		}
+	default:
+		return fmt.Errorf("plan: step %q has unknown probe kind %q, want \"tcp\" or \"http\"", n.ID, s.Probe.Kind)
+	}
+	if n.Retry != nil {
+		return fmt.Errorf(
+			"plan: step %q is a service and declares Retry: a service that exits has failed, and "+
+				"restarting it would hand its dependents a different instance than the one they "+
+				"started against", n.ID)
+	}
+	if n.Pure {
+		return fmt.Errorf(
+			"plan: step %q is a service and is marked Pure: a service produces no result to cache, "+
+				"and a hit would skip starting the process its dependents need", n.ID)
+	}
+	if n.Generate != nil {
+		return fmt.Errorf("plan: step %q is a service and declares Generate: a service never finishes, "+
+			"so it has no output to read a fragment from", n.ID)
+	}
+	if len(n.OnFailure) > 0 || len(n.Always) > 0 {
+		return fmt.Errorf(
+			"plan: step %q is a service and declares OnFailure or Always handlers: a service's "+
+				"lifetime ends when the run stops it, not when it settles, so a handler would run "+
+				"at a moment that means nothing", n.ID)
+	}
+	return nil
 }
 
 // validateTests checks a node's test-report declaration. Each refusal is a
@@ -500,6 +577,11 @@ func validateHandlers(parent *Node, lists ...[]Node) error {
 			}
 			if len(h.Needs) > 0 {
 				return fmt.Errorf("plan: handler %q of step %q must not declare Needs", h.ID, parentID)
+			}
+			if h.Service != nil {
+				return fmt.Errorf(
+					"plan: handler %q of step %q declares a Service, but a handler runs once to "+
+						"completion and cannot be a service", h.ID, parentID)
 			}
 			if len(h.When) > 0 {
 				return fmt.Errorf(

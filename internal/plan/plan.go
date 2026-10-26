@@ -92,6 +92,50 @@ type TestsSpec struct {
 	Join string `json:"join,omitempty"`
 }
 
+// The service probe kinds, as plan.json spells them. They are service's
+// ProbeTCP and ProbeHTTP; plan keeps its own copy because it imports nothing
+// outside the standard library, and TestServiceConstantsMatchService fails
+// the day the two drift.
+const (
+	ServiceProbeTCP  = "tcp"
+	ServiceProbeHTTP = "http"
+)
+
+// ProbeSpec is the readiness check of a service. It mirrors service.Probe.
+type ProbeSpec struct {
+	// Kind is "tcp" or "http".
+	Kind string `json:"kind"`
+	// Port is the port probed, one of the service's Ports.
+	Port int `json:"port"`
+	// Path is the request path, for "http" only, starting with "/".
+	Path string `json:"path,omitempty"`
+}
+
+// ServiceSpec declares that a step is a service: a process that stays up
+// while other steps use it, instead of running to completion. It mirrors
+// service.Spec with the durations in milliseconds, the way RetrySpec and
+// TimeoutMS are, so plan.json carries no unit-less number.
+//
+// The declaration lives in the plan because the engine decides readiness and
+// teardown from plan.json alone.
+//
+// Node.TimeoutMS is allowed on a service and means something different from
+// the other step kinds: it bounds readiness (how long the service may take
+// to become ready), not the service's lifetime, which ends when the run
+// stops it. ReadyTimeoutMS is the dedicated bound on the same wait.
+type ServiceSpec struct {
+	// Ports are the TCP ports the service listens on. Required: the probe
+	// needs a port, and a service nothing can reach is only a long step.
+	Ports []int `json:"ports"`
+	// Probe is the readiness check, run from the coordinator.
+	Probe ProbeSpec `json:"probe"`
+	// ReadyTimeoutMS is how long the engine waits for Probe to pass.
+	ReadyTimeoutMS int64 `json:"ready_timeout_ms"`
+	// StopGraceMS is how long the service gets to exit after being asked to
+	// stop, before it is killed.
+	StopGraceMS int64 `json:"stop_grace_ms"`
+}
+
 // FuncSpec is a registered Go function and the parameters it is called with.
 //
 // Params is canonical JSON (CanonicalParams: keys sorted at every level,
@@ -395,13 +439,17 @@ type Node struct {
 	// Tests is set for a step that reports individual test results, and nil
 	// for every other: omitempty on a pointer keeps a plan that declares no
 	// tests at exactly the digest it has always had.
-	Tests           *TestsSpec `json:"tests,omitempty"`
-	WorkDir         string     `json:"workdir,omitempty"`
-	Env             []string   `json:"env,omitempty"`
-	Needs           []string   `json:"needs,omitempty"`
-	ContinueOnError bool       `json:"continue_on_error,omitempty"`
-	Retry           *RetrySpec `json:"retry,omitempty"`
-	TimeoutMS       int64      `json:"timeout_ms,omitempty"`
+	Tests *TestsSpec `json:"tests,omitempty"`
+	// Service is set for a step that is a long-running service, and nil for
+	// every other: omitempty on a pointer keeps a plan that declares no
+	// service at exactly the digest it has always had.
+	Service         *ServiceSpec `json:"service,omitempty"`
+	WorkDir         string       `json:"workdir,omitempty"`
+	Env             []string     `json:"env,omitempty"`
+	Needs           []string     `json:"needs,omitempty"`
+	ContinueOnError bool         `json:"continue_on_error,omitempty"`
+	Retry           *RetrySpec   `json:"retry,omitempty"`
+	TimeoutMS       int64        `json:"timeout_ms,omitempty"`
 
 	// Executor is where this node runs, or nil for the coordinator. A
 	// handler inherits its parent step's executor; Validate refuses one
@@ -457,6 +505,12 @@ type Node struct {
 	// forms parsed by internal/cond. omitempty keeps condition-less nodes
 	// at their old digest.
 	When []string `json:"when,omitempty"`
+}
+
+// IsService reports whether this node is a service: a process that stays up
+// while other steps use it, rather than a command that runs to completion.
+func (n *Node) IsService() bool {
+	return n.Service != nil
 }
 
 // TestsStreaming reports whether this node's test results arrive on its
