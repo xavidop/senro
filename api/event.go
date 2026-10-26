@@ -40,6 +40,12 @@ const (
 	// derives recovered by comparing attempts.
 	TestFinished Type = "test.finished"
 
+	// ServiceReady says a service step's readiness probe passed. Step-scoped,
+	// emitted once per attempt that becomes ready. The step itself keeps
+	// running: a service has no step.finished until it is stopped or dies,
+	// so this event is the only signal that its dependents may start.
+	ServiceReady Type = "service.ready"
+
 	CacheHit   Type = "cache.hit"
 	CacheMiss  Type = "cache.miss"
 	CacheSaved Type = "cache.saved"
@@ -211,7 +217,8 @@ var declaredTypes = map[Type]bool{
 	PlanGenerated: true,
 	StepCreated:   true, StepStarted: true, StepFinished: true,
 	StepRetried: true, StepLogAppended: true, TestFinished: true,
-	CacheHit: true, CacheMiss: true, CacheSaved: true, CacheDegraded: true,
+	ServiceReady: true,
+	CacheHit:     true, CacheMiss: true, CacheSaved: true, CacheDegraded: true,
 	WSSnapshot: true, WSRestored: true, WSEvicted: true, BinaryStaged: true,
 	SecretResolved: true, SecretRedacted: true,
 	ControlApplied: true, BreakpointHit: true,

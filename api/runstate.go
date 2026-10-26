@@ -132,6 +132,47 @@ type StepState struct {
 	// omitempty, so a snapshot of a run with no tests is byte-for-byte what it
 	// was before this field existed.
 	Tests []*TestResult `json:"tests,omitempty"`
+	// IsService is folded from step.created, not inferred from Service: a
+	// service that has not passed its probe yet has no Service, and a renderer
+	// must still show it as "starting" rather than as an ordinary running step.
+	//
+	// omitempty, so a snapshot of a run with no services is byte-for-byte what
+	// it was before this field existed.
+	IsService bool `json:"is_service,omitempty"`
+	// Service is the readiness of a service step, nil until service.ready. It
+	// survives the step finishing so a renderer can still say where the
+	// service listened; use Ready for whether it is up now.
+	Service *ServiceState `json:"service,omitempty"`
+	// Held says why Paused is set when it is not an armed breakpoint: today
+	// only HoldReasonFailure, a step kept after a failed attempt so a client
+	// can open a shell into it. Separate from Paused because the two call for
+	// different affordances: a plain breakpoint offers resume, a failure hold
+	// offers a shell and a retry.
+	//
+	// Cleared everywhere Paused is, so it never outlives the hold.
+	//
+	// omitempty, so a snapshot of a run with no holds is byte-for-byte what it
+	// was before this field existed.
+	Held string `json:"held,omitempty"`
+}
+
+// ServiceState is a service step's readiness: when its probe passed and where
+// it listens.
+type ServiceState struct {
+	// Ready is the timestamp of service.ready. omitzero, not omitempty, for the
+	// reason StepState.Started is: a zero time would otherwise ship as the year 1.
+	Ready time.Time `json:"ready,omitzero"`
+	// Endpoints is every address the service answers on, as reported by
+	// service.ready.
+	Endpoints []Endpoint `json:"endpoints,omitempty"`
+}
+
+// Ready reports whether the step is a service that has passed its probe and is
+// still up. False once the step reaches a terminal state, though Service is
+// kept: a stopped service is not ready, and a dependent must not be shown a
+// dead endpoint as live.
+func (s *StepState) Ready() bool {
+	return s.Service != nil && !s.Service.Ready.IsZero() && !s.State.Terminal()
 }
 
 // TestResult is one test's folded state: its latest verdict and the attempt

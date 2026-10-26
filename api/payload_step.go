@@ -14,6 +14,14 @@ type StepCreatedBody struct {
 	Kind  string   `json:"kind"` // "exec" or "func"
 	Group string   `json:"group,omitempty"`
 	Needs []string `json:"needs,omitempty"`
+	// Service marks a long-running step that is ready on a probe rather than on
+	// exit. Announced here, not inferred from a later service.ready, because a
+	// renderer must show a service as "starting" from the moment the plan
+	// resolves and a service that never becomes ready would never say it was one.
+	//
+	// omitempty, so a plan with no services puts exactly the bytes on the wire
+	// it always did.
+	Service bool `json:"service,omitempty"`
 }
 
 // StepStartedBody is the payload of a step.started event.

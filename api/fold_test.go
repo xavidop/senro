@@ -856,3 +856,81 @@ func TestRunStateJSONIsUnchangedWithoutTests(t *testing.T) {
 		t.Errorf("RunState JSON mentions tests for a run without any: %s", b)
 	}
 }
+
+// A service step is flagged by step.created, becomes ready on service.ready,
+// and stops being ready when it finishes, while its endpoints stay recorded.
+func TestApplyFoldsServiceReady(t *testing.T) {
+	s := api.NewRunState()
+	ts := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
+	mustApply(t, s, api.Event{Seq: 1, TS: ts, Type: api.StepCreated, Step: "db",
+		Payload: json.RawMessage(`{"kind":"exec","service":true}`)})
+	if !s.Steps["db"].IsService {
+		t.Fatal("step.created{service:true} did not set IsService")
+	}
+	mustApply(t, s, api.Event{Seq: 2, TS: ts, Type: api.StepStarted, Step: "db", Attempt: 1})
+	if s.Steps["db"].Ready() {
+		t.Error("Ready() before service.ready")
+	}
+	rt := ts.Add(2 * time.Second)
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 3, TS: rt, Type: api.ServiceReady, Step: "db", Attempt: 1},
+		api.ServiceReadyBody{
+			Endpoints: []api.Endpoint{{Port: 5432, Address: "127.0.0.1:5432"}, {Port: 9187, Address: "127.0.0.1:9187"}},
+			Duration:  2 * time.Second,
+		}))
+	st := s.Steps["db"]
+	if st.Service == nil || !st.Service.Ready.Equal(rt) || len(st.Service.Endpoints) != 2 ||
+		st.Service.Endpoints[1].Port != 9187 {
+		t.Fatalf("Service = %+v", st.Service)
+	}
+	if !st.Ready() {
+		t.Error("Ready() = false after service.ready")
+	}
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 4, TS: rt, Type: api.StepFinished, Step: "db", Attempt: 1},
+		api.StepFinishedBody{State: api.StateSucceeded}))
+	if st.Ready() {
+		t.Error("Ready() = true after the step finished")
+	}
+	if st.Service == nil || len(st.Service.Endpoints) != 2 {
+		t.Errorf("Service lost on finish: %+v", st.Service)
+	}
+}
+
+// A failure hold is a breakpoint with a reason: both flags set by the hit,
+// both cleared when the breakpoint is cleared; a plain hit never sets Held.
+func TestApplyFoldsAFailureHold(t *testing.T) {
+	s := api.NewRunState()
+	mustApply(t, s, api.Event{Seq: 1, Type: api.BreakpointHit, Step: "test",
+		Payload: json.RawMessage(`{"reason":"failure"}`)})
+	if st := s.Steps["test"]; !st.Paused || st.Held != api.HoldReasonFailure {
+		t.Fatalf("Paused=%v Held=%q after a failure hold", st.Paused, st.Held)
+	}
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 2, Type: api.ControlApplied},
+		api.ControlAppliedBody{Op: api.OpBreakpointClear, ClientID: "tui-1", Args: map[string]string{"step": "test"}}))
+	if st := s.Steps["test"]; st.Paused || st.Held != "" {
+		t.Errorf("Paused=%v Held=%q after breakpoint.clear", st.Paused, st.Held)
+	}
+	mustApply(t, s, api.Event{Seq: 3, Type: api.BreakpointHit, Step: "plain",
+		Payload: json.RawMessage(`{"client_id":"tui-1"}`)})
+	if st := s.Steps["plain"]; !st.Paused || st.Held != "" {
+		t.Errorf("plain hit: Paused=%v Held=%q", st.Paused, st.Held)
+	}
+}
+
+// Runs without services or holds must serialize exactly as before the fields
+// existed.
+func TestRunStateJSONIsUnchangedWithoutServicesOrHolds(t *testing.T) {
+	s := api.NewRunState()
+	mustApply(t, s, api.Event{Seq: 1, Type: api.StepCreated, Step: "a", Payload: json.RawMessage(`{"kind":"exec"}`)})
+	mustApply(t, s, api.Event{Seq: 2, Type: api.StepStarted, Step: "a", Attempt: 1})
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 3, Type: api.StepFinished, Step: "a", Attempt: 1},
+		api.StepFinishedBody{State: api.StateSucceeded}))
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, k := range []string{"service", "is_service", "held"} {
+		if strings.Contains(string(b), k) {
+			t.Errorf("JSON contains %q: %s", k, b)
+		}
+	}
+}

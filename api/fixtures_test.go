@@ -352,3 +352,17 @@ func TestFixtureTestsFlaky(t *testing.T) {
 		t.Errorf("counts = %+v", c)
 	}
 }
+
+// A service step folds ready with its endpoints, and a failure hold that a
+// client clears leaves the step failed with nothing held.
+func TestFixtureServiceAndHold(t *testing.T) {
+	s := replay(t, "testdata/fixtures/service-and-hold.jsonl")
+	db := s.Steps["db"]
+	if !db.IsService || db.Service == nil || len(db.Service.Endpoints) != 1 ||
+		db.Service.Endpoints[0].Address != "127.0.0.1:5432" {
+		t.Errorf("db = %+v service=%+v", db, db.Service)
+	}
+	if st := s.Steps["test"]; st.Held != "" || st.Paused || st.State != api.StateFailed {
+		t.Errorf("test: Held=%q Paused=%v State=%q", st.Held, st.Paused, st.State)
+	}
+}

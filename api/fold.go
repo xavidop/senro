@@ -127,6 +127,7 @@ func (s *RunState) Apply(e Event) error {
 		st := s.step(e.Step)
 		st.Kind = b.Kind
 		st.Needs = b.Needs
+		st.IsService = b.Service
 		if b.Group != "" {
 			st.Group = b.Group
 		} else if e.Group != "" {
@@ -143,6 +144,7 @@ func (s *RunState) Apply(e Event) error {
 		st.ExitCode = 0
 		st.Error = ""
 		st.Paused = false
+		st.Held = ""
 		if e.Attempt > st.Attempt {
 			st.Attempt = e.Attempt
 		}
@@ -158,6 +160,7 @@ func (s *RunState) Apply(e Event) error {
 		st.Error = b.Error
 		st.Finished = e.TS
 		st.Paused = false
+		st.Held = ""
 		if b.Cached {
 			st.Cached = true
 		}
@@ -177,6 +180,7 @@ func (s *RunState) Apply(e Event) error {
 		st.ExitCode = 0
 		st.Error = ""
 		st.Paused = false
+		st.Held = ""
 		// Each attempt gets its own log file starting at byte 0 (see
 		// eventlog.LogSet.Path). LogBytes accumulates via max() (see
 		// StepLogAppended below), so leaving the old attempt's high-water
@@ -244,11 +248,29 @@ func (s *RunState) Apply(e Event) error {
 		s.step(e.Step).Cached = true
 
 	case BreakpointHit:
-		// The payload names who armed it; the fold does not need that and does
-		// not decode it. The one underivable bit: this step is held, and the
-		// run is stopped rather than stuck. Cleared by StepStarted,
-		// StepFinished, StepRetried and ControlApplied below.
-		s.step(e.Step).Paused = true
+		// Who armed it the fold does not need. The underivable bits are that
+		// this step is held, so the run is stopped rather than stuck, and why:
+		// a failure hold offers a shell where a breakpoint offers resume.
+		// Cleared by StepStarted, StepFinished, StepRetried and ControlApplied
+		// below.
+		var b BreakpointHitBody
+		if err := e.Decode(&b); err != nil {
+			return err
+		}
+		st := s.step(e.Step)
+		st.Paused = true
+		if b.Reason != "" {
+			st.Held = b.Reason
+		}
+
+	case ServiceReady:
+		var b ServiceReadyBody
+		if err := e.Decode(&b); err != nil {
+			return err
+		}
+		// The envelope's timestamp is when it became ready: the event IS the
+		// moment the probe passed.
+		s.step(e.Step).Service = &ServiceState{Ready: e.TS, Endpoints: b.Endpoints}
 
 	case ControlApplied:
 		var b ControlAppliedBody
@@ -267,6 +289,7 @@ func (s *RunState) Apply(e Event) error {
 		case OpBreakpointClear:
 			if st, ok := s.Steps[b.Args["step"]]; ok {
 				st.Paused = false
+				st.Held = ""
 			}
 		case OpRunPause:
 			// Unlike a breakpoint, no separate event announces the scheduler
