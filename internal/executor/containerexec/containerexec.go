@@ -421,6 +421,12 @@ var logDrainGrace = 5 * time.Second
 // twice; the engine adds trace context (TRACEPARENT, TRACESTATE) at most
 // once and never when the step declared it (engine.spanTable.outboundEnv),
 // and this function must keep passing the result through.
+//
+// SandboxSpec.ExtraHosts applies to every container built here, an ordinary
+// step's included, not only a service's: the container that needs
+// host.docker.internal mapped is the CONSUMER, which is an ordinary step
+// reaching a service published on the host. StartService adds the published
+// ports on top; nothing else does, so a step publishes nothing.
 func (s *sandbox) containerSpecFor(c senroexec.Cmd) (dockerd.ContainerSpec, error) {
 	binds := make([]dockerd.Bind, 0, len(s.spec.Mounts)+1)
 	for _, m := range s.spec.Mounts {
@@ -450,6 +456,7 @@ func (s *sandbox) containerSpecFor(c senroexec.Cmd) (dockerd.ContainerSpec, erro
 	return dockerd.ContainerSpec{
 		Image: s.ex.spec.Image, Cmd: c.Args, Env: c.Env,
 		WorkingDir: workDir, User: s.ex.user, Binds: binds,
+		ExtraHosts: s.spec.ExtraHosts,
 		Labels: map[string]string{
 			"senro.run":     s.ex.runID,
 			"senro.step":    s.spec.StepID,

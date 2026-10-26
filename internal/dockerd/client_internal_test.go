@@ -462,6 +462,48 @@ func TestContainerKillPropagatesAnUnrelatedConflict(t *testing.T) {
 	}
 }
 
+// TestContainerStopSendsTheGraceInWholeSeconds pins the request shape: the
+// daemon's t is whole seconds, so a sub-second grace rounds UP rather than
+// to zero, which would be an immediate kill the caller never asked for.
+func TestContainerStopSendsTheGraceInWholeSeconds(t *testing.T) {
+	var got string
+	c := fakeDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+		got = r.Method + " " + r.URL.Path + "?" + r.URL.RawQuery
+		w.WriteHeader(http.StatusNoContent)
+	})
+	if err := c.ContainerStop(ctx(t), "abc", 1500*time.Millisecond); err != nil {
+		t.Fatalf("ContainerStop: %v", err)
+	}
+	if want := "POST /" + APIVersion + "/containers/abc/stop?t=2"; got != want {
+		t.Errorf("request = %q, want %q", got, want)
+	}
+}
+
+// TestContainerStopTreatsAlreadyStoppedAndGoneAsSuccess: 304 is the daemon's
+// "it was not running", 404 its "there is no such container". Either way the
+// outcome a stopping caller wants is already true, ContainerKill's own rule.
+func TestContainerStopTreatsAlreadyStoppedAndGoneAsSuccess(t *testing.T) {
+	for _, code := range []int{http.StatusNotModified, http.StatusNotFound} {
+		c := fakeDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(code)
+		})
+		if err := c.ContainerStop(ctx(t), "abc", time.Second); err != nil {
+			t.Errorf("ContainerStop answered %d: %v, want nil", code, err)
+		}
+	}
+}
+
+// TestContainerStopPropagatesADaemonFailure keeps the carve-outs above narrow.
+func TestContainerStopPropagatesADaemonFailure(t *testing.T) {
+	c := fakeDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"boom"}`))
+	})
+	if err := c.ContainerStop(ctx(t), "abc", time.Second); err == nil {
+		t.Fatal("ContainerStop swallowed a 500")
+	}
+}
+
 // TestContainerRemoveTreatsA404AsSuccess mirrors ImageInspect's contract for
 // the same reason: a caller tearing down a container it already lost the
 // race on should not have to distinguish "already gone" from "gone".

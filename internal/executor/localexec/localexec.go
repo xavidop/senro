@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -446,6 +447,13 @@ func (s *sandbox) RunInteractive(
 	return s.classifyRunError(ctx, cmd, cmd.Wait())
 }
 
+// HostAddress implements senroexec.Addressable. A local process shares the
+// coordinator's network and binds its declared port itself, so the declared
+// port IS the host port and there is nothing to look up.
+func (s *sandbox) HostAddress(_ context.Context, port int) (string, error) {
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nil
+}
+
 func (s *sandbox) Close(_ context.Context, keep bool) error {
 	// Secret files are removed on EVERY path, including keep: a kept sandbox
 	// holding a plaintext credential is that credential on disk for as long
@@ -462,4 +470,5 @@ func (s *sandbox) Close(_ context.Context, keep bool) error {
 var (
 	_ senroexec.Sandbox     = (*sandbox)(nil)
 	_ senroexec.Interactive = (*sandbox)(nil)
+	_ senroexec.Addressable = (*sandbox)(nil)
 )

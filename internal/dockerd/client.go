@@ -467,6 +467,14 @@ type ContainerSpec struct {
 	// publishing is the only way in.
 	Ports []Port
 
+	// ExtraHosts are "name:address" entries added to the container's
+	// /etc/hosts, the daemon's HostConfig.ExtraHosts (`docker run
+	// --add-host`). The address may be the daemon's own "host-gateway",
+	// which is what makes host.docker.internal resolve on Linux as it
+	// already does on Docker Desktop: the one name a container uses to
+	// reach a service published on the host. Empty sends nothing.
+	ExtraHosts []string
+
 	// ConsoleSize is the pseudo-terminal's size in {rows, cols}, applied at
 	// CREATE. Meaningful only with Tty and ignored by the daemon otherwise.
 	//
@@ -558,6 +566,10 @@ func createBody(spec ContainerSpec) map[string]any {
 	// takes {height, width}, which is the order ConsoleSize declares.
 	if spec.ConsoleSize[0] > 0 && spec.ConsoleSize[1] > 0 {
 		hostConfig["ConsoleSize"] = []uint16{spec.ConsoleSize[0], spec.ConsoleSize[1]}
+	}
+	// Absent when empty, for the same reason.
+	if len(spec.ExtraHosts) > 0 {
+		hostConfig["ExtraHosts"] = spec.ExtraHosts
 	}
 	// Absent unless overridden, so a step's create request is byte-identical
 	// to what it was before this field existed.
@@ -709,6 +721,35 @@ func (c *Client) ContainerKill(ctx context.Context, id string) error {
 	resp, err := c.do(ctx, http.MethodPost, "/containers/"+ref(id)+"/kill", nil, nil)
 	if err != nil {
 		if isNotRunning(err) || isNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return nil
+}
+
+// ContainerStop asks a container to end: the daemon sends its stop signal
+// (SIGTERM unless the image says otherwise), waits up to grace, then kills it,
+// and answers once the container is no longer running. The request blocks for
+// that whole time; ctx bounds it.
+//
+// The daemon takes the grace in whole seconds, so a fraction rounds UP: a
+// 200ms grace becoming t=0 would be an immediate kill nobody asked for.
+//
+// 304 (it was not running) and 404 (there is no such container) are success,
+// ContainerKill's rule: the caller is stopping it, and that outcome is
+// already true. A 304 needs no carve-out here, since do treats every status
+// below 400 as an answer.
+func (c *Client) ContainerStop(ctx context.Context, id string, grace time.Duration) error {
+	secs := int64((grace + time.Second - 1) / time.Second)
+	if secs < 0 {
+		secs = 0
+	}
+	path := "/containers/" + ref(id) + "/stop?t=" + strconv.FormatInt(secs, 10)
+	resp, err := c.do(ctx, http.MethodPost, path, nil, nil)
+	if err != nil {
+		if isNotFound(err) {
 			return nil
 		}
 		return err

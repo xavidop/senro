@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 )
 
 // ErrInfra marks a failure of the execution substrate rather than the
@@ -141,6 +142,21 @@ type SandboxSpec struct {
 	Secrets []SecretRef
 	Env     []string
 	WorkDir string
+
+	// Ports are the TCP ports a service step listens on, as declared. An
+	// executor that isolates the network publishes each one on the
+	// coordinator host (containerexec, to 127.0.0.1 on a port the daemon
+	// picks); one that shares the host's network has nothing to publish,
+	// since the process binds the declared port itself. Empty for every
+	// ordinary step. See Addressable.
+	Ports []int
+
+	// ExtraHosts are "name:address" entries the sandbox resolves, in the
+	// daemon's own spelling: "host.docker.internal:host-gateway" is what lets
+	// a consumer in a container reach a service published on the host, on
+	// Linux as well as Docker Desktop. Meaningful only to an executor with its
+	// own resolver; one that shares the host's ignores it.
+	ExtraHosts []string
 }
 
 // Executor creates sandboxes on one execution target.
@@ -396,4 +412,64 @@ type Terminal interface {
 		ctx context.Context, c Cmd, stdin io.Reader, out io.Writer,
 		initial WinSize, resize <-chan WinSize,
 	) (exit int, err error)
+}
+
+// Addressable is an optional Sandbox capability: reporting the address on the
+// coordinator host where a service's declared port can be reached, as
+// "127.0.0.1:54321".
+//
+// A separate interface for Interactive's reason: "can a step reach a service
+// in this sandbox" must be answerable, and an executor whose target the
+// coordinator cannot dial says no by not implementing this, so the engine
+// refuses a service there up front instead of probing an address that will
+// never answer.
+//
+// port is a declared port (SandboxSpec.Ports). The address is only
+// meaningful once StartService has returned: a container has no published
+// port before it exists.
+type Addressable interface {
+	HostAddress(ctx context.Context, port int) (string, error)
+}
+
+// RunningService is one long-running process a ServiceRunner started.
+//
+// The contract, which both methods share:
+//
+//   - Wait may be called once. It returns when the process ends, for any
+//     reason, with Run's split: exit is the workload's verdict, err is
+//     infrastructure. A process killed by a signal reports the shell's
+//     128+signal (SIGKILL is 137), because that is what every executor's
+//     shell-backed sibling already reports.
+//   - Stop may be called at most once, before Wait or concurrently with it.
+//     It asks the process to end (SIGTERM, or `docker stop`), waits up to
+//     grace, then kills it, and returns once the process is gone; a Wait in
+//     flight returns after Stop does. Cancelling ctx cuts the grace short and
+//     kills at once. Stopping a process that has already exited is not an
+//     error.
+//
+// Stop is a separate step from ctx cancellation, unlike Run, because a
+// service's normal end IS being stopped: an ordinary step that outlives its
+// context has failed, a service that outlives its consumers is done, and it
+// deserves the grace to shut down cleanly.
+type RunningService interface {
+	Wait() (exit int, err error)
+	Stop(ctx context.Context, grace time.Duration) error
+}
+
+// ServiceRunner is an optional Sandbox capability: starting a command that
+// runs until it is stopped, rather than until it exits.
+//
+// Beside Run rather than a flag on it because Run's whole shape is "start,
+// wait, verdict" and its cancellation is an immediate kill, which is right for
+// a step and wrong for a database that should flush on SIGTERM. A separate
+// interface for Interactive's reason too: "can this executor host a service"
+// must be answerable, so the engine refuses a service on an executor that
+// cannot instead of running it as a step that never finishes.
+//
+// ctx bounds starting the process only; the process outlives it, and ends
+// through RunningService.Stop. A program that cannot be started for the
+// pipeline's own reasons (not found, not executable) is not an error: the
+// returned service has already exited 127 or 126, exactly as Run reports it.
+type ServiceRunner interface {
+	StartService(ctx context.Context, c Cmd, stdout, stderr io.Writer) (RunningService, error)
 }
