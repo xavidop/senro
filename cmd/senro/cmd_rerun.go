@@ -16,8 +16,8 @@ import (
 // here, in site/src/pages/docs/cli/rerun.md and in
 // skills/senro/references/cli.md, and changing either is a breaking change.
 const rerunUsage = `Usage:
-  senro rerun [--run RUN] [--step STEP] [--regenerate] [--cache-dir DIR]
-      [--dir DIR] [--local-class CLASS]
+  senro rerun [--run RUN] [--step STEP [--test NAME ... | --failed-tests]]
+      [--regenerate] [--cache-dir DIR] [--dir DIR] [--local-class CLASS]
 
       Re-execute the plan a previous run recorded, from <run>/plan.json rather
       than by rebuilding the pipeline package: rebuilding would re-resolve a
@@ -38,6 +38,14 @@ const rerunUsage = `Usage:
                          them cheap: unchanged ones are served rather than
                          re-executed. All of it is read from the recorded plan,
                          so "below it" means what it meant in the original run.
+    --test NAME          with --step, run only the named test of that step
+                         (repeatable). The step's declared test selection is
+                         appended to its command, so the step must declare
+                         one. The command changes, so the narrowed step is
+                         never served from the full run's cache entry.
+    --failed-tests       with --step, run only the tests that failed on that
+                         step in the run being re-executed, read from its
+                         ledger. It is a usage error when none failed.
     --regenerate         ask generators for a FRESH subgraph instead of
                          replaying the recorded one. Named separately from
                          --step on purpose: silently re-deriving a graph during
@@ -57,11 +65,16 @@ const rerunUsage = `Usage:
 
 func cmdRerun(args []string, stdout, stderr io.Writer) int {
 	var run, step, cacheDir, dir, localClass string
-	var regenerate bool
+	var regenerate, failedOnly bool
+	var tests []string
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
 		case a == "--regenerate":
 			regenerate = true
+		case a == "--failed-tests":
+			failedOnly = true
+		case a == "--test" && i+1 < len(args):
+			tests, i = append(tests, args[i+1]), i+1
 		case a == "--run" && i+1 < len(args):
 			run, i = args[i+1], i+1
 		case a == "--step" && i+1 < len(args):
@@ -79,6 +92,11 @@ func cmdRerun(args []string, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintf(stderr, "senro rerun: unexpected argument %q\n\n%s", a, rerunUsage)
 			return exitUsage
 		}
+	}
+
+	if (len(tests) > 0 || failedOnly) && step == "" {
+		_, _ = fmt.Fprintf(stderr, "senro rerun: --test and --failed-tests need --step to say which step to narrow\n")
+		return exitUsage
 	}
 
 	runDir, err := resolveRunDir(run)
@@ -112,6 +130,31 @@ func cmdRerun(args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		opts = append(opts, senro.WithOnlySteps(sel...))
+
+		if len(tests) > 0 || failedOnly {
+			// Checked here, against the recorded plan, so a step that cannot
+			// select is a usage error before any run starts and not a run
+			// that fails halfway through.
+			node := findNode(p, step)
+			if node.Tests == nil || len(node.Tests.Select) == 0 {
+				_, _ = fmt.Fprintf(stderr, "senro rerun: step %q declares no way to select tests, so it cannot "+
+					"run only some of them; it needs a Tests spec with a Select\n", step)
+				return exitUsage
+			}
+			if failedOnly {
+				failed, err := failedTests(runDir, step)
+				if err != nil {
+					_, _ = fmt.Fprintf(stderr, "senro rerun: %v\n", err)
+					return exitUsage
+				}
+				if len(failed) == 0 {
+					_, _ = fmt.Fprintf(stderr, "senro rerun: no test on step %q failed in run %s\n", step, runDir)
+					return exitUsage
+				}
+				tests = append(tests, failed...)
+			}
+			opts = append(opts, senro.WithTestSelection(step, tests...))
+		}
 	}
 
 	if err := senro.RunPlan(context.Background(), p, opts...); err != nil {
@@ -179,4 +222,15 @@ func selectFrom(p *plan.Plan, step string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// findNode is the recorded plan's node for id. selectFrom has already
+// refused an id the plan does not have, so it is never nil here.
+func findNode(p *plan.Plan, id string) *plan.Node {
+	for i := range p.Nodes {
+		if p.Nodes[i].ID == id {
+			return &p.Nodes[i]
+		}
+	}
+	return nil
 }

@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/xavidop/senro"
 	"github.com/xavidop/senro/exec"
+	"github.com/xavidop/senro/testreport"
 )
 
 // seedRerunnableRun produces a run directory with a recorded plan.json and
@@ -111,5 +114,104 @@ func TestRerunRejectsAStepTheRecordedPlanDoesNotHave(t *testing.T) {
 	}
 	if !bytes.Contains(stderr.Bytes(), []byte("nope")) {
 		t.Errorf("stderr %q must name the step it could not find", stderr.String())
+	}
+}
+
+// seedTestsRun records a run whose step "s" declares a test selection of
+// "--only {tests}" and whose command writes the argv it was given to a file,
+// so a rerun's narrowed command can be read back.
+func seedTestsRun(t *testing.T, root string) (runDir, out string) {
+	t.Helper()
+	out = filepath.Join(root, "out")
+	runDir = filepath.Join(root, "run")
+	pipe := senro.New("ci")
+	l := pipe.Workflow("main")
+	l.Step("s", exec.Command("sh", "-c", `echo "$@" > `+out, "sh")).
+		Tests(testreport.Spec{Format: testreport.FormatTAP, Select: []string{"--only", testreport.Placeholder}})
+	l.Step("plain", exec.Command("true"))
+	if err := senro.Run(context.Background(), pipe, senro.WithDir(runDir)); err != nil {
+		t.Fatalf("seeding a run: %v", err)
+	}
+	if err := os.Remove(out); err != nil {
+		t.Fatal(err)
+	}
+	return runDir, out
+}
+
+func appendFailed(t *testing.T, runDir, name string, seq int) {
+	t.Helper()
+	f, err := os.OpenFile(filepath.Join(runDir, "events.jsonl"), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	line := fmt.Sprintf(`{"v":1,"seq":%d,"ts":"2026-08-07T10:00:02Z","type":"test.finished","run":"r","step":"s","attempt":1,"payload":{"name":%q,"suite":"pkg","outcome":"failed","duration_ns":1}}`+"\n", seq, name)
+	if _, err := f.WriteString(line); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRerunTestRequiresStep(t *testing.T) {
+	runDir, _ := seedTestsRun(t, t.TempDir())
+	var stdout, stderr bytes.Buffer
+	code := cmdRerun([]string{"--run", runDir, "--test", "TestA"}, &stdout, &stderr)
+	if code != exitUsage || !strings.Contains(stderr.String(), "--step") {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+}
+
+func TestRerunTestRefusesAStepThatCannotSelect(t *testing.T) {
+	runDir, _ := seedTestsRun(t, t.TempDir())
+	var stdout, stderr bytes.Buffer
+	code := cmdRerun([]string{"--run", runDir, "--step", "plain", "--test", "TestA"}, &stdout, &stderr)
+	if code != exitUsage || !strings.Contains(stderr.String(), `"plain"`) {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+}
+
+func TestRerunTestNarrowsTheCommand(t *testing.T) {
+	root := t.TempDir()
+	runDir, out := seedTestsRun(t, root)
+	var stdout, stderr bytes.Buffer
+	code := cmdRerun([]string{"--run", runDir, "--step", "s", "--test", "TestA", "--test", "TestB",
+		"--dir", filepath.Join(root, "again")}, &stdout, &stderr)
+	if code != exitSuccess {
+		t.Fatalf("exit = %d; stderr=%s", code, stderr.String())
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "--only TestA|TestB") {
+		t.Errorf("the step ran with %q", b)
+	}
+}
+
+func TestRerunFailedTestsReadsTheLedger(t *testing.T) {
+	root := t.TempDir()
+	runDir, out := seedTestsRun(t, root)
+	appendFailed(t, runDir, "TestB", 900)
+	appendFailed(t, runDir, "TestA", 901)
+	var stdout, stderr bytes.Buffer
+	code := cmdRerun([]string{"--run", runDir, "--step", "s", "--failed-tests",
+		"--dir", filepath.Join(root, "again")}, &stdout, &stderr)
+	if code != exitSuccess {
+		t.Fatalf("exit = %d; stderr=%s", code, stderr.String())
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "--only TestA|TestB") {
+		t.Errorf("the step ran with %q", b)
+	}
+}
+
+func TestRerunFailedTestsWithNoneFailedIsAUsageError(t *testing.T) {
+	runDir, _ := seedTestsRun(t, t.TempDir())
+	var stdout, stderr bytes.Buffer
+	code := cmdRerun([]string{"--run", runDir, "--step", "s", "--failed-tests"}, &stdout, &stderr)
+	if code != exitUsage || !strings.Contains(stderr.String(), `no test on step "s" failed`) {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
 	}
 }

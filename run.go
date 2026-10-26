@@ -23,6 +23,7 @@ import (
 	"github.com/xavidop/senro/internal/sink"
 	"github.com/xavidop/senro/internal/stepchild"
 	"github.com/xavidop/senro/internal/storage"
+	"github.com/xavidop/senro/testreport"
 	"github.com/xavidop/senro/trigger"
 )
 
@@ -61,6 +62,7 @@ type runConfig struct {
 	maxNodes     int
 	regenerate   bool
 	only         map[string]bool
+	testSelect   map[string][]string
 }
 
 // Params are a run's parameters: the small, flat, string-valued facts a run
@@ -165,6 +167,27 @@ func WithOnlySteps(ids ...string) Option {
 		for _, id := range ids {
 			c.only[id] = true
 		}
+	}
+}
+
+// WithTestSelection narrows a step to the named tests: the step's declared
+// Tests.Select is appended to its command with "{tests}" replaced by the
+// names, so only those tests run.
+//
+// The command changes, and the command is a cache-key component
+// (cache.CommandComponent), so the narrowed step cannot be served from the
+// full run's cache entry. That is the point: a cache hit would replay the
+// complete run's output and the selection would silently do nothing.
+//
+// The step must declare a Tests spec with a Select; RunPlan refuses, naming
+// the step, when it does not or when the step is not in the plan. Repeated
+// calls for one step accumulate their names.
+func WithTestSelection(step string, names ...string) Option {
+	return func(c *runConfig) {
+		if c.testSelect == nil {
+			c.testSelect = make(map[string][]string)
+		}
+		c.testSelect[step] = append(c.testSelect[step], names...)
 	}
 }
 
@@ -630,6 +653,14 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 		funcPkg = os.Getenv(funcPkgEnv)
 	}
 
+	if len(cfg.testSelect) > 0 {
+		narrowed, err := applyTestSelection(p, cfg.testSelect)
+		if err != nil {
+			return fmt.Errorf("senro: %w", err)
+		}
+		p = narrowed
+	}
+
 	status, err := engine.Run(ctx, p, engine.Options{
 		Dir:       dir,
 		Executor:  local,
@@ -812,4 +843,55 @@ func registryAuthRefusal(stepID, image, field string, set *secrets.Set) error {
 			"struct passed to senro.WithSecrets does not provide (%s). container.RegistryAuth takes "+
 			"the registry account name and the NAME of a mamori-resolved field, never a password",
 		stepID, image, field, available)
+}
+
+// applyTestSelection returns a plan in which each selected step's command has
+// its declared Tests.Select appended, and never mutates the caller's plan: it
+// is often a recorded plan the caller reads again, and editing it would make
+// a second call narrow an already narrowed command. Only p.Nodes and the
+// affected nodes' Cmd are cloned; everything else is shared.
+//
+// It returns the plan, where the brief only had an error, because a copy has
+// to be handed back to be used.
+func applyTestSelection(p *plan.Plan, sel map[string][]string) (*plan.Plan, error) {
+	out := *p
+	out.Nodes = append([]plan.Node(nil), p.Nodes...)
+	for step, names := range sel {
+		idx := -1
+		for i := range out.Nodes {
+			if out.Nodes[i].ID == step {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return nil, fmt.Errorf("test selection names step %q, which the plan does not have", step)
+		}
+		n := &out.Nodes[idx]
+		if n.Tests == nil {
+			return nil, fmt.Errorf("step %q declares no Tests, so it cannot run a selection of them", step)
+		}
+		if len(n.Tests.Select) == 0 {
+			return nil, fmt.Errorf("step %q declares Tests but no Select, so it has no way to run only some tests. "+
+				"Selecting needs argv that takes {tests}", step)
+		}
+		n.Cmd = append(append([]string(nil), n.Cmd...), expandSelect(n.Tests.Select, n.Tests.Join, names)...)
+	}
+	return &out, nil
+}
+
+// expandSelect replaces every "{tests}" in sel, including inside a longer
+// token such as "^({tests})$", with the names joined by join. An empty join
+// means "|", the spec's default, which is the alternation both go's -run and
+// most regexp-based selectors take.
+func expandSelect(sel []string, join string, names []string) []string {
+	if join == "" {
+		join = "|"
+	}
+	joined := strings.Join(names, join)
+	out := make([]string, len(sel))
+	for i, a := range sel {
+		out[i] = strings.ReplaceAll(a, testreport.Placeholder, joined)
+	}
+	return out
 }
