@@ -151,6 +151,6 @@ func freeLoopbackPort(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	return strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
 }

@@ -23,7 +23,7 @@ func upFreePort(t *testing.T) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
@@ -80,7 +80,9 @@ func TestUpEnvSelectsServicesAndHoldsThem(t *testing.T) {
 	}
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		// Cancelled on purpose, so the run's error is the expected outcome.
+		_ = err
 	case <-time.After(20 * time.Second):
 		t.Fatal("the run did not end after cancel")
 	}
