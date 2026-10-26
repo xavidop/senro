@@ -200,10 +200,16 @@ Clients: the TUI row reads ` [N tests · F failed · R recovered]` and `t`
 toggles a tests pane (failed first, with output); the plain renderer prints
 `<step> test <suite>.<name> failed` and suffixes the step line with
 `(N tests, F failed, R recovered)`; the browser detail pane lists tests,
-failures first; the GitHub Checks notifier annotates each failed test (its
-file and line, else `.senro`) inside the same 50-annotation budget.
+failures first; the GitHub Checks notifier folds the stream like every other
+client and, when the run finishes, annotates each test the fold still has
+`failed` (its file and line, else `.senro`) ahead of its step's annotation,
+inside the same 50-annotation budget: a recovered test is not annotated, and
+one that failed on every attempt is annotated once.
 `senro rerun --step S --test NAME` or `--failed-tests` reruns only those
-tests (`senro.WithTestSelection` from Go); see `references/cli.md`. Not
+tests; see `references/cli.md`. From Go it is
+`senro.WithTestSelection(step, names...)`, which `RunPlan` refuses for a step
+with no `Select`, a step not in the plan, or one `WithOnlySteps` leaves out
+(its tests would never run). Not
 supported: sharding by per-test timing, a `test.started` event, rerunning one
 test from the TUI.
 

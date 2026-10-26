@@ -378,7 +378,9 @@ entry. Refused up front as a usage error (exit `2`): either flag without
 `JUnitXML` have none until `Selecting`), `--failed-tests` when nothing on that
 step failed, and a `--test` name the recorded run did not report on that step
 (bare `Name` or `suite.name` are accepted): `senro rerun: step "S" recorded no
-test "NAME"`. The library form is `senro.WithTestSelection(step, names...)`.
+test "NAME"`. The library form is `senro.WithTestSelection(step, names...)`;
+`RunPlan` also refuses it on a step `senro.WithOnlySteps` leaves out, since
+that step would be skipped and its tests never run.
 
 ## `senro verify`
 

@@ -161,7 +161,8 @@ again.
   with the failed and recovered parts shown only when non-zero. Press `t` on the focused step to
   swap its log for a tests pane: failed tests first with their output, then recovered, skipped and
   passed. The pane is cut to fit the terminal, keeping the failures at the top and ending with
-  `… N more lines (M passed)`. Press `t` again for the log.
+  `… N more lines (M passed)`. An output line wider than the pane is cut with a trailing `…`.
+  The pane stays on as you focus other steps; press `t` again for the log.
 - **Plain output**: each failing test prints a line as it is reported,
   `unit test example.com/m/store.TestCheckout failed`, and the step's own line ends with
   `(N tests, F failed, R recovered)`.
@@ -203,7 +204,10 @@ From Go, the same thing is an option to `senro.RunPlan`:
 senro.RunPlan(ctx, plan, senro.WithTestSelection("unit", "TestCheckout"))
 ```
 
-See [`senro rerun`](/docs/cli/rerun/) for the refusals.
+`RunPlan` refuses a selection on a step with no `Select` (no `Tests`, or `TAP()` or `JUnitXML`
+without `Selecting`), a step not in the plan, or one `senro.WithOnlySteps` leaves out, which
+would be skipped without running a single test. See [`senro rerun`](/docs/cli/rerun/) for the CLI's
+refusals.
 
 ## Limits
 
