@@ -16,10 +16,14 @@ import (
 
 	"github.com/xavidop/senro/api"
 	"github.com/xavidop/senro/internal/cache"
+	"github.com/xavidop/senro/internal/dockerd/dockertest"
 	"github.com/xavidop/senro/internal/engine"
+	"github.com/xavidop/senro/internal/executor"
+	"github.com/xavidop/senro/internal/executor/containerexec"
 	"github.com/xavidop/senro/internal/executor/localexec"
 	"github.com/xavidop/senro/internal/plan"
 	"github.com/xavidop/senro/internal/sink"
+	"github.com/xavidop/senro/internal/storage"
 )
 
 // freePort asks the kernel for a port nothing is listening on, then gives it
@@ -309,4 +313,157 @@ func TestServiceEnvNeverEntersTheCacheKey(t *testing.T) {
 	if a, b := cache.EnvComponent(declared, allow), cache.EnvComponent(withService, allow); a != b {
 		t.Errorf("env component moved with a service variable present:\n%q\n%q", a, b)
 	}
+}
+
+// A service on the container executor passes plan validation and reaches
+// runService. countingExecutor's sandbox implements neither ServiceRunner nor
+// Addressable, so it lands on runService's refusal, and that refusal is the
+// evidence: Validate used to refuse every container service before the run
+// started (it compared ExecutorKey, which carries the image, to "container"),
+// which surfaced as an engine error from Run instead.
+func TestAContainerServiceReachesRunService(t *testing.T) {
+	db := serveNode(t, "db", freePort(t), false)
+	db.Executor = &plan.ExecutorSpec{Kind: plan.ExecutorContainer, Image: "img:1"}
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{db}}
+	dir := t.TempDir()
+	_, err := engine.Run(context.Background(), p, engine.Options{
+		Dir: dir, RunID: "01CONTAINERSVC", Sink: sink.Nop(), MaxParallel: 1,
+		Executor:  localexec.New(dir, nil),
+		Executors: map[string]executor.Executor{db.Executor.Key(): &countingExecutor{class: "c"}},
+	})
+	if err != nil {
+		t.Fatalf("Run refused a container service: %v", err)
+	}
+	_, fin := lastStepFinished(t, readLedger(t, dir), "db")
+	if fin.State != api.StateFailed || !strings.Contains(fin.Error, "cannot run one") {
+		t.Errorf("db = %s %q, want failed by runService's capability refusal", fin.State, fin.Error)
+	}
+}
+
+// The real thing, against a Docker daemon: a container service is published
+// on the coordinator's loopback and a local consumer is given that address.
+// Skips with no daemon, as every container test does.
+func TestAContainerServiceIsReachableFromALocalConsumer(t *testing.T) {
+	cli := dockertest.Require(t)
+	dockertest.Pull(t, cli)
+	store, err := storage.Open(filepath.Join(t.TempDir(), "cache"))
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	spec := plan.ExecutorSpec{Kind: plan.ExecutorContainer, Image: dockertest.Image}
+	ex, err := containerexec.New(spec, store.Snapshotter,
+		containerexec.WithClient(cli), containerexec.WithRunID(testRunID(t)))
+	if err != nil {
+		t.Fatalf("containerexec.New: %v", err)
+	}
+
+	out := filepath.Join(t.TempDir(), "out")
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{
+		{ID: "web", Kind: "exec", Cmd: []string{"httpd", "-f", "-p", "8080"}, Executor: &spec,
+			Service: &plan.ServiceSpec{
+				Ports: []int{8080}, Probe: plan.ProbeSpec{Kind: plan.ServiceProbeTCP, Port: 8080},
+				ReadyTimeoutMS: 30000, StopGraceMS: 1000,
+			}},
+		{ID: "use", Kind: "exec", Needs: []string{"web"}, Cmd: []string{"sh", "-c",
+			"echo $SENRO_SERVICE_WEB_HOST $SENRO_SERVICE_WEB_PORT_8080 > " + out}},
+	}}
+	dir := t.TempDir()
+	status, err := engine.Run(context.Background(), p, engine.Options{
+		Dir: dir, RunID: "01CONTAINERSVC", Sink: sink.Nop(), MaxParallel: 4, Storage: store,
+		Executor:  localexec.New(dir, store.Snapshotter),
+		Executors: map[string]executor.Executor{spec.Key(): ex},
+	})
+	if err != nil || status != api.RunSucceeded {
+		t.Fatalf("Run = %s, %v; want succeeded", status, err)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("reading what the consumer saw: %v", err)
+	}
+	// A local consumer gets the address as published: loopback and the port
+	// the daemon picked, which is not the declared one.
+	host, port, _ := strings.Cut(strings.TrimSpace(string(got)), " ")
+	if host != "127.0.0.1" || port == "" {
+		t.Errorf("consumer saw %q, want 127.0.0.1 and the published port", got)
+	}
+}
+
+// A service retried through step.retry runs as a service again: it becomes
+// ready on its new attempt, publishes, and a consumer still waiting runs
+// against it. The consumer waits behind gate (listed first in Needs) so the
+// first attempt's failure does not skip it before the retry lands.
+func TestARetriedServiceRunsAsAService(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "tried")
+	db := serveNode(t, "db", freePort(t), false)
+	self := db.Cmd[0]
+	db.Cmd = []string{"sh", "-c", fmt.Sprintf(
+		`if [ -f %s ]; then exec %s '-test.run=^TestHelperServe$'; fi; touch %s; exit 1`, marker, self, marker)}
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{
+		db,
+		{ID: "gate", Kind: "exec", Cmd: []string{"sleep", "2"}},
+		{ID: "use", Kind: "exec", Needs: []string{"gate", "db"}, Cmd: []string{"true"}},
+	}}
+	dir := t.TempDir()
+	csink := newControlSink()
+	dbFinished := make(chan api.Event, 4)
+	csink.onEmit = func(e api.Event) {
+		if e.Type == api.StepFinished && e.Step == "db" {
+			dbFinished <- e
+		}
+	}
+	out := runAsync(context.Background(), p, engine.Options{
+		Dir: dir, Executor: localexec.New(dir, nil), Sink: csink, MaxParallel: 4, RunID: "01RETRYSVC",
+	})
+
+	waitForEvent(t, dbFinished, func(e api.Event) bool { return e.Attempt == 1 })
+	resp := sendSettled(t, csink, sink.ControlRequest{
+		ID: "r1", Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": "db"},
+	})
+	if !resp.OK {
+		t.Fatalf("step.retry response = %+v, want OK", resp)
+	}
+	select {
+	case res := <-out:
+		if res.err != nil {
+			t.Fatalf("Run returned an engine error: %v", res.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the run did not end within 5s of the retry")
+	}
+
+	events := readLedger(t, dir)
+	ready := -1
+	for i, e := range events {
+		if e.Type == api.ServiceReady && e.Step == "db" && e.Attempt == 2 {
+			ready = i
+		}
+	}
+	if ready < 0 {
+		t.Fatal("no service.ready for db attempt 2: the retry did not run it as a service")
+	}
+	if started := indexOf(events, api.StepStarted, "use"); started < ready {
+		t.Errorf("use started at %d, before db's service.ready at %d", started, ready)
+	}
+	states := foldStates(t, dir)
+	if states["use"] != api.StateSucceeded {
+		t.Errorf("use = %s, want succeeded", states["use"])
+	}
+	if states["db"] != api.StateSucceeded {
+		t.Errorf("db = %s, want succeeded once its consumer settled", states["db"])
+	}
+	if indexOf(events, api.StepFinished, "use") > lastIndex(events, api.StepFinished, "db") {
+		t.Error("db's last step.finished precedes its consumer's: it must outlive the consumer")
+	}
+}
+
+// lastIndex is indexOf from the end: a retried step has one step.finished
+// per execution.
+func lastIndex(events []api.Event, typ api.Type, step string) int {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == typ && events[i].Step == step {
+			return i
+		}
+	}
+	return -1
 }

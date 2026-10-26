@@ -105,7 +105,19 @@ func TestValidateRejectsAServiceOnK8s(t *testing.T) {
 			ReadyTimeoutMS: 1, StopGraceMS: 1,
 		}
 	})
-	wantServiceErr(t, p, "local", "container")
+	// The KIND is what is named and compared, not ExecutorKey, which carries
+	// the image and namespace: compared against "container", a key such as
+	// "container:postgres:16" refused every container service too.
+	wantServiceErr(t, p, "runs on the k8s executor", "local", "container")
+}
+
+func TestValidateAcceptsAServiceOnAContainerExecutor(t *testing.T) {
+	p := serviceNode(func(n *plan.Node) {
+		n.Executor = &plan.ExecutorSpec{Kind: plan.ExecutorContainer, Image: "postgres:16"}
+	})
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate refused a service on the container executor: %v", err)
+	}
 }
 
 func TestValidateRejectsAServiceAsAHandler(t *testing.T) {

@@ -184,7 +184,15 @@ func validateService(n Node) error {
 			"plan: step %q is a func step and declares Service, which only an exec step can: "+
 				"a service is a process that stays up and listens on a port", n.ID)
 	}
-	if k := n.ExecutorKey(); k != ExecutorLocal && k != ExecutorContainer {
+	// The KIND, not ExecutorKey: the key carries the image (and namespace,
+	// user, host), so "container:postgres:16" never equals "container" and
+	// every container service would be refused. An empty Kind is local, as
+	// ExecutorSpec.Key reads it.
+	k := ExecutorLocal
+	if n.Executor != nil && n.Executor.Kind != "" {
+		k = n.Executor.Kind
+	}
+	if k != ExecutorLocal && k != ExecutorContainer {
 		// The probe runs from the coordinator and dependents reach the
 		// service by a port on it. Only these two put a listening process
 		// where the coordinator can connect.

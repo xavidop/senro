@@ -1163,7 +1163,7 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 	handle := func() schedHandle {
 		return schedHandle{
 			ctx: ctx, byID: byID, live: &live, mu: mu, states: states, running: running,
-			breakpoints: breakpoints, paused: &paused,
+			breakpoints: breakpoints, paused: &paused, serviceStops: serviceStops,
 			wg: &wg, acquire: acquire, release: release, signal: signal,
 			logs: logs, opts: opts,
 		}

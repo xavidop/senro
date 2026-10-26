@@ -133,13 +133,18 @@ type schedHandle struct {
 	// request, and a copied bool would let a client pause a run that
 	// carried on regardless. Unlocked for the reason the breakpoints map
 	// is: one goroutine.
-	paused  *bool
-	wg      *sync.WaitGroup
-	acquire func(context.Context) error
-	release func()
-	signal  func()
-	logs    *eventlog.LogSet
-	opts    Options
+	paused *bool
+	// serviceStops is schedule's own map of service stop channels, shared
+	// rather than copied so a service retried through step.retry is
+	// registered where stopIdleServices looks. Unlocked for the reason
+	// breakpoints is: only schedule's loop touches it.
+	serviceStops map[string]chan struct{}
+	wg           *sync.WaitGroup
+	acquire      func(context.Context) error
+	release      func()
+	signal       func()
+	logs         *eventlog.LogSet
+	opts         Options
 }
 
 // serveControl dispatches one request to its op-specific handler, or
@@ -947,6 +952,18 @@ func (rc *runCore) handleStepRetry(h schedHandle, req sink.ControlRequest) bool 
 	rc.emitStepRetried(stepID, nextAttempt, "requested via control by client "+req.ClientID)
 	req.Reply <- sink.ControlResponse{ID: req.ID, OK: true}
 
+	// A service is retried as a service: runAttempt would run it as a
+	// command expected to exit, and a server never does, so the retry would
+	// never become ready and never stop. Its stop channel is registered here,
+	// on schedule's own loop (serveControl runs nowhere else), before the
+	// goroutine exists, exactly as a first dispatch registers one, so
+	// stopIdleServices stops it once its consumers settle.
+	var stop chan struct{}
+	if n.IsService() {
+		stop = make(chan struct{})
+		h.serviceStops[stepID] = stop
+	}
+
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
@@ -961,6 +978,19 @@ func (rc *runCore) handleStepRetry(h schedHandle, req sink.ControlRequest) bool 
 			delete(h.running, stepID)
 			h.mu.Unlock()
 			rc.emitStepFinished(stepID, api.StateCancelled, "")
+			h.signal()
+			return
+		}
+		if n.IsService() {
+			// runService owns the slot from here, as on a first dispatch, and
+			// settles through finishStep itself. Succeeded rather than
+			// recovered when it is stopped cleanly: a service's success is its
+			// clean stop, the same verdict whichever execution reached it.
+			state := rc.runService(h.ctx, n, h.opts, h.logs, stop, h.release, h.signal)
+			h.mu.Lock()
+			h.states[stepID] = state
+			delete(h.running, stepID)
+			h.mu.Unlock()
 			h.signal()
 			return
 		}
