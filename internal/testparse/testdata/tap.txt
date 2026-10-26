@@ -1,0 +1,8 @@
+TAP version 13
+1..3
+ok 1 - adds
+not ok 2 - subtracts
+  ---
+  message: 'expected 1 got 2'
+  ...
+ok 3 - divides # SKIP no divisor
