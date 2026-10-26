@@ -106,11 +106,19 @@ func (rc *runCore) serviceEnv(consumer *plan.Node) []string {
 	return rc.services.envFor(consumer)
 }
 
+// executorKind is n's executor kind as plan.Validate reads it: no spec, or
+// an empty Kind, is local. Not ExecutorKey, which carries the image too.
+func executorKind(n *plan.Node) string {
+	if n.Executor == nil || n.Executor.Kind == "" {
+		return plan.ExecutorLocal
+	}
+	return n.Executor.Kind
+}
+
 // consumesFromContainer reports whether n runs in a container, and so
-// reaches a service through the gateway rather than on loopback. Read off
-// the spec's Kind: ExecutorKey carries the image too.
+// reaches a service through the gateway rather than on loopback.
 func consumesFromContainer(n *plan.Node) bool {
-	return n.Executor != nil && n.Executor.Kind == plan.ExecutorContainer
+	return executorKind(n) == plan.ExecutorContainer
 }
 
 // serviceEnvName is the variable prefix for a service step: SENRO_SERVICE_
@@ -201,9 +209,15 @@ func readyTimeout(n *plan.Node) time.Duration {
 // whole life would starve its own consumers under a small MaxParallel (with
 // MaxParallel 1, deadlock them). wake asks the scheduler for a pass, which
 // is how a ready service's dependents get dispatched.
+//
+// retried says this execution is a step.retry of a failed one. A clean stop
+// then settles recovered, not succeeded, by the rule runStep and
+// handleStepRetry apply to a step that failed before it passed: collapsing
+// the two is how a flaky dependency stays invisible in a run's rolled-up
+// status. A rerun_from execution is not a retry, as it is not for a step.
 func (rc *runCore) runService(
 	ctx context.Context, n *plan.Node, opts Options, logs *eventlog.LogSet,
-	stop <-chan struct{}, release, wake func(),
+	stop <-chan struct{}, release, wake func(), retried bool,
 ) api.State {
 	start := time.Now()
 	attempt := rc.oc.attemptOf(n.ID) + 1
@@ -216,7 +230,19 @@ func (rc *runCore) runService(
 	// After serviceAttempt has returned: its writer closes have run, so the
 	// log files are final (see archiveAttempt).
 	rc.archiveAttempt(logs, n.ID, attempt)
-	return rc.finishStep(n, start, attempt, res.state, res.exitCode, errText(res), false)
+	finalState := res.state
+	if finalState == api.StateSucceeded && retried {
+		finalState = api.StateRecovered
+	}
+	state := rc.finishStep(n, start, attempt, finalState, res.exitCode, errText(res), false)
+	// After finishStep, as runStep does: an analyzer's proposal refers to a
+	// failure that must already be in the ledger. A service that died before
+	// it was ready, or before its consumers finished, is a failure somebody
+	// will want explained exactly like a step's.
+	if finalState.Failed() {
+		rc.offerAnalysis(n, attempt, finalState, res, time.Since(start), opts.Pipeline)
+	}
+	return state
 }
 
 // serviceAttempt is runService's one attempt, owning its sandbox and writers
@@ -226,7 +252,7 @@ func (rc *runCore) serviceAttempt(
 	ctx context.Context, n *plan.Node, opts Options, logs *eventlog.LogSet, attempt int,
 	start time.Time, stop <-chan struct{}, release, wake func(),
 ) attemptResult {
-	s, err := rc.prepareAttempt(ctx, n, opts, logs, attempt)
+	s, err := rc.prepareAttempt(ctx, ctx, n, opts, logs, attempt)
 	if err != nil {
 		return serviceFailure(ctx, err)
 	}
@@ -241,7 +267,7 @@ func (rc *runCore) serviceAttempt(
 	if !okRun || !okAddr {
 		return attemptResult{state: api.StateFailed, err: fmt.Errorf(
 			"engine: step %q is a service on the %s executor, which cannot run one: "+
-				"services run on the local and container executors", n.ID, n.ExecutorKey())}
+				"services run on the local and container executors", n.ID, executorKind(n))}
 	}
 
 	svc, err := runner.StartService(ctx, executor.Cmd{
@@ -268,8 +294,33 @@ func (rc *runCore) serviceAttempt(
 	// stopNow ends the process and drains its output, WithoutCancel because
 	// a cancelled run is exactly when a service must still be given its
 	// grace.
+	//
+	// Given its grace, but not past teardown's: once the run is cancelled,
+	// teardown waits only CleanupGrace/2 for in-flight work before abandoning
+	// it, and a service still inside a long StopGrace at that moment would be
+	// left running after Run returned, an orphan holding its port. So the stop
+	// is cut to a kill stopBudget after the cancellation, whether the stop
+	// began before it (a scheduler stop with a long grace) or because of it.
+	// Half of teardown's wait, so the kill and the reap that follows land
+	// inside it rather than racing the abandonment.
+	stopBudget := opts.cleanupGrace() / 4
 	stopNow := func() error {
-		err := svc.Stop(context.WithoutCancel(ctx), grace)
+		sctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		defer cancel()
+		go func() {
+			select {
+			case <-ctx.Done():
+				t := time.NewTimer(stopBudget)
+				defer t.Stop()
+				select {
+				case <-t.C:
+					cancel()
+				case <-sctx.Done():
+				}
+			case <-sctx.Done():
+			}
+		}()
+		err := svc.Stop(sctx, grace)
 		if ferr := rc.flushAttempt(n, attempt, s); ferr != nil && err == nil {
 			err = ferr
 		}

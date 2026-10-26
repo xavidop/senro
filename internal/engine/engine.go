@@ -1429,7 +1429,7 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 					// A service's whole life, start to stop; runService owns
 					// the slot from here exactly as runStep does, and gives it
 					// back once the service is ready (see runService).
-					state = rc.runService(ctx, n, opts, logs, stop, release, signal)
+					state = rc.runService(ctx, n, opts, logs, stop, release, signal, false)
 				} else {
 					// From here runStep owns releasing the slot, exactly
 					// once, however it returns: its retry loop gives the

@@ -983,10 +983,10 @@ func (rc *runCore) handleStepRetry(h schedHandle, req sink.ControlRequest) bool 
 		}
 		if n.IsService() {
 			// runService owns the slot from here, as on a first dispatch, and
-			// settles through finishStep itself. Succeeded rather than
-			// recovered when it is stopped cleanly: a service's success is its
-			// clean stop, the same verdict whichever execution reached it.
-			state := rc.runService(h.ctx, n, h.opts, h.logs, stop, h.release, h.signal)
+			// settles through finishStep and offerAnalysis itself. retried, so
+			// a clean stop settles recovered, the rule below for a step: it
+			// failed once before it passed.
+			state := rc.runService(h.ctx, n, h.opts, h.logs, stop, h.release, h.signal, true)
 			h.mu.Lock()
 			h.states[stepID] = state
 			delete(h.running, stepID)

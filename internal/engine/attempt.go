@@ -316,10 +316,7 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 		defer cancel()
 	}
 
-	// attemptCtx, not ctx: the attempt's own deadline bounds its setup too
-	// (scratch realization, the sandbox, secret delivery), exactly as it
-	// bounds the command.
-	s, err := rc.prepareAttempt(attemptCtx, n, opts, logs, attempt)
+	s, err := rc.prepareAttempt(ctx, attemptCtx, n, opts, logs, attempt)
 	if err != nil {
 		return attemptResult{state: api.StateFailed, err: err}
 	}
@@ -435,8 +432,15 @@ type attemptSetup struct {
 // On error everything already acquired is released before returning, so the
 // caller has nothing to close. step.started has been emitted either way: a
 // step whose sandbox could not be opened still started and then failed.
+//
+// Two contexts, used exactly where runAttempt used them before the
+// extraction: ctx is the run's, for step.started and the sandbox's
+// uncancellable close; attemptCtx carries the attempt's own deadline, which
+// bounds the setup (scratch realization, the sandbox, secret delivery) as it
+// bounds the command. A service passes the run's context for both: its
+// TimeoutMS bounds readiness, not setup.
 func (rc *runCore) prepareAttempt(
-	ctx context.Context, n *plan.Node, opts Options, logs *eventlog.LogSet, attempt int,
+	ctx, attemptCtx context.Context, n *plan.Node, opts Options, logs *eventlog.LogSet, attempt int,
 ) (s attemptSetup, err error) {
 	// Releases run in reverse of acquisition; on success they become close,
 	// on failure they run before this returns.
@@ -490,7 +494,7 @@ func (rc *runCore) prepareAttempt(
 	// snapshotMounts, since a scratch cache is not a workspace and its
 	// digest must never enter a ws.snapshot event or a cache key.
 	if rc.ws != nil {
-		s.scratch, err = rc.ws.scratchMounts(ctx, n)
+		s.scratch, err = rc.ws.scratchMounts(attemptCtx, n)
 		if err != nil {
 			return s, err
 		}
@@ -531,7 +535,7 @@ func (rc *runCore) prepareAttempt(
 		// there is harmless. See serviceTable.envFor.
 		spec.ExtraHosts = []string{dockerHostGateway}
 	}
-	s.sb, err = s.ex.Sandbox(ctx, spec)
+	s.sb, err = s.ex.Sandbox(attemptCtx, spec)
 	if err != nil {
 		return s, err
 	}
@@ -567,7 +571,7 @@ func (rc *runCore) prepareAttempt(
 				return s, fmt.Errorf(
 					"engine: step %q needs secret %q, which was not resolved", n.ID, sec.Name)
 			}
-			path, err := sb.PutSecret(ctx, sec.Name, v)
+			path, err := sb.PutSecret(attemptCtx, sec.Name, v)
 			if err != nil {
 				return s, err
 			}

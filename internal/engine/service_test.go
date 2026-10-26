@@ -5,12 +5,16 @@ package engine_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -192,7 +196,10 @@ func TestAServiceThatExitsBeforeReadyFails(t *testing.T) {
 		db,
 		{ID: "use", Kind: "exec", Needs: []string{"db"}, Cmd: []string{"true"}},
 	}}
-	_, events, states := runPlan(t, dir, p)
+	seen := &failureRecorder{}
+	_, events, states := runPlanWith(t, dir, p, func(o *engine.Options) {
+		o.Analyze = &engine.AnalyzeOptions{Analyzer: seen, Name: "test", Grace: 2 * time.Second}
+	})
 
 	if states["db"] != api.StateFailed {
 		t.Errorf("db = %s, want failed", states["db"])
@@ -204,6 +211,30 @@ func TestAServiceThatExitsBeforeReadyFails(t *testing.T) {
 	if !strings.Contains(fin.Error, "status 3") || !strings.Contains(fin.Error, "before it was ready") {
 		t.Errorf("error = %q, want it to name exit status 3 before ready", fin.Error)
 	}
+	// A failed service is offered to the analyzer like any failed step.
+	if got := seen.steps(); len(got) != 1 || got[0] != "db" {
+		t.Errorf("the analyzer saw %v, want exactly [db]", got)
+	}
+}
+
+// failureRecorder is an analyzer that only records which steps it was asked
+// about, and proposes nothing.
+type failureRecorder struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (f *failureRecorder) Analyze(_ context.Context, fail api.Failure) (api.Proposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seen = append(f.seen, fail.Step)
+	return api.Proposal{}, errors.New("no proposal")
+}
+
+func (f *failureRecorder) steps() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.seen...)
 }
 
 func TestAServiceThatNeverListensTimesOut(t *testing.T) {
@@ -449,8 +480,10 @@ func TestARetriedServiceRunsAsAService(t *testing.T) {
 	if states["use"] != api.StateSucceeded {
 		t.Errorf("use = %s, want succeeded", states["use"])
 	}
-	if states["db"] != api.StateSucceeded {
-		t.Errorf("db = %s, want succeeded once its consumer settled", states["db"])
+	// Recovered, not succeeded: it failed once before it passed, the rule a
+	// manually retried step follows too.
+	if states["db"] != api.StateRecovered {
+		t.Errorf("db = %s, want recovered once its consumer settled", states["db"])
 	}
 	if indexOf(events, api.StepFinished, "use") > lastIndex(events, api.StepFinished, "db") {
 		t.Error("db's last step.finished precedes its consumer's: it must outlive the consumer")
@@ -466,4 +499,164 @@ func lastIndex(events []api.Event, typ api.Type, step string) int {
 		}
 	}
 	return -1
+}
+
+// listening reports whether anything accepts a connection on port.
+func listening(port int) bool {
+	c, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(port), 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
+}
+
+// A service that ignores SIGTERM and declares a grace far longer than
+// teardown's is still killed inside teardown's window once the run is
+// cancelled, so Run never returns with the process left running.
+func TestACancelledRunCutsALongStopGraceShort(t *testing.T) {
+	dir := t.TempDir()
+	port := freePort(t)
+	db := serveNode(t, "db", port, false)
+	db.Env = append(db.Env, "SENRO_TEST_SERVE_STUBBORN=1")
+	db.Service.StopGraceMS = 60000
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{
+		db,
+		{ID: "use", Kind: "exec", Needs: []string{"db"}, Cmd: []string{"sleep", "30"}},
+	}}
+	// CleanupGrace 2s: teardown waits 1s for in-flight work, and the stop is
+	// cut to a kill after 500ms.
+	rec, cancel, done := startRun(t, dir, p, func(o *engine.Options) { o.CleanupGrace = 2 * time.Second })
+	awaitEvent(t, rec, api.ServiceReady, "db", 5*time.Second)
+
+	start := time.Now()
+	cancel()
+	awaitRun(t, done, 5*time.Second)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Run took %v after cancel with a 60s grace: the stop must be clamped to teardown's", elapsed)
+	}
+	if listening(port) {
+		t.Error("the service still accepts connections after Run returned: an orphan")
+	}
+}
+
+// A run cancelled while a service is still being probed settles it
+// cancelled, never ready, and the process is gone. It listens on one
+// declared port while the probe watches the other, so it is never ready.
+func TestCancelDuringTheProbeSettlesCancelled(t *testing.T) {
+	dir := t.TempDir()
+	served, probed := freePort(t), freePort(t)
+	db := serveNode(t, "db", served, false)
+	db.Service.Ports = []int{served, probed}
+	db.Service.Probe.Port = probed
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{db}}
+	rec, cancel, done := startRun(t, dir, p, nil)
+	awaitEvent(t, rec, api.StepStarted, "db", 5*time.Second)
+	deadline := time.Now().Add(5 * time.Second)
+	for !listening(served) {
+		if time.Now().After(deadline) {
+			t.Fatal("the service never started listening")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	cancel()
+	awaitRun(t, done, 5*time.Second)
+	if st := foldStates(t, dir)["db"]; st != api.StateCancelled {
+		t.Errorf("db = %s, want cancelled", st)
+	}
+	if indexOf(readLedger(t, dir), api.ServiceReady, "db") >= 0 {
+		t.Error("service.ready for a service that never passed its probe")
+	}
+	if listening(served) {
+		t.Error("the service still accepts connections after Run returned")
+	}
+}
+
+// recordingExecutor is countingExecutor that keeps every SandboxSpec it was
+// given and every command its sandboxes ran.
+type recordingExecutor struct {
+	countingExecutor
+	mu    sync.Mutex
+	specs []executor.SandboxSpec
+	cmds  []executor.Cmd
+}
+
+func (r *recordingExecutor) Sandbox(_ context.Context, spec executor.SandboxSpec) (executor.Sandbox, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.specs = append(r.specs, spec)
+	return &recordingSandbox{countingSandbox: countingSandbox{owner: &r.countingExecutor}, owner: r}, nil
+}
+
+type recordingSandbox struct {
+	countingSandbox
+	owner *recordingExecutor
+}
+
+func (s *recordingSandbox) Run(_ context.Context, c executor.Cmd, _, _ io.Writer) (int, error) {
+	s.owner.mu.Lock()
+	defer s.owner.mu.Unlock()
+	s.owner.cmds = append(s.owner.cmds, c)
+	return 0, nil
+}
+
+// A consumer in a container reaches a local service through the gateway:
+// its sandbox resolves host.docker.internal, and its environment names that
+// host with the published port.
+func TestAContainerConsumerGetsTheGatewayHost(t *testing.T) {
+	port := freePort(t)
+	spec := &plan.ExecutorSpec{Kind: plan.ExecutorContainer, Image: "img:1"}
+	boxed := &recordingExecutor{countingExecutor: countingExecutor{class: "c"}}
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{
+		serveNode(t, "db", port, false),
+		{ID: "use", Kind: "exec", Needs: []string{"db"}, Cmd: []string{"true"}, Executor: spec},
+	}}
+	dir := t.TempDir()
+	status, err := engine.Run(context.Background(), p, engine.Options{
+		Dir: dir, RunID: "01GATEWAY", Sink: sink.Nop(), MaxParallel: 4,
+		Executor:  localexec.New(dir, nil),
+		Executors: map[string]executor.Executor{spec.Key(): boxed},
+	})
+	if err != nil || status != api.RunSucceeded {
+		t.Fatalf("Run = %s, %v; want succeeded", status, err)
+	}
+	if len(boxed.specs) != 1 || !slices.Equal(boxed.specs[0].ExtraHosts, []string{"host.docker.internal:host-gateway"}) {
+		t.Fatalf("container consumer specs = %+v, want ExtraHosts [host.docker.internal:host-gateway]", boxed.specs)
+	}
+	env := boxed.cmds[0].Env
+	for _, want := range []string{
+		"SENRO_SERVICE_DB_HOST=host.docker.internal",
+		fmt.Sprintf("SENRO_SERVICE_DB_PORT_%d=%d", port, port),
+	} {
+		if !slices.Contains(env, want) {
+			t.Errorf("container consumer env %v lacks %q", env, want)
+		}
+	}
+}
+
+// A service that dies after it was ready fails, and a consumer that had not
+// started yet is skipped rather than handed an address nothing answers on.
+// quick keeps the service needed while it dies; late waits behind gate.
+func TestAServiceThatDiesAfterReadySkipsAPendingConsumer(t *testing.T) {
+	dir := t.TempDir()
+	db := serveNode(t, "db", freePort(t), false)
+	db.Env = append(db.Env, "SENRO_TEST_SERVE_EXIT_AFTER_MS=500")
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{
+		db,
+		{ID: "quick", Kind: "exec", Needs: []string{"db"}, Cmd: []string{"sleep", "2"}},
+		{ID: "gate", Kind: "exec", Cmd: []string{"sleep", "1.5"}},
+		{ID: "late", Kind: "exec", Needs: []string{"gate", "db"}, Cmd: []string{"true"}},
+	}}
+	_, events, states := runPlan(t, dir, p)
+
+	if states["db"] != api.StateFailed {
+		t.Errorf("db = %s, want failed", states["db"])
+	}
+	if _, fin := lastStepFinished(t, events, "db"); !strings.Contains(fin.Error, "before its consumers finished") {
+		t.Errorf("error = %q, want it to say it exited before its consumers finished", fin.Error)
+	}
+	if states["late"] != api.StateSkippedUpstreamFailed {
+		t.Errorf("late = %s, want skipped_upstream_failed", states["late"])
+	}
 }

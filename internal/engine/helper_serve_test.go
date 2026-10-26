@@ -7,16 +7,22 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // The variables that turn this test binary into a server. helperServePort
 // is the port to listen on; helperServeHTTP, set to "1", answers HTTP 200 on
-// /healthz instead of only accepting connections.
+// /healthz instead of only accepting connections. helperServeStubborn, set
+// to "1", ignores SIGTERM; helperServeExitAfterMS exits 4 after that many
+// milliseconds.
 const (
-	helperServePort = "SENRO_TEST_SERVE_PORT"
-	helperServeHTTP = "SENRO_TEST_SERVE_HTTP"
+	helperServePort        = "SENRO_TEST_SERVE_PORT"
+	helperServeHTTP        = "SENRO_TEST_SERVE_HTTP"
+	helperServeStubborn    = "SENRO_TEST_SERVE_STUBBORN"
+	helperServeExitAfterMS = "SENRO_TEST_SERVE_EXIT_AFTER_MS"
 )
 
 // TestHelperServe is not a test: it is the service the engine's service
@@ -33,12 +39,25 @@ func TestHelperServe(t *testing.T) {
 	if port == "" {
 		return
 	}
-	// Before Listen, so a probe that connected knows SIGTERM is handled.
+	// Before Listen, so a probe that connected knows SIGTERM is handled. A
+	// stubborn server ignores it, so only the kill after a grace ends it.
 	term := make(chan os.Signal, 1)
-	signal.Notify(term, syscall.SIGTERM)
+	if os.Getenv(helperServeStubborn) == "1" {
+		signal.Ignore(syscall.SIGTERM)
+	} else {
+		signal.Notify(term, syscall.SIGTERM)
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:"+port)
 	if err != nil {
 		os.Exit(3)
+	}
+	// A server that dies on its own after a while, with status 4: a service
+	// failing after it was ready.
+	if ms, err := strconv.Atoi(os.Getenv(helperServeExitAfterMS)); err == nil {
+		go func() {
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+			os.Exit(4)
+		}()
 	}
 	if os.Getenv(helperServeHTTP) == "1" {
 		mux := http.NewServeMux()
