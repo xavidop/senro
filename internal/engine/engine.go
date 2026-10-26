@@ -218,6 +218,12 @@ type Options struct {
 	// became ready. The cancellation that ends it is still a clean end, so
 	// each service settles succeeded (see runService).
 	HoldServices bool
+
+	// BreakOnFailure holds the run open when a step fails, so it can be
+	// inspected, instead of letting the failure settle the run. It is what
+	// `senro run --break-on-failure` sets. Declared ahead of the engine
+	// logic that reads it; nothing consults it yet.
+	BreakOnFailure bool
 }
 
 // Run executes p to completion: it opens the run's ledger and log set under

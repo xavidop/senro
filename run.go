@@ -65,6 +65,9 @@ type runConfig struct {
 	regenerate   bool
 	only         map[string]bool
 	testSelect   map[string][]string
+
+	holdServices   bool
+	breakOnFailure bool
 }
 
 // Params are a run's parameters: the small, flat, string-valued facts a run
@@ -172,6 +175,22 @@ func WithOnlySteps(ids ...string) Option {
 	}
 }
 
+// WithHoldServices keeps every service up once it is ready, until the run is
+// cancelled, instead of stopping it when its last consumer settles. It is
+// what `senro up` runs under (via SENRO_UP, see upEnv): there the services
+// are the point, and one with no consumers would otherwise stop the moment
+// it became ready.
+func WithHoldServices() Option {
+	return func(c *runConfig) { c.holdServices = true }
+}
+
+// WithBreakOnFailure makes a failed step hold the run open for inspection
+// instead of letting it settle. `senro run --break-on-failure` sets it via
+// SENRO_BREAK_ON_FAILURE (see breakOnFailureEnv).
+func WithBreakOnFailure() Option {
+	return func(c *runConfig) { c.breakOnFailure = true }
+}
+
 // WithTestSelection narrows a step to the named tests: the step's declared
 // Tests.Select is appended to its command with "{tests}" replaced by the
 // names, so only those tests run.
@@ -263,6 +282,23 @@ func WithTraceContext(traceparent, tracestate string) Option {
 // package it just built and sets this on the pipeline it execs. A CI job can
 // set it too.
 const funcPkgEnv = "SENRO_FUNC_PKG"
+
+// upEnv and breakOnFailureEnv carry `senro up` and `senro run
+// --break-on-failure` into the pipeline process, and "1" turns each on. They
+// are environment rather than argv because senro.Run never reads the
+// pipeline's argv: the pipeline binary owns its flags, and a flag senro
+// invented would collide with one it already has. They sit beside funcPkgEnv
+// for the same reason it does: the CLI that built the binary knows what the
+// binary cannot.
+//
+// SENRO_UP=1 is WithHoldServices plus a selection of every service and what
+// it needs, and it wins over an explicit WithOnlySteps: the selection is
+// replaced, not intersected, because "up" means "the services", whatever
+// else the pipeline's source selected.
+const (
+	upEnv             = "SENRO_UP"
+	breakOnFailureEnv = "SENRO_BREAK_ON_FAILURE"
+)
 
 // envTraceContext reads an inbound trace context out of the process
 // environment, in both spellings (uppercase first): CI systems export
@@ -533,6 +569,23 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 		return fmt.Errorf("senro: %w", err)
 	}
 
+	// SENRO_UP before the test selection and before anything touches disk:
+	// a pipeline with no services is refused with no run directory behind.
+	if os.Getenv(upEnv) == "1" {
+		ids, err := serviceClosure(p)
+		if err != nil {
+			return err
+		}
+		cfg.holdServices = true
+		cfg.only = make(map[string]bool, len(ids))
+		for _, id := range ids {
+			cfg.only[id] = true
+		}
+	}
+	if os.Getenv(breakOnFailureEnv) == "1" {
+		cfg.breakOnFailure = true
+	}
+
 	// Refused here, with the other up-front checks, so a bad selection leaves
 	// no run directory or manifest behind.
 	if len(cfg.testSelect) > 0 {
@@ -694,6 +747,9 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 		Regenerate: cfg.regenerate,
 		Only:       cfg.only,
 
+		HoldServices:   cfg.holdServices,
+		BreakOnFailure: cfg.breakOnFailure,
+
 		// Not validated here: engine.Options.TraceParent takes the raw
 		// header, so exactly one place in senro decides what a valid
 		// inbound context is.
@@ -853,6 +909,43 @@ func registryAuthRefusal(stepID, image, field string, set *secrets.Set) error {
 			"struct passed to senro.WithSecrets does not provide (%s). container.RegistryAuth takes "+
 			"the registry account name and the NAME of a mamori-resolved field, never a password",
 		stepID, image, field, available)
+}
+
+// serviceClosure returns the id of every service in p plus everything those
+// services transitively need, sorted: the set `senro up` runs. A service
+// cannot start without its needs, so selecting the service alone would skip
+// them and leave it unstartable. Consumers are left out on purpose.
+func serviceClosure(p *plan.Plan) ([]string, error) {
+	byID := make(map[string]*plan.Node, len(p.Nodes))
+	var stack []string
+	for i := range p.Nodes {
+		n := &p.Nodes[i]
+		byID[n.ID] = n
+		if n.IsService() {
+			stack = append(stack, n.ID)
+		}
+	}
+	if len(stack) == 0 {
+		return nil, fmt.Errorf("senro: this pipeline declares no services")
+	}
+	seen := make(map[string]bool)
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if n := byID[id]; n != nil {
+			stack = append(stack, n.Needs...)
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // applyTestSelection returns a plan in which each selected step's command has

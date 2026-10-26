@@ -106,3 +106,27 @@ func TestWithTestSelectionUsesTheSpecsJoin(t *testing.T) {
 		t.Errorf("Cmd = %v", c)
 	}
 }
+
+func TestServiceClosureIncludesTransitiveNeeds(t *testing.T) {
+	p := &plan.Plan{Nodes: []plan.Node{
+		{ID: "base", Kind: "exec"},
+		{ID: "db", Kind: "exec", Needs: []string{"base"}, Service: &plan.ServiceSpec{}},
+		{ID: "api", Kind: "exec", Needs: []string{"db"}, Service: &plan.ServiceSpec{}},
+		{ID: "test", Kind: "exec", Needs: []string{"api"}},
+		{ID: "lint", Kind: "exec"},
+	}}
+	got, err := serviceClosure(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"api", "base", "db"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("closure = %v, want %v", got, want)
+	}
+}
+
+func TestServiceClosureRefusesAPipelineWithoutServices(t *testing.T) {
+	_, err := serviceClosure(selPlan(nil))
+	if err == nil || err.Error() != "senro: this pipeline declares no services" {
+		t.Errorf("err = %v", err)
+	}
+}

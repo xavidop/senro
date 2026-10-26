@@ -20,6 +20,14 @@ Usage:
       Build the pipeline package and run it, attaching and rendering.
       --trigger-event is forwarded to the pipeline binary, which decides for
       itself whether the event is its business. PATH may be "-" for stdin.
+      --break-on-failure asks the pipeline to hold the run open when a step
+      fails; it reaches the pipeline as SENRO_BREAK_ON_FAILURE=1, not argv.
+
+  senro up <pkg> [--ui=auto|tui|plain|none] [-- pipeline-args...]
+      Run only the pipeline's services (and the steps they need) and hold
+      them until Ctrl-C. Prints one line per endpoint as it becomes ready:
+      <step>  <address>  (port <n>). Exits 0 when the session ends with every
+      service settled cleanly, 2 for a pipeline that declares no services.
 
   senro attach [--pid <pid> | --run <id> | --addr <host:port>] [--follow]
       [--tls] [--ui=auto|tui|plain|none]
@@ -135,6 +143,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	switch args[0] {
+	case "up":
+		return cmdUp(args[1:], stdout, stderr, stdoutIsTTY())
 	case "run":
 		return cmdRun(args[1:], stdout, stderr, stdoutIsTTY())
 	case "attach":
