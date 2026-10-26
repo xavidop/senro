@@ -755,6 +755,37 @@ func TestApplyReplaysATestIdempotently(t *testing.T) {
 	}
 }
 
+// Apply accepts e.Seq == s.Seq so a client resuming one event early re-folds
+// the last event. Replaying the promoting passed event must not demote.
+func TestApplyReplayOfTheRecoveringEventStaysRecovered(t *testing.T) {
+	s := api.NewRunState()
+	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.TestFinished, Step: "test", Attempt: 1},
+		api.TestFinishedBody{Suite: "pkg/a", Name: "TestX", Outcome: api.TestFailed}))
+	pass := mustEvent(t, api.Event{Seq: 2, Type: api.TestFinished, Step: "test", Attempt: 2},
+		api.TestFinishedBody{Suite: "pkg/a", Name: "TestX", Outcome: api.TestPassed})
+	_ = s.Apply(pass)
+	_ = s.Apply(pass)
+	st := s.Steps["test"]
+	if len(st.Tests) != 1 {
+		t.Fatalf("tests = %d, want 1", len(st.Tests))
+	}
+	if x := st.Tests[0]; x.Outcome != api.TestRecovered || x.Attempt != 2 {
+		t.Errorf("TestX = %+v, want recovered on attempt 2", x)
+	}
+}
+
+func TestApplyRecoveredSurvivesAThirdAttemptPass(t *testing.T) {
+	s := api.NewRunState()
+	for i, o := range []api.TestOutcome{api.TestFailed, api.TestPassed, api.TestPassed} {
+		_ = s.Apply(mustEvent(t, api.Event{Seq: uint64(i + 1), Type: api.TestFinished, Step: "test", Attempt: i + 1},
+			api.TestFinishedBody{Suite: "pkg/a", Name: "TestX", Outcome: o}))
+	}
+	x := s.Steps["test"].Test("pkg/a", "TestX")
+	if x == nil || x.Outcome != api.TestRecovered || x.Attempt != 3 {
+		t.Errorf("TestX = %+v, want recovered on attempt 3", x)
+	}
+}
+
 func TestApplyIgnoresATestEventWithNoStepID(t *testing.T) {
 	s := api.NewRunState()
 	err := s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.TestFinished, Step: ""},

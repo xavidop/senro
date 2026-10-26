@@ -195,11 +195,14 @@ func (s *RunState) Apply(e Event) error {
 		existing := st.Test(b.Suite, b.Name)
 		outcome := b.Outcome
 		// Recovered is failed on an earlier attempt, then passed on a later
-		// one. The attempt comparison is what keeps a replayed event (same
-		// attempt) from promoting itself. A recovered test that fails again
-		// is simply replaced below: only the latest verdict is kept.
-		if existing != nil && existing.Outcome == TestFailed &&
-			e.Attempt > existing.Attempt && b.Outcome == TestPassed {
+		// one. The attempt comparison keeps a replayed failed event from
+		// promoting itself. A replay must neither promote nor demote: once
+		// recovered, a replayed or later passed event leaves the test
+		// recovered, or re-folding the last event would turn it back into
+		// passed. Only a failed verdict replaces a recovered entry, below.
+		if existing != nil && b.Outcome == TestPassed &&
+			(existing.Outcome == TestRecovered ||
+				(existing.Outcome == TestFailed && e.Attempt > existing.Attempt)) {
 			outcome = TestRecovered
 		}
 		r := &TestResult{
