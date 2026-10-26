@@ -56,6 +56,12 @@ func Plain(ctx context.Context, src source.Source, w io.Writer) (api.RunStatus, 
 		if err := lp.flush(ctx); err != nil {
 			return "", err
 		}
+		// A snapshot holds only the folded verdicts, so a test that failed
+		// and then recovered is already summarised on the step line below and
+		// is not named here; only tests still failing are.
+		if err := printFailedTests(w, s); err != nil {
+			return "", fmt.Errorf("render: %w", err)
+		}
 		if err := printStep(w, s); err != nil {
 			return "", fmt.Errorf("render: %w", err)
 		}
@@ -141,6 +147,19 @@ func (p *logPrinter) handle(ctx context.Context, st *api.RunState, e api.Event, 
 		if err := printStep(w, st.Steps[e.Step]); err != nil {
 			return fmt.Errorf("render: %w", err)
 		}
+	case api.TestFinished:
+		// A failing test is named the moment it is reported, so the CI log
+		// says which test broke without opening a report. No flush: the event
+		// has no step output of its own, as with BreakpointHit.
+		var b api.TestFinishedBody
+		if err := e.Decode(&b); err != nil {
+			return fmt.Errorf("render: %w", err)
+		}
+		if b.Outcome == api.TestFailed {
+			if err := printTest(w, e.Step, b); err != nil {
+				return fmt.Errorf("render: %w", err)
+			}
+		}
 	case api.CacheDegraded:
 		// "Why was this build slow, why did nothing hit" is asked afterwards
 		// with only this log to answer from. No flush: run-scoped, no step
@@ -210,9 +229,9 @@ func printStep(w io.Writer, s *api.StepState) error {
 	var err error
 	switch {
 	case s.State != "" && s.Error != "":
-		_, err = fmt.Fprintf(w, "%s %s: %s\n", s.ID, s.State, s.Error)
+		_, err = fmt.Fprintf(w, "%s %s: %s%s\n", s.ID, s.State, s.Error, testSummary(s))
 	case s.State != "":
-		_, err = fmt.Fprintf(w, "%s %s\n", s.ID, s.State)
+		_, err = fmt.Fprintf(w, "%s %s%s\n", s.ID, s.State, testSummary(s))
 	case s.Paused:
 		// Before the started case: a held step never started, so it would
 		// otherwise print nothing and a deliberate stop would read as a
@@ -222,6 +241,52 @@ func printStep(w io.Writer, s *api.StepState) error {
 		_, err = fmt.Fprintf(w, "%s started\n", s.ID)
 	}
 	return err
+}
+
+// testSummary is the step line's test suffix, empty for a step with no tests
+// so its line stays byte for byte what it was. Zero failed and zero recovered
+// clauses are dropped: a green step reads "(12 tests)", not a row of zeros.
+func testSummary(s *api.StepState) string {
+	if len(s.Tests) == 0 {
+		return ""
+	}
+	c := s.TestCounts()
+	out := fmt.Sprintf(" (%d tests", c.Total)
+	if c.Failed > 0 {
+		out += fmt.Sprintf(", %d failed", c.Failed)
+	}
+	if c.Recovered > 0 {
+		out += fmt.Sprintf(", %d recovered", c.Recovered)
+	}
+	return out + ")"
+}
+
+// printTest names one failed test, attributed to its step. Only failures get
+// a line: a passing or skipped test is a count on the step line, not log noise.
+func printTest(w io.Writer, step string, b api.TestFinishedBody) error {
+	name := b.Name
+	if b.Suite != "" {
+		name = b.Suite + "." + b.Name
+	}
+	_, err := fmt.Fprintf(w, "%s test %s failed\n", step, name)
+	return err
+}
+
+// printFailedTests names every test a step's folded state still has as
+// failed, for the snapshot path where no test.finished event is replayed.
+func printFailedTests(w io.Writer, s *api.StepState) error {
+	if s == nil {
+		return nil
+	}
+	for _, t := range s.Tests {
+		if t.Outcome != api.TestFailed {
+			continue
+		}
+		if err := printTest(w, s.ID, api.TestFinishedBody{Name: t.Name, Suite: t.Suite, Outcome: t.Outcome}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // printRun writes the run's final line: the status recorded on
