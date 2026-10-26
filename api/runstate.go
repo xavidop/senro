@@ -150,8 +150,9 @@ type TestResult struct {
 }
 
 // TestCounts is a step's tests tallied by outcome. The outcome fields are
-// mutually exclusive and sum to Total. Aggregation lives here so every client
-// reports identical numbers.
+// mutually exclusive but need not sum to Total: a test whose outcome this
+// build does not know (from a newer engine) is counted in Total only.
+// Aggregation lives here so every client reports identical numbers.
 type TestCounts struct{ Total, Passed, Failed, Skipped, Recovered int }
 
 // TestCounts tallies the step's tests by outcome.

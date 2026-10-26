@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/xavidop/senro/api"
 	"github.com/xavidop/senro/internal/executor"
@@ -44,7 +45,16 @@ func (rc *runCore) testEmitter(step string, attempt int) testparse.Emit {
 // redactor, but every payload is redacted again on its way into the ledger
 // (see redactPayload), and that pass is what keeps a credential a test put in
 // a failure message out of events.jsonl.
-func (rc *runCore) readJUnit(n *plan.Node, sb executor.Sandbox, attempt int) error {
+//
+// A report last modified before since (the attempt's start) is refused as
+// stale rather than parsed: a workspace mounted at WorkDir outlives the
+// attempt, so the file there may be the one an earlier attempt or run wrote,
+// and its tests are not this attempt's. since is cut to the whole second
+// first because some filesystems keep mtimes only to the second, and a
+// report written in the same second the attempt began must not look older
+// than it. The cost is that a report rewritten within that one second by an
+// earlier attempt still reads as fresh.
+func (rc *runCore) readJUnit(n *plan.Node, sb executor.Sandbox, attempt int, since time.Time) error {
 	wd, ok := sb.(executor.WorkDirReporter)
 	if !ok {
 		// plan.Validate already refuses a JUnit report off the local
@@ -64,6 +74,16 @@ func (rc *runCore) readJUnit(n *plan.Node, sb executor.Sandbox, attempt int) err
 		return fmt.Errorf("engine: step %q: test report %s: %w", n.ID, path, err)
 	}
 	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("engine: step %q: test report %s: %w", n.ID, path, err)
+	}
+	if mt := info.ModTime(); mt.Before(since.Truncate(time.Second)) {
+		return fmt.Errorf("engine: step %q: test report %s: not written by this attempt "+
+			"(last modified %s, before the attempt started at %s); a report left by an "+
+			"earlier run is not this one's result", n.ID, path,
+			mt.Format(time.RFC3339), since.Format(time.RFC3339))
+	}
 	if err := testparse.ParseJUnit(f, rc.testEmitter(n.ID, attempt)); err != nil {
 		return fmt.Errorf("engine: step %q: test report %s: %w", n.ID, path, err)
 	}

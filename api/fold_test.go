@@ -786,6 +786,38 @@ func TestApplyRecoveredSurvivesAThirdAttemptPass(t *testing.T) {
 	}
 }
 
+// A TAP stream or `go test -count=2` can name one test twice in one attempt.
+// The failure stands: a later passed or skipped line from the same attempt
+// must not replace it, nor lose the output that explains it.
+func TestApplySameAttemptFailedIsNotReplacedByPassed(t *testing.T) {
+	s := api.NewRunState()
+	for i, b := range []api.TestFinishedBody{
+		{Suite: "pkg/a", Name: "TestX", Outcome: api.TestFailed, Output: "boom"},
+		{Suite: "pkg/a", Name: "TestX", Outcome: api.TestPassed},
+		{Suite: "pkg/a", Name: "TestX", Outcome: api.TestSkipped},
+	} {
+		_ = s.Apply(mustEvent(t, api.Event{Seq: uint64(i + 1), Type: api.TestFinished, Step: "test", Attempt: 1}, b))
+	}
+	x := s.Steps["test"].Test("pkg/a", "TestX")
+	if x == nil || x.Outcome != api.TestFailed || x.Output != "boom" || x.Attempt != 1 {
+		t.Errorf("TestX = %+v, want failed with the original output", x)
+	}
+}
+
+func TestApplySameAttemptPassedIsReplacedByFailed(t *testing.T) {
+	s := api.NewRunState()
+	for i, b := range []api.TestFinishedBody{
+		{Suite: "pkg/a", Name: "TestX", Outcome: api.TestPassed},
+		{Suite: "pkg/a", Name: "TestX", Outcome: api.TestFailed, Output: "boom"},
+	} {
+		_ = s.Apply(mustEvent(t, api.Event{Seq: uint64(i + 1), Type: api.TestFinished, Step: "test", Attempt: 1}, b))
+	}
+	x := s.Steps["test"].Test("pkg/a", "TestX")
+	if x == nil || x.Outcome != api.TestFailed || x.Output != "boom" {
+		t.Errorf("TestX = %+v, want failed", x)
+	}
+}
+
 func TestApplyIgnoresATestEventWithNoStepID(t *testing.T) {
 	s := api.NewRunState()
 	err := s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.TestFinished, Step: ""},

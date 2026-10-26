@@ -122,11 +122,22 @@ assertion that failed is at the end and a passing test's output is noise.
 ### When the report is read
 
 `go test -json` and TAP are parsed off stdout while the step runs. A JUnit file is read once the
-command returns, and only if the step exited 0:
+command returns, with different stakes depending on how it exited:
 
-- **Exited 0, report missing or malformed**: the step fails, and the error names the path. A step
-  that promised a report and produced none has not shown its tests passed.
-- **Exited non-zero**: the report is not read. The failure is already the story.
+- **Exited 0, report missing, malformed or stale**: the step fails, and the error names the path.
+  A step that promised a report and produced none has not shown its tests passed.
+- **Exited non-zero**: the report is read best-effort, because a red test run is exactly when you
+  need to know which test. Every test that parses is recorded. A missing or malformed file is
+  ignored, and the step keeps the state, exit code and error its exit gave it: it may have died
+  before writing a report, and "report missing" would bury the real failure.
+- **Timed out, cancelled or panicked**: the report is not read. The command never ran to an exit,
+  so a report would be partial at best.
+
+A report last modified before the attempt started is **stale** and never read: a workspace mounted
+at the step's `WorkDir` outlives the attempt and can still hold the file an earlier run wrote. On
+exit 0 that counts as a missing report; on a non-zero exit it is skipped.
+
+A step served from the [action cache](/docs/data/caching/) does not run, so it reports no tests.
 
 ## `recovered` tests
 

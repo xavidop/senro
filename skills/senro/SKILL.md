@@ -186,10 +186,15 @@ spec with no path. Each test is one step-scoped `test.finished` event, before
 its attempt's `step.finished`: `name`, `suite`, `outcome`
 (`passed`/`failed`/`skipped`), `duration_ns`, `file`/`line` when the report
 has them, and for failed tests only the redacted last 4096 bytes of `output`.
-A JUnit step that exits 0 with a missing or malformed report fails, naming the
-path; on a non-zero exit the report is ignored. A test that failed and then
-passed on a later attempt folds to `recovered` in `StepState.Tests`, never on
-the wire, and stays recovered.
+A JUnit step that exits 0 with a missing, malformed or stale (modified before
+the attempt started) report fails, naming the path; on a non-zero exit the
+report is read best-effort (what parses is recorded, a missing or malformed
+file is ignored, the step's state, exit code and error are untouched); a
+timed-out, cancelled or panicked step's report is not read. A step served from
+the action cache reports no tests. A test that failed and then passed on a
+later attempt folds to `recovered` in `StepState.Tests`, never on the wire, and
+stays recovered; within one attempt a failed verdict is never replaced by a
+later passed one.
 
 Clients: the TUI row reads ` [N tests · F failed · R recovered]` and `t`
 toggles a tests pane (failed first, with output); the plain renderer prints

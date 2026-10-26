@@ -497,6 +497,12 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 
 	// A step's own executor, and no failure: a step is not cleaning up
 	// after anything, which is what makes ctx.Failure report ok=false.
+	//
+	// attemptStart is taken immediately before the command runs so a JUnit
+	// report older than it is recognisably not this attempt's: a workspace
+	// mounted at WorkDir outlives attempts and runs, and can still hold the
+	// report a previous one wrote.
+	attemptStart := time.Now()
 	exit, runErr := rc.invoke(attemptCtx, n, invocation{key: n.ExecutorKey(), ex: ex}, sb,
 		executor.Cmd{Args: n.Cmd, Env: cmdEnv, Dir: cmdDirFor(n.WorkDir, mounts)},
 		mounts, secretPaths, attempt, stdoutRW, stderrRW, opts)
@@ -551,15 +557,30 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 
 	res := classifyAttempt(ctx, attemptCtx, exit, runErr, tail, snaps)
 
-	// A JUnit report is read only once the step has SUCCEEDED. A step that
-	// exited 0 but left no readable report has not shown its tests passed, so
-	// that is a failure naming the path. A step that already failed may well
-	// have died before writing one, and a "report missing" error would bury
-	// the real story under a consequence of it. Replacing res also skips the
-	// scratch read-back below, which keys on the same succeeded state.
-	if n.Tests != nil && n.Tests.Format == testreport.FormatJUnit && res.state == api.StateSucceeded {
-		if err := rc.readJUnit(n, sb, attempt); err != nil {
-			res = attemptResult{state: api.StateFailed, err: err, logTail: tail.String(), snapshots: snaps}
+	// A JUnit report is read on two outcomes, with different stakes.
+	//
+	// A step that SUCCEEDED but left no readable report has not shown its
+	// tests passed, so a missing, malformed or stale report fails it with an
+	// error naming the path. Replacing res also skips the scratch read-back
+	// below, which keys on the same succeeded state.
+	//
+	// A step that FAILED with a plain non-zero exit is the case the report
+	// matters most for: a red test run is exactly when someone needs to know
+	// which test. So it is read best-effort: whatever parses is emitted, and
+	// a missing or malformed file is ignored, leaving the step's state, exit
+	// code and (empty) error as the exit made them, because the step may have
+	// died before writing a report and "report missing" would bury the real
+	// story under a consequence of it. A timed-out, cancelled or panicked
+	// step, or one that failed with an error of its own, is not read: its
+	// command did not run to an exit, so any report is partial at best.
+	if n.Tests != nil && n.Tests.Format == testreport.FormatJUnit {
+		switch {
+		case res.state == api.StateSucceeded:
+			if err := rc.readJUnit(n, sb, attempt, attemptStart); err != nil {
+				res = attemptResult{state: api.StateFailed, err: err, logTail: tail.String(), snapshots: snaps}
+			}
+		case res.state == api.StateFailed && res.err == nil && res.exitCode != 0:
+			_ = rc.readJUnit(n, sb, attempt, attemptStart)
 		}
 	}
 

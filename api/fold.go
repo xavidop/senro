@@ -193,6 +193,16 @@ func (s *RunState) Apply(e Event) error {
 		}
 		st := s.step(e.Step)
 		existing := st.Test(b.Suite, b.Name)
+		// Within one attempt the worst verdict wins. A TAP stream or a
+		// `go test -count=N` run can name one test twice in one attempt, and
+		// a later passed line there does not undo the earlier failure: that
+		// attempt still failed the test. Keeping the failed entry, and the
+		// output that explains it, is the conservative error. A failed
+		// verdict from the same attempt still replaces passed or skipped.
+		if existing != nil && existing.Attempt == e.Attempt &&
+			existing.Outcome == TestFailed && b.Outcome != TestFailed {
+			break
+		}
 		outcome := b.Outcome
 		// Recovered is failed on an earlier attempt, then passed on a later
 		// one. The attempt comparison keeps a replayed failed event from

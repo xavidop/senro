@@ -7,9 +7,11 @@ package engine_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xavidop/mamori/secret"
 	"github.com/xavidop/senro/api"
@@ -267,6 +269,8 @@ func TestAMissingJUnitReportFailsAPassingStep(t *testing.T) {
 	}
 }
 
+// A step that failed may have died before writing its report, so a missing
+// report on a non-zero exit leaves the step exactly as its exit made it.
 func TestAMissingJUnitReportOnAFailedStepIsNotTheStory(t *testing.T) {
 	dir := t.TempDir()
 	p := &plan.Plan{Version: 1, Nodes: []plan.Node{{
@@ -279,6 +283,125 @@ func TestAMissingJUnitReportOnAFailedStepIsNotTheStory(t *testing.T) {
 	if b.State != api.StateFailed || b.ExitCode != 3 || b.Error != "" {
 		t.Errorf("state %s exit %d error %q, want failed, 3 and no error", b.State, b.ExitCode, b.Error)
 	}
+}
+
+// TestAFailingJUnitStepStillReportsItsTests is the case the report exists
+// for: the test run went red, so the step exits non-zero, and the report
+// naming the failed test is still read. Reading it must not change how the
+// step settles.
+func TestAFailingJUnitStepStillReportsItsTests(t *testing.T) {
+	dir := t.TempDir()
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{{
+		ID: "t", Kind: "exec",
+		Cmd: []string{"sh", "-c",
+			`printf '%s' '<testsuite name="s"><testcase classname="pkg" name="TestBad">` +
+				`<failure>bad</failure></testcase></testsuite>' > report.xml; exit 1`},
+		Tests: &plan.TestsSpec{Format: "junit", Path: "report.xml"},
+	}}}
+	_, events, _ := runPlan(t, dir, p)
+
+	evs, bodies := testsFinished(t, events)
+	if len(bodies) != 1 || bodies[0].Name != "TestBad" || bodies[0].Outcome != api.TestFailed {
+		t.Fatalf("test.finished = %+v, want one failed TestBad", bodies)
+	}
+	finished, b := lastStepFinished(t, events, "t")
+	if b.State != api.StateFailed || b.ExitCode != 1 || b.Error != "" {
+		t.Errorf("state %s exit %d error %q, want failed, 1 and no error", b.State, b.ExitCode, b.Error)
+	}
+	assertTestsPrecedeFinish(t, evs, finished)
+}
+
+// TestAStaleJUnitReportFailsAPassingStep leaves a report from "an earlier
+// run" where the step will look, its mtime well before the attempt starts.
+// The step itself writes nothing and exits 0, so the stale file is all there
+// is, and treating it as this attempt's result would report tests that never
+// ran. An absolute Path is how the test reaches a directory it controls.
+func TestAStaleJUnitReportFailsAPassingStep(t *testing.T) {
+	dir := t.TempDir()
+	report := filepath.Join(t.TempDir(), "report.xml")
+	data, err := os.ReadFile(junitFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(report, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(report, old, old); err != nil {
+		t.Fatal(err)
+	}
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{{
+		ID: "t", Kind: "exec", Cmd: []string{"true"},
+		Tests: &plan.TestsSpec{Format: "junit", Path: report},
+	}}}
+	_, events, _ := runPlan(t, dir, p)
+
+	if evs, bodies := testsFinished(t, events); len(evs) != 0 {
+		t.Errorf("a stale report emitted tests: %+v", bodies)
+	}
+	_, b := lastStepFinished(t, events, "t")
+	if b.State != api.StateFailed {
+		t.Errorf("state = %s, want failed", b.State)
+	}
+	if !strings.Contains(b.Error, report) {
+		t.Errorf("error = %q, want it to name %s", b.Error, report)
+	}
+}
+
+// TestARetriedGoTestStepScopesTestsToEachAttempt fails its one test on the
+// first attempt and passes it on the second (a marker file outside the
+// attempt directory carries the state across). Each attempt's tests carry
+// that attempt's number, which is what the fold's recovered rule keys on, and
+// all of them precede the single step.finished the retried step settles with.
+func TestARetriedGoTestStepScopesTestsToEachAttempt(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "ran")
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{{
+		ID: "t", Kind: "exec",
+		Cmd: []string{"sh", "-c", `if [ -f "$1" ]; then ` +
+			`printf '%s\n' '{"Action":"run","Test":"TestF"}' '{"Action":"pass","Test":"TestF"}'; exit 0; ` +
+			`else touch "$1"; ` +
+			`printf '%s\n' '{"Action":"run","Test":"TestF"}' '{"Action":"fail","Test":"TestF"}'; exit 1; fi`,
+			"sh", marker},
+		Tests: &plan.TestsSpec{Format: "gotest"},
+		Retry: &plan.RetrySpec{MaxAttempts: 2, Predicate: "exit_code:1", BackoffBaseMS: 1},
+	}}}
+	_, events, _ := runPlan(t, dir, p)
+
+	var finishes, retriedSeq uint64
+	for _, e := range events {
+		switch {
+		case e.Type == api.StepFinished && e.Step == "t":
+			finishes++
+		case e.Type == api.StepRetried && e.Step == "t":
+			retriedSeq = e.Seq
+		}
+	}
+	if finishes != 1 {
+		t.Fatalf("step.finished events = %d, want 1", finishes)
+	}
+	evs, bodies := testsFinished(t, events)
+	if len(evs) != 2 {
+		t.Fatalf("got %d test.finished events, want 2: %+v", len(evs), bodies)
+	}
+	for i, e := range evs {
+		want, outcome := 1, api.TestFailed
+		if e.Seq > retriedSeq {
+			want, outcome = 2, api.TestPassed
+		}
+		if e.Attempt != want || bodies[i].Outcome != outcome {
+			t.Errorf("test.finished seq %d: attempt %d outcome %s, want attempt %d %s",
+				e.Seq, e.Attempt, bodies[i].Outcome, want, outcome)
+		}
+	}
+	if evs[1].Attempt != 2 {
+		t.Errorf("the second test.finished is attempt %d, want 2", evs[1].Attempt)
+	}
+	finished, b := lastStepFinished(t, events, "t")
+	if b.State != api.StateRecovered || finished.Attempt != 2 {
+		t.Errorf("step settled %s on attempt %d, want recovered on 2", b.State, finished.Attempt)
+	}
+	assertTestsPrecedeFinish(t, evs, finished)
 }
 
 // TestTestOutputIsRedacted prints a resolved secret's value inside a

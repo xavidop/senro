@@ -111,7 +111,8 @@ type TestResult struct {
 ```
 
 Keyed by `Suite + "\x00" + Name`. A `test.finished` for a known key replaces the entry, except
-that a `passed` arriving from a later attempt than a `failed` entry becomes `recovered`.
+that a `passed` arriving from a later attempt than a `failed` entry becomes `recovered`, and
+within one attempt a `failed` entry is never replaced by `passed` or `skipped`.
 `step.retried` does **not** clear `Tests` (that is what makes `recovered` detectable).
 `(*StepState).TestCounts() TestCounts{Total, Passed, Failed, Skipped, Recovered int}`.
 
@@ -122,8 +123,10 @@ beside `logMarker` and the tail buffer; each completed test calls `rc.emit`. `Cl
 `Flush()` emits whatever a trailing partial line settles. For `junit`, after the command returns
 the engine opens `filepath.Join(cmdDirFor(n.WorkDir, mounts), n.Tests.Path)` and parses it; a
 missing or malformed file on a step that exited 0 fails the step with an error naming the path
-(a step that promised a report and produced none is not a pass); on a non-zero exit it is ignored
-(the failure is already the story). Every `test.finished` precedes the attempt's `step.finished`.
+(a step that promised a report and produced none is not a pass); on a plain non-zero exit it is
+read best-effort, emitting what parses and ignoring a missing or malformed file without touching
+the step's state, exit code or error, and in both cases a report modified before the attempt
+started is stale and skipped (on exit 0, treated as missing). Every `test.finished` precedes the attempt's `step.finished`.
 
 ### Rerun
 
