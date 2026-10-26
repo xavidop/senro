@@ -42,7 +42,8 @@ const helpText = `senro attach: keys
                  settle as skipped_manual and never run
   b              set a breakpoint on the focused step: the run stops before
                  it and waits, making whatever other progress it can
-  B              clear that breakpoint, releasing the step
+  B              clear that breakpoint, releasing the step; also releases a
+                 step held after failure (senro run --break-on-failure)
   w              snapshot the focused step's workspaces now, for inspection
                  with senro ws pull. Answerable for a step that has not run,
                  so pair it with b; the capture is diagnostic and enters no
@@ -140,6 +141,11 @@ func (m *Model) renderSteps(st *api.RunState, rows []string) string {
 // reads the same way whether a human is looking at a CI log or the TUI.
 func stepStatusLabel(s *api.StepState) string {
 	switch {
+	case s.Held == api.HoldReasonFailure:
+		// First: a step held after failure has no State yet (the hold comes
+		// before step.finished) and would otherwise read as "paused", which
+		// offers a resume where the useful next move is a shell.
+		return failedStyle.Render("failed") + ", held (s shell · B release)"
 	case s.State != "" && s.Error != "":
 		return string(s.State) + ": " + s.Error
 	case s.State.Failed():

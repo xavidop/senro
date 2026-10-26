@@ -50,6 +50,12 @@ const (
 	reasonBreakpointExists = "breakpoint_exists"
 	reasonNoBreakpoint     = "no_breakpoint"
 
+	// reasonStepHeld refuses a breakpoint.set on a step held after a failed
+	// attempt (see holds): it is already stopped, and an armed breakpoint
+	// on top of the hold would need a second clear the operator has no way
+	// to tell apart from the first.
+	reasonStepHeld = "step_held"
+
 	// reasonAlreadyPaused and reasonNotPaused refuse a run.pause/run.resume
 	// that disagrees with what the run is already doing; refusals rather
 	// than silent no-ops for the same reason the breakpoint pair are.
@@ -543,7 +549,14 @@ func (rc *runCore) handleRerunFrom(h schedHandle, req sink.ControlRequest) {
 // A breakpoint may be armed on a step in any state, settled or running
 // included: it fires when, and only when, the scheduler next considers
 // dispatching the node. Refusing those cases would make "arm the breakpoint
-// first, then ask for the work" impossible.
+// first, then ask for the work" impossible. The one exception is a step
+// held after a failed attempt (reasonStepHeld).
+//
+// A clear also releases a failure hold (see holds), so --break-on-failure
+// needs no op or key of its own. A step both armed and held (armed while
+// it ran, then failed) takes one clear for each, the armed breakpoint
+// first. release does not block: it closes a channel the held step is
+// waiting on, and the step goroutine does the rest.
 func (rc *runCore) handleBreakpoint(h schedHandle, req sink.ControlRequest) {
 	n, ok := rc.resolveStep(h, req)
 	if !ok {
@@ -554,13 +567,17 @@ func (rc *runCore) handleBreakpoint(h schedHandle, req sink.ControlRequest) {
 	case req.Op == api.OpBreakpointSet && armed:
 		refuse(req, reasonBreakpointExists)
 		return
-	case req.Op == api.OpBreakpointClear && !armed:
-		refuse(req, reasonNoBreakpoint)
+	case req.Op == api.OpBreakpointSet && rc.holds.held(n.ID):
+		refuse(req, reasonStepHeld)
 		return
 	case req.Op == api.OpBreakpointSet:
 		h.breakpoints[n.ID] = &breakpoint{clientID: req.ClientID}
-	default:
+	case armed:
 		delete(h.breakpoints, n.ID)
+	case !rc.holds.release(n.ID):
+		// Neither armed nor held after a failure: nothing to clear.
+		refuse(req, reasonNoBreakpoint)
+		return
 	}
 	rc.emitControlApplied(req, map[string]string{"step": n.ID})
 	req.Reply <- sink.ControlResponse{ID: req.ID, OK: true}

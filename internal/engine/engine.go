@@ -219,10 +219,11 @@ type Options struct {
 	// each service settles succeeded (see runService).
 	HoldServices bool
 
-	// BreakOnFailure holds the run open when a step fails, so it can be
-	// inspected, instead of letting the failure settle the run. It is what
-	// `senro run --break-on-failure` sets. Declared ahead of the engine
-	// logic that reads it; nothing consults it yet.
+	// BreakOnFailure holds each failed attempt open, sandbox and workspace
+	// included, until a client clears it with breakpoint.clear or the run is
+	// cancelled, so it can be inspected with a shell before anything tears
+	// it down. It is what `senro run --break-on-failure` sets. It never
+	// changes a step's outcome; see runAttempt and holds.
 	BreakOnFailure bool
 }
 
@@ -723,6 +724,10 @@ type runCore struct {
 	// services is where every ready service answers, for its consumers'
 	// environment. Its zero value is ready to use. See serviceTable.
 	services serviceTable
+
+	// holds is every step kept open after a failed attempt under
+	// Options.BreakOnFailure. Its zero value is ready to use. See holds.
+	holds holds
 
 	// genDepth and genParent record where a generated node came from: how
 	// deep its generator chain runs, and which generator produced it. Ids are

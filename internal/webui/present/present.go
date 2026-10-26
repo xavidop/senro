@@ -38,14 +38,18 @@ type Badge struct {
 }
 
 // StepBadge describes one step's current condition. The order of the
-// checks is the whole content: Paused first, because a step held at a
-// breakpoint has no state, start or error and would otherwise look like
-// one still waiting on its dependencies; a terminal state next because it
-// is a fact; running is derived; "pending" is what is left.
+// checks is the whole content: a failure hold first, because it is also
+// Paused but is a failure to stand in rather than a stop to resume past;
+// Paused next, because a step held at a breakpoint has no state, start or
+// error and would otherwise look like one still waiting on its
+// dependencies; a terminal state next because it is a fact; running is
+// derived; "pending" is what is left.
 func StepBadge(s *api.StepState) Badge {
 	switch {
 	case s == nil:
 		return Badge{Label: "unknown", Tone: ToneNeutral}
+	case s.Held == api.HoldReasonFailure:
+		return Badge{Label: "held", Tone: ToneFailed}
 	case s.Paused:
 		return Badge{Label: "paused", Tone: ToneRunning}
 	case s.State != "":

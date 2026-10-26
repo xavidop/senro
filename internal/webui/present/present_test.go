@@ -489,3 +489,18 @@ func TestTestToneFollowsTheStepPalette(t *testing.T) {
 		}
 	}
 }
+
+// A step held after failure is a failure an operator can still stand in:
+// failed in tone, so it reads as broken, and labelled held, so it does not
+// read as settled.
+func TestAStepHeldAfterFailureIsHeldAndFailed(t *testing.T) {
+	st := fold(t,
+		api.Event{Type: api.StepCreated, Step: "test", Payload: payload(t, `{"kind":"exec"}`)},
+		api.Event{Type: api.StepStarted, Step: "test", Attempt: 1, TS: now},
+		api.Event{Type: api.BreakpointHit, Step: "test", Attempt: 1, Payload: payload(t, `{"reason":"failure"}`)},
+	)
+	got := present.StepBadge(st.Steps["test"])
+	if got != (present.Badge{Label: "held", Tone: present.ToneFailed}) {
+		t.Fatalf("badge = %+v, want held in the failed tone", got)
+	}
+}

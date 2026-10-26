@@ -1918,6 +1918,24 @@ func TestModelRendersAHeldStepAsPaused(t *testing.T) {
 	}
 }
 
+// TestModelRendersAStepHeldAfterFailure: a --break-on-failure hold is not a
+// breakpoint to resume past but a failure to stand in, and the row names
+// the two keys that act on it.
+func TestModelRendersAStepHeldAfterFailure(t *testing.T) {
+	src := &fakeSource{state: seedState("r1")}
+	m := tui.New(src)
+	m = update(t, m, tui.StateMsg{State: seedState("r1")})
+	m = update(t, m, tui.EventMsg{Event: stepCreated("r1", "build")})
+	m = update(t, m, tui.EventMsg{Event: api.Event{
+		V: 1, Seq: 20, Type: api.BreakpointHit, Run: "r1", Step: "build", Attempt: 1,
+		Payload: []byte(`{"reason":"failure"}`),
+	}})
+
+	if out := plain(m.View()); !strings.Contains(out, "failed, held (s shell \u00b7 B release)") {
+		t.Errorf("View() does not show build held after failure:\n%s", out)
+	}
+}
+
 // ---- 'R' rerun-from ----
 
 func TestModelShiftRSendsRerunFromForTheFocusedStep(t *testing.T) {

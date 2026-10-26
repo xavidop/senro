@@ -143,7 +143,9 @@ func (p *logPrinter) handle(ctx context.Context, st *api.RunState, e api.Event, 
 		p.want(e.Step, e.Attempt, b.Stream, b.Offset+b.Len)
 	case api.BreakpointHit:
 		// A run stopped on purpose must not read like one that went quiet.
-		// No flush: a held step has produced no output to print above.
+		// No flush: a step held at a breakpoint has produced no output, and
+		// one held after failure prints its output when it settles, as any
+		// step does.
 		if err := printStep(w, st.Steps[e.Step]); err != nil {
 			return fmt.Errorf("render: %w", err)
 		}
@@ -228,6 +230,16 @@ func printStep(w io.Writer, s *api.StepState) error {
 	}
 	var err error
 	switch {
+	case s.Held == api.HoldReasonFailure:
+		// First, for the reason Paused comes before Started below: the hold
+		// comes before step.finished, so the step has no State yet, and
+		// "paused at breakpoint" would send a reader looking for a resume
+		// where the failure is what there is to look at.
+		if s.ExitCode != 0 {
+			_, err = fmt.Fprintf(w, "%s held after failure (exit %d)\n", s.ID, s.ExitCode)
+		} else {
+			_, err = fmt.Fprintf(w, "%s held after failure\n", s.ID)
+		}
 	case s.State != "" && s.Error != "":
 		_, err = fmt.Fprintf(w, "%s %s: %s%s\n", s.ID, s.State, s.Error, testSummary(s))
 	case s.State != "":

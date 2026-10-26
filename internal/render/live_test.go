@@ -363,3 +363,54 @@ func TestPlainPrintsABreakpointThatIsHitLive(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// TestPlainPrintsAStepHeldAfterFailureLive: a --break-on-failure hold is a
+// failed step kept open, not a breakpoint a client armed, and the line says
+// so, so a CI log reader knows to look for a shell rather than a resume.
+func TestPlainPrintsAStepHeldAfterFailureLive(t *testing.T) {
+	dir := t.TempDir()
+	l, err := eventlog.Open(dir)
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	mustAppend := func(e api.Event) {
+		t.Helper()
+		if _, err := l.Append(e); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	mustAppend(api.Event{Type: api.RunStarted, Run: "run1", Payload: mustBody(api.RunStartedBody{
+		Pipeline: "ci", EngineVersion: "test", StartedAt: time.Now().UTC(),
+	})})
+	mustAppend(api.Event{Type: api.StepCreated, Run: "run1", Step: "test", Payload: mustBody(api.StepCreatedBody{Kind: "exec"})})
+	mustAppend(api.Event{Type: api.StepStarted, Run: "run1", Step: "test", Attempt: 1})
+
+	fs, err := source.OpenFile(dir, true)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer func() { _ = fs.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var buf syncBuffer
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = render.Plain(ctx, fs, &buf)
+	}()
+	waitForSubstring(t, &buf, "test started\n", 2*time.Second)
+
+	mustAppend(api.Event{Type: api.BreakpointHit, Run: "run1", Step: "test", Attempt: 1, Payload: mustBody(api.BreakpointHitBody{
+		Reason: api.HoldReasonFailure,
+	})})
+	// No exit clause: the hold comes before step.finished, so the folded
+	// exit code is still the zero a new attempt starts with.
+	waitForSubstring(t, &buf, "test held after failure\n", 2*time.Second)
+
+	cancel()
+	<-done
+}

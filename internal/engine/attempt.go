@@ -385,6 +385,29 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 		}
 	}
 
+	// --break-on-failure holds the attempt HERE, with the sandbox still open
+	// and the workspace mount locks still held by s.close's deferred
+	// release: a shell on this step mounts the workspaces as "whatever is in
+	// them now", so the hold has to come before anything a step's teardown
+	// or a sibling's cache restore could do to them. The cost is exactly
+	// that: a sibling mounting the same workspace waits on the mount lock
+	// for as long as an operator keeps this step held.
+	//
+	// After the snapshot and the JUnit read, so the ledger already records
+	// what the failure left, and before the scratch read-back, which only a
+	// succeeded attempt does anyway. Not on a cancelled run: nobody is left
+	// to release it. The hold changes nothing about res; the retry loop
+	// carries on as if it had not happened, and holds again if the next
+	// attempt fails too.
+	if opts.BreakOnFailure && (res.state == api.StateFailed || res.state == api.StateTimedOut) && ctx.Err() == nil {
+		rc.holds.hold(ctx, n.ID, func() {
+			rc.emit(api.Event{
+				Type: api.BreakpointHit, Step: n.ID, Attempt: attempt,
+				Payload: mustMarshal(api.BreakpointHitBody{Reason: api.HoldReasonFailure}),
+			})
+		})
+	}
+
 	// A scratch cache on a target that does not share the coordinator's
 	// filesystem comes back HERE or not at all: the sandbox is still open,
 	// and by the time this function returns it is closed and the pod or the
