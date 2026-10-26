@@ -487,7 +487,7 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 	if n.TestsStreaming() {
 		tests, err = testparse.NewStream(n.Tests.Format, rc.testEmitter(n.ID, attempt))
 		if err != nil {
-			return attemptResult{state: api.StateFailed, err: err}
+			return attemptResult{state: api.StateFailed, err: fmt.Errorf("engine: step %q: %w", n.ID, err)}
 		}
 		stdoutSinks = append(stdoutSinks, tests)
 	}
