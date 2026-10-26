@@ -407,8 +407,6 @@ func TestPlainPrintsAStepHeldAfterFailureLive(t *testing.T) {
 	mustAppend(api.Event{Type: api.BreakpointHit, Run: "run1", Step: "test", Attempt: 1, Payload: mustBody(api.BreakpointHitBody{
 		Reason: api.HoldReasonFailure,
 	})})
-	// No exit clause: the hold comes before step.finished, so the folded
-	// exit code is still the zero a new attempt starts with.
 	waitForSubstring(t, &buf, "test held after failure\n", 2*time.Second)
 
 	cancel()

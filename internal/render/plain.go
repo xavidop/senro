@@ -234,12 +234,9 @@ func printStep(w io.Writer, s *api.StepState) error {
 		// First, for the reason Paused comes before Started below: the hold
 		// comes before step.finished, so the step has no State yet, and
 		// "paused at breakpoint" would send a reader looking for a resume
-		// where the failure is what there is to look at.
-		if s.ExitCode != 0 {
-			_, err = fmt.Fprintf(w, "%s held after failure (exit %d)\n", s.ID, s.ExitCode)
-		} else {
-			_, err = fmt.Fprintf(w, "%s held after failure\n", s.ID)
-		}
+		// where the failure is what there is to look at. No exit code: the
+		// fold has none until step.finished, which prints it after release.
+		_, err = fmt.Fprintf(w, "%s held after failure\n", s.ID)
 	case s.State != "" && s.Error != "":
 		_, err = fmt.Fprintf(w, "%s %s: %s%s\n", s.ID, s.State, s.Error, testSummary(s))
 	case s.State != "":
