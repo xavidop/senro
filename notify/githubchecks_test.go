@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/xavidop/senro/api"
 	"github.com/xavidop/senro/notify"
@@ -335,6 +336,30 @@ func TestAPassedTestIsNotAnnotated(t *testing.T) {
 	}
 	if out["title"] != "succeeded" {
 		t.Errorf("title = %v", out["title"])
+	}
+}
+
+// The cap is bytes, the output is text: a cut that lands inside a multi-byte
+// rune moves back to its start rather than sending half a character.
+func TestATestAnnotationMessageIsCutAtARuneBoundary(t *testing.T) {
+	// One byte of padding puts the cap one byte into a three-byte rune.
+	long := "x" + strings.Repeat("€", notify.MaxTestAnnotationMessage/3+5)
+	out := completionOutput(t,
+		ghEvent(t, api.RunStarted, 1, "", `{"pipeline":"p"}`),
+		ghEvent(t, api.TestFinished, 2, "t", `{"name":"A","outcome":"failed","output":"`+long+`"}`),
+		ghEvent(t, api.RunFinished, 3, "", `{"status":"failed"}`),
+	)
+	ann, _ := out["annotations"].([]any)
+	if len(ann) != 1 {
+		t.Fatalf("annotations = %v", ann)
+	}
+	msg := ann[0].(map[string]any)["message"].(string)
+	body, ok := strings.CutSuffix(msg, "\n[truncated]")
+	if !ok || !utf8.ValidString(body) || !strings.HasPrefix(long, body) || len(body) > notify.MaxTestAnnotationMessage {
+		t.Errorf("message is not a whole-rune prefix under the cap (len %d, valid %v)", len(body), utf8.ValidString(body))
+	}
+	if want := notify.MaxTestAnnotationMessage - 1; len(body) != want {
+		t.Errorf("cut at %d bytes, want %d (the rune start before the cap)", len(body), want)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/xavidop/senro/api"
 )
@@ -317,7 +318,13 @@ func testAnnotation(b *api.TestResult) ghAnnotation {
 	title := "test " + name + " failed"
 	msg := b.Output
 	if len(msg) > MaxTestAnnotationMessage {
-		msg = msg[:MaxTestAnnotationMessage] + "\n[truncated]"
+		// Back the cut up to a rune start: a multi-byte character split by
+		// the byte count would reach GitHub as U+FFFD.
+		cut := MaxTestAnnotationMessage
+		for cut > 0 && !utf8.RuneStart(msg[cut]) {
+			cut--
+		}
+		msg = msg[:cut] + "\n[truncated]"
 	}
 	if msg == "" {
 		// GitHub rejects an annotation with no message.
