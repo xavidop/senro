@@ -149,7 +149,7 @@ func TestTAPTodoIsSkippedAndNoiseIgnored(t *testing.T) {
 	got, emit := collect()
 	s := NewTAP(emit)
 	feed(t, s, "random noise\nok 1 - a # TODO later\nnot ok 2 - b\nmore noise\n")
-	s.Close()
+	_ = s.Close()
 	if len(*got) != 2 || (*got)[0].Outcome != api.TestSkipped || (*got)[1].Output != "" {
 		t.Fatalf("got %+v", *got)
 	}
@@ -160,7 +160,7 @@ func TestJUnitParsesSuitesCasesAndFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	got, emit := collect()
 	if err := ParseJUnit(f, emit); err != nil {
 		t.Fatal(err)
@@ -212,7 +212,7 @@ func TestTAPEmptyDescriptionFallsBackToNumber(t *testing.T) {
 	got, emit := collect()
 	s := NewTAP(emit)
 	feed(t, s, "ok 1\nok 2\n")
-	s.Close()
+	_ = s.Close()
 	if len(*got) != 2 || (*got)[0].Name != "1" || (*got)[1].Name != "2" {
 		t.Fatalf("got %+v", *got)
 	}
