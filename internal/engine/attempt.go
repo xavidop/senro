@@ -14,7 +14,9 @@ import (
 	"github.com/xavidop/senro/internal/eventlog"
 	"github.com/xavidop/senro/internal/executor"
 	"github.com/xavidop/senro/internal/plan"
+	"github.com/xavidop/senro/internal/testparse"
 	"github.com/xavidop/senro/retry"
+	"github.com/xavidop/senro/testreport"
 )
 
 // logTailCap bounds how much of an attempt's combined output is kept in
@@ -471,8 +473,25 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 	// One Writer per stream, never one shared: the rolling-buffer state is
 	// per stream, and interleaving stdout and stderr through one buffer
 	// would splice a match out of bytes that were never adjacent.
-	stdoutRW := rc.redact.Writer(io.MultiWriter(
-		&logMarker{rc: rc, w: stdoutW, step: n.ID, attempt: attempt, stream: api.StreamStdout}, tail))
+	//
+	// A streaming test parser sits in the same downstream position as the
+	// tail buffer, and for the same reason: a test.finished Output is a copy
+	// of log bytes that lands in the ledger, so it must never carry a value
+	// the log file no longer contains. Stdout only, because go test -json and
+	// TAP both report on stdout, and stderr's chatter interleaved into a
+	// line-oriented parser would split lines that were never broken.
+	stdoutSinks := []io.Writer{
+		&logMarker{rc: rc, w: stdoutW, step: n.ID, attempt: attempt, stream: api.StreamStdout}, tail,
+	}
+	var tests testparse.Stream
+	if n.TestsStreaming() {
+		tests, err = testparse.NewStream(n.Tests.Format, rc.testEmitter(n.ID, attempt))
+		if err != nil {
+			return attemptResult{state: api.StateFailed, err: err}
+		}
+		stdoutSinks = append(stdoutSinks, tests)
+	}
+	stdoutRW := rc.redact.Writer(io.MultiWriter(stdoutSinks...))
 	stderrRW := rc.redact.Writer(io.MultiWriter(
 		&logMarker{rc: rc, w: stderrW, step: n.ID, attempt: attempt, stream: api.StreamStderr}, tail))
 
@@ -494,6 +513,13 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 	}
 	if err := stderrRW.Flush(); err != nil && runErr == nil {
 		runErr = err
+	}
+	// After both flushes, so the redactor's held-back tail has reached the
+	// parser, and before step.finished, so a trailing line with no newline
+	// still settles its test in time. Close's error is ignored because its
+	// contract is that it has none: a malformed line was already dropped.
+	if tests != nil {
+		_ = tests.Close()
 	}
 	// One event per attempt carrying both streams' counts:
 	// api.SecretRedactedBody has only a Count, so two events would be
@@ -524,6 +550,18 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 	}
 
 	res := classifyAttempt(ctx, attemptCtx, exit, runErr, tail, snaps)
+
+	// A JUnit report is read only once the step has SUCCEEDED. A step that
+	// exited 0 but left no readable report has not shown its tests passed, so
+	// that is a failure naming the path. A step that already failed may well
+	// have died before writing one, and a "report missing" error would bury
+	// the real story under a consequence of it. Replacing res also skips the
+	// scratch read-back below, which keys on the same succeeded state.
+	if n.Tests != nil && n.Tests.Format == testreport.FormatJUnit && res.state == api.StateSucceeded {
+		if err := rc.readJUnit(n, cmdDirFor(n.WorkDir, mounts), attempt); err != nil {
+			res = attemptResult{state: api.StateFailed, err: err, logTail: tail.String(), snapshots: snaps}
+		}
+	}
 
 	// A scratch cache on a target that does not share the coordinator's
 	// filesystem comes back HERE or not at all: the sandbox is still open,
