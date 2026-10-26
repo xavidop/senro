@@ -194,9 +194,15 @@ func (m *Model) endpointsNote() string {
 	if s == nil || s.Service == nil || len(s.Service.Endpoints) == 0 {
 		return ""
 	}
+	// "ready" only while the service is up; a finished one is not ready, but
+	// where it ran is still worth showing.
+	verb := "ran"
+	if s.Ready() {
+		verb = "ready"
+	}
 	parts := make([]string, 0, len(s.Service.Endpoints))
 	for _, ep := range s.Service.Endpoints {
-		parts = append(parts, fmt.Sprintf("ready at %s (port %d)", ep.Address, ep.Port))
+		parts = append(parts, fmt.Sprintf("%s at %s (port %d)", verb, ep.Address, ep.Port))
 	}
 	return " " + strings.Join(parts, ", ")
 }
