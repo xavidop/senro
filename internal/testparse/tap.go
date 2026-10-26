@@ -3,6 +3,7 @@ package testparse
 import (
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/xavidop/senro/api"
 )
@@ -20,6 +21,8 @@ func NewTAP(emit Emit) Stream {
 }
 
 type tap struct {
+	// mu serializes Write and Close; see Stream.
+	mu    sync.Mutex
 	emit  Emit
 	lines lineSplitter
 	// pending is the test line seen but not yet emitted.
@@ -29,12 +32,16 @@ type tap struct {
 
 // Write never fails; see Stream.
 func (t *tap) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.lines.write(p, t.line)
 	return len(p), nil
 }
 
 // Close flushes a final line that had no newline, then the pending test.
 func (t *tap) Close() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.lines.flush(t.line)
 	t.finish()
 	return nil
@@ -62,6 +69,16 @@ func (t *tap) line(b []byte) {
 			r.Outcome = api.TestPassed
 		}
 		t.pending = &r
+		return
+	}
+	// TAP 14 announces a subtest with "# Subtest: name", then indents the
+	// child's lines and closes with the parent's own test line. Without this
+	// boundary the announcement and the child's indented lines would read as
+	// diagnostics of whatever test came before, so a failure would carry
+	// its neighbour's output. The children themselves are not reported: the
+	// parent's line carries their verdict.
+	if strings.HasPrefix(strings.TrimLeft(s, " \t"), "# Subtest:") {
+		t.finish()
 		return
 	}
 	// Diagnostics belong to the preceding test: indented lines (the YAML

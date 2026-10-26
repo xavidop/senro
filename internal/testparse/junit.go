@@ -75,6 +75,17 @@ func ParseJUnit(r io.Reader, emit Emit) error {
 			}
 			emitSuite(s, emit)
 		}
+		// Some writers put <testcase> straight under <testsuites> with no
+		// suite around it. Each <testsuite> above is decoded whole, so a
+		// <testcase> start token here is always one of those; with no suite
+		// name to fall back on, its Suite is its classname or empty.
+		if se, ok := tok.(xml.StartElement); ok && se.Name.Local == "testcase" {
+			var c junitTestCase
+			if err := dec.DecodeElement(&c, &se); err != nil {
+				return err
+			}
+			emit(c.result(""))
+		}
 	}
 }
 

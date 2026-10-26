@@ -1,10 +1,13 @@
 package testparse
 
 import (
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/xavidop/senro/api"
 )
@@ -255,5 +258,130 @@ func TestTailKeepsTheLastBytes(t *testing.T) {
 	}
 	if Tail("short") != "short" {
 		t.Fatal("short input changed")
+	}
+}
+
+// TestTAPSubtestAnnouncementIsNotTheFailingTestsOutput: a TAP 14 "# Subtest:"
+// line starts the next test's block, so neither it nor the child's indented
+// lines are diagnostics of the failure before it.
+func TestTAPSubtestAnnouncementIsNotTheFailingTestsOutput(t *testing.T) {
+	got, emit := collect()
+	s := NewTAP(emit)
+	feed(t, s, "TAP version 14\n"+
+		"not ok 1 - first\n"+
+		"  ---\n  message: real cause\n  ...\n"+
+		"# Subtest: second\n"+
+		"    ok 1 - child\n"+
+		"    1..1\n"+
+		"ok 2 - second\n")
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r := *got
+	if len(r) != 2 || r[0].Name != "first" || r[1].Name != "second" || r[1].Outcome != api.TestPassed {
+		t.Fatalf("got %+v", r)
+	}
+	if want := "  ---\n  message: real cause\n  ...\n"; r[0].Output != want {
+		t.Errorf("first.Output = %q, want %q", r[0].Output, want)
+	}
+}
+
+func TestGoTestFailWithNoPriorRunEmitsAnEmptyOutput(t *testing.T) {
+	got, emit := collect()
+	s := NewGoTest(emit)
+	feed(t, s, `{"Action":"fail","Package":"p","Test":"TestA","Elapsed":0.5}`+"\n")
+	r := *got
+	if len(r) != 1 || r[0].Outcome != api.TestFailed || r[0].Output != "" || r[0].Duration != 500*time.Millisecond {
+		t.Fatalf("got %+v", r)
+	}
+	if n := len(s.(*goTest).out); n != 0 {
+		t.Errorf("%d output buffers left behind", n)
+	}
+}
+
+func TestTailDoesNotStartMidRune(t *testing.T) {
+	// One long line of three-byte runes with no newline; the three paddings
+	// put the byte cut at each offset inside a rune.
+	for pad := 0; pad < 3; pad++ {
+		in := strings.Repeat("x", pad) + strings.Repeat("€", 3000)
+		out := Tail(in)
+		if len(out) > api.MaxTestOutput {
+			t.Fatalf("pad %d: len %d over the cap", pad, len(out))
+		}
+		if !utf8.ValidString(out) || !strings.HasSuffix(in, out) {
+			t.Fatalf("pad %d: tail is not a valid suffix: %q", pad, out[:6])
+		}
+	}
+}
+
+func TestLineSplitterReleasesALongLinesBuffer(t *testing.T) {
+	var l lineSplitter
+	lines := 0
+	count := func([]byte) { lines++ }
+	l.write([]byte(strings.Repeat("x", 200<<10)), count)
+	l.write([]byte("\nshort"), count)
+	l.write([]byte("\n"), count)
+	if lines != 2 {
+		t.Fatalf("lines = %d, want 2", lines)
+	}
+	if c := cap(l.rest); c > keepLine {
+		t.Errorf("rest kept %d bytes of capacity after the long line, want at most %d", c, keepLine)
+	}
+}
+
+func TestJUnitReadsATestcaseDirectlyUnderTestsuites(t *testing.T) {
+	got, emit := collect()
+	err := ParseJUnit(strings.NewReader(`<testsuites>`+
+		`<testcase name="a" classname="pkg.A"/>`+
+		`<testcase name="b"><failure message="boom"/></testcase>`+
+		`<testsuite name="s"><testcase name="c"/></testsuite>`+
+		`</testsuites>`), emit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := *got
+	if len(r) != 3 {
+		t.Fatalf("got %d results, want 3: %+v", len(r), r)
+	}
+	if a := byName(r, "a"); a.Suite != "pkg.A" || a.Outcome != api.TestPassed {
+		t.Errorf("a = %+v", a)
+	}
+	if b := byName(r, "b"); b.Suite != "" || b.Outcome != api.TestFailed || b.Output != "boom" {
+		t.Errorf("b = %+v", b)
+	}
+	if c := byName(r, "c"); c.Suite != "s" {
+		t.Errorf("c = %+v", c)
+	}
+}
+
+// TestStreamsTolerateConcurrentWriters is meant for -race: two goroutines
+// writing whole lines must neither race on the splitter nor lose a test.
+func TestStreamsTolerateConcurrentWriters(t *testing.T) {
+	for _, format := range []string{"gotest", "tap"} {
+		var mu sync.Mutex
+		n := 0
+		s, err := NewStream(format, func(Result) { mu.Lock(); n++; mu.Unlock() })
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		for w := range 2 {
+			wg.Go(func() {
+				for i := range 200 {
+					line := fmt.Sprintf(`{"Action":"pass","Package":"p%d","Test":"T%d"}`+"\n", w, i)
+					if format == "tap" {
+						line = fmt.Sprintf("ok %d - w%d\n", i, w)
+					}
+					_, _ = s.Write([]byte(line))
+				}
+			})
+		}
+		wg.Wait()
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if n != 400 {
+			t.Errorf("%s: emitted %d, want 400", format, n)
+		}
 	}
 }

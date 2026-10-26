@@ -13,6 +13,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/xavidop/senro/api"
 	"github.com/xavidop/senro/testreport"
@@ -48,8 +49,12 @@ type Emit func(Result)
 // log file, and an error from it would abort the step's log over a line that
 // merely was not test output. Unparseable input is dropped.
 //
-// A Stream is not safe for concurrent use; the engine gives each step's
-// stdout its own and writes to it from one goroutine.
+// A Stream is safe for concurrent use: Write and Close take a lock, and
+// Emit runs under it. The engine gives each step attempt its own Stream and
+// today writes to it from one goroutine, but the Stream sits in the same
+// MultiWriter as the log file and the tail buffer, which both lock, and an
+// executor that copied stdout from two goroutines would otherwise corrupt
+// the line splitter with no symptom but a missing test.
 type Stream interface {
 	io.Writer
 	// Close flushes a trailing line that had no newline, and any test still
@@ -75,6 +80,9 @@ func NewStream(format string, emit Emit) (Stream, error) {
 // part worth keeping. When the cut leaves a partial first line, Tail starts
 // after the next newline so the output begins cleanly, but only if that
 // newline is near the cut: a single huge line should not be discarded whole.
+// Without such a newline the cut moves forward to the next rune start, so a
+// multi-byte character split by the byte count is dropped rather than shown
+// as U+FFFD; moving back instead would exceed api.MaxTestOutput.
 func Tail(s string) string {
 	if len(s) <= api.MaxTestOutput {
 		return s
@@ -82,6 +90,11 @@ func Tail(s string) string {
 	s = s[len(s)-api.MaxTestOutput:]
 	if i := strings.IndexByte(s[:256], '\n'); i >= 0 {
 		return s[i+1:]
+	}
+	for i := 0; i < utf8.UTFMax && i < len(s); i++ {
+		if utf8.RuneStart(s[i]) {
+			return s[i:]
+		}
 	}
 	return s
 }
@@ -104,6 +117,11 @@ func appendBounded(buf []byte, add string) []byte {
 // step can print megabytes with no newline (a progress bar, a binary dump),
 // and the splitter must not hold all of it just to throw it away.
 const maxLine = 1 << 20
+
+// keepLine is the largest buffer the splitter holds on to between lines. A
+// long line grows rest up to maxLine; reusing that for every short line
+// after it would pin a megabyte per step for the rest of the run.
+const keepLine = 64 << 10
 
 // lineSplitter cuts a byte stream into lines across arbitrary write
 // boundaries. It keeps the unfinished line as bytes, not a string: a write
@@ -135,7 +153,11 @@ func (l *lineSplitter) write(p []byte, fn func(line []byte)) {
 		case len(l.rest) > 0:
 			l.rest = append(l.rest, p[:i]...)
 			fn(trimCR(l.rest))
-			l.rest = l.rest[:0]
+			if cap(l.rest) > keepLine {
+				l.rest = nil
+			} else {
+				l.rest = l.rest[:0]
+			}
 		default:
 			fn(trimCR(p[:i]))
 		}

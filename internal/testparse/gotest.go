@@ -2,6 +2,7 @@ package testparse
 
 import (
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/xavidop/senro/api"
@@ -27,6 +28,8 @@ type goEvent struct {
 }
 
 type goTest struct {
+	// mu serializes Write and Close; see Stream.
+	mu    sync.Mutex
 	emit  Emit
 	lines lineSplitter
 	// out holds each running test's output tail. An entry exists from the
@@ -37,12 +40,16 @@ type goTest struct {
 
 // Write never fails; see Stream.
 func (g *goTest) Write(p []byte) (int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.lines.write(p, g.line)
 	return len(p), nil
 }
 
 // Close flushes a final line that had no newline.
 func (g *goTest) Close() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.lines.flush(g.line)
 	return nil
 }
