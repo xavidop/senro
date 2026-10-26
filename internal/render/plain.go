@@ -65,6 +65,14 @@ func Plain(ctx context.Context, src source.Source, w io.Writer) (api.RunStatus, 
 		if err := printStep(w, s); err != nil {
 			return "", fmt.Errorf("render: %w", err)
 		}
+		// Only a service still up: the snapshot folds service.ready away, and
+		// a stopped service's address is no longer news. The live path below
+		// prints on each service.ready instead.
+		if s.Ready() {
+			if err := printEndpoints(w, s); err != nil {
+				return "", fmt.Errorf("render: %w", err)
+			}
+		}
 	}
 	if st.Run.Done {
 		if err := printRun(w, st.Run); err != nil {
@@ -147,6 +155,13 @@ func (p *logPrinter) handle(ctx context.Context, st *api.RunState, e api.Event, 
 		// one held after failure prints its output when it settles, as any
 		// step does.
 		if err := printStep(w, st.Steps[e.Step]); err != nil {
+			return fmt.Errorf("render: %w", err)
+		}
+	case api.ServiceReady:
+		// Where a dependent can reach the service, said the moment the probe
+		// passes. No flush: the event has no step output of its own, and the
+		// step line on step.finished is unchanged.
+		if err := printEndpoints(w, st.Steps[e.Step]); err != nil {
 			return fmt.Errorf("render: %w", err)
 		}
 	case api.TestFinished:
@@ -250,6 +265,19 @@ func printStep(w io.Writer, s *api.StepState) error {
 		_, err = fmt.Fprintf(w, "%s started\n", s.ID)
 	}
 	return err
+}
+
+// printEndpoints names where a ready service listens, one line per endpoint.
+func printEndpoints(w io.Writer, s *api.StepState) error {
+	if s == nil || s.Service == nil {
+		return nil
+	}
+	for _, ep := range s.Service.Endpoints {
+		if _, err := fmt.Fprintf(w, "%s ready at %s (port %d)\n", s.ID, ep.Address, ep.Port); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // testSummary is the step line's test suffix, empty for a step with no tests

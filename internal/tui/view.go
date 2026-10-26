@@ -154,6 +154,11 @@ func stepStatusLabel(s *api.StepState) string {
 		return successStyle.Render(string(s.State))
 	case s.State != "":
 		return string(s.State)
+	case s.Ready():
+		// Before paused and running: ready refines running for a service
+		// whose probe has passed. Ready is false once the step is terminal,
+		// so it never shadows a verdict.
+		return successStyle.Render("ready")
 	case s.Paused:
 		// Before the started case: a step held at a breakpoint has never
 		// started, so it would otherwise render blank, identical to one
@@ -178,6 +183,24 @@ func (m *Model) proposalLine() string {
 	return ""
 }
 
+// endpointsNote is the log header's suffix for a focused service that has
+// reported endpoints: where it listens, so the operator need not dig the
+// address out of its output. Empty for any other step.
+func (m *Model) endpointsNote() string {
+	if m.state == nil {
+		return ""
+	}
+	s := m.state.Steps[m.focused]
+	if s == nil || s.Service == nil || len(s.Service.Endpoints) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(s.Service.Endpoints))
+	for _, ep := range s.Service.Endpoints {
+		parts = append(parts, fmt.Sprintf("ready at %s (port %d)", ep.Address, ep.Port))
+	}
+	return " " + strings.Join(parts, ", ")
+}
+
 func (m *Model) renderLog() string {
 	if m.focused == "" {
 		return logPaneStyle.Render("(press enter on a step to view its log)")
@@ -185,12 +208,14 @@ func (m *Model) renderLog() string {
 	prop := m.proposalLine()
 	r := m.logs[m.focused]
 	if r == nil || len(r.Lines()) == 0 {
-		return logPaneStyle.Render(prop + m.focused + ": (no log output yet)")
+		return logPaneStyle.Render(prop + m.focused + ":" + m.endpointsNote() + " (no log output yet)")
 	}
 	var b strings.Builder
 	b.WriteString(prop)
 	b.WriteString(m.focused)
-	b.WriteString(":\n")
+	b.WriteString(":")
+	b.WriteString(m.endpointsNote())
+	b.WriteString("\n")
 	if r.StartOffset() > 0 {
 		// Scrollback exists but has not been pulled in: a pane that
 		// silently starts mid-file looks identical to one showing

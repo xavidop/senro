@@ -12,6 +12,7 @@ package present
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/xavidop/senro/api"
@@ -50,6 +51,10 @@ func StepBadge(s *api.StepState) Badge {
 		return Badge{Label: "unknown", Tone: ToneNeutral}
 	case s.Held == api.HoldReasonFailure:
 		return Badge{Label: "held", Tone: ToneFailed}
+	case s.Ready():
+		// A running service whose probe has passed. Ready is false once the
+		// step is terminal, so a verdict is never shadowed.
+		return Badge{Label: "ready", Tone: ToneRunning}
 	case s.Paused:
 		return Badge{Label: "paused", Tone: ToneRunning}
 	case s.State != "":
@@ -276,6 +281,15 @@ func Detail(st *api.RunState, id string, now time.Time) []Field {
 	}
 	if d := Elapsed(s.Started, s.Finished, now); d != "" {
 		fields = append(fields, Field{Label: "took", Value: d})
+	}
+	// Kept after the service stops, as api keeps Service: where it listened
+	// is still worth reading beside a failure it caused.
+	if s.Service != nil && len(s.Service.Endpoints) > 0 {
+		eps := make([]string, 0, len(s.Service.Endpoints))
+		for _, ep := range s.Service.Endpoints {
+			eps = append(eps, fmt.Sprintf("%s (port %d)", ep.Address, ep.Port))
+		}
+		fields = append(fields, Field{Label: "endpoints", Value: strings.Join(eps, ", ")})
 	}
 	if s.Cached {
 		fields = append(fields, Field{Label: "cached", Value: "restored from cache"})
