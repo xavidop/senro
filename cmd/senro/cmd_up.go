@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"github.com/xavidop/senro/api"
 	"github.com/xavidop/senro/internal/source"
@@ -58,20 +59,27 @@ func cmdUp(args []string, stdout, stderr io.Writer, isTTY bool) int {
 	tap := &upTap{out: printTo, isService: map[string]bool{}, final: map[string]api.State{}}
 	sniff := &stderrSniffer{}
 
+	var ranToStatus atomic.Bool
 	code := runBuilt("up", opts, true, runHooks{
 		wrapSource: func(src source.Source) source.Source {
 			tap.Source = src
 			return tap
 		},
 		exitCode: func(status api.RunStatus, interrupted bool) int {
+			ranToStatus.Store(true)
 			return upExitCode(status, interrupted, tap.services())
 		},
 		childStderr: sniff,
 	}, out, stderr, isTTY)
 
-	// A pipeline that refused to start exits 1 like one whose run failed;
-	// the text it printed is what tells them apart.
-	if code == exitRunFailed && sniff.saw(noServicesMessage) {
+	// A pipeline that refused to start exits non-zero like one whose run
+	// failed; the text it printed is what tells them apart, not the code,
+	// since each pipeline's main picks its own (1, 2, 70, ...). The contract
+	// therefore depends on the pipeline exiting non-zero AND printing
+	// senro.Run's error, which every main that log.Fatals or prints the
+	// error does. A run that was watched to a status is never reinterpreted:
+	// a refused start never produces one.
+	if code != exitSuccess && !ranToStatus.Load() && sniff.saw(noServicesMessage) {
 		if mode == uiTUI {
 			// Not relayed under the TUI, so nobody has seen it yet.
 			_, _ = fmt.Fprintln(stderr, "senro up:", noServicesMessage)
@@ -230,6 +238,9 @@ type stderrSniffer struct {
 	buf []byte
 }
 
+// sniffTail is how many trailing bytes of the pipeline's stderr are kept. The
+// refusal is one short line printed at start, so a few KiB is generous; the
+// cap only stops a pipeline that logs heavily from growing this without bound.
 const sniffTail = 8 << 10
 
 func (s *stderrSniffer) Write(p []byte) (int, error) {

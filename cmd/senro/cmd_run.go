@@ -133,6 +133,7 @@ func runBuilt(verb string, opts runOptions, up bool, hk runHooks, stdout, stderr
 		return exitUsage
 	}
 
+	hk.verb = verb
 	return runPipelineWith(ctx, cmd, mode, safeStdout, safeStderr, interrupted, hk)
 }
 
@@ -185,6 +186,8 @@ type runHooks struct {
 	exitCode func(status api.RunStatus, interrupted bool) int
 	// childStderr receives a copy of the pipeline's stderr.
 	childStderr io.Writer
+	// verb names the command in diagnostics; empty means run.
+	verb string
 }
 
 // parseRunArgs is parseRunOptions without the options that only the child's
@@ -355,7 +358,7 @@ func runPipelineWith(ctx context.Context, cmd *exec.Cmd, mode uiMode, stdout, st
 
 	src, err := connectAndNegotiate(ctx, entry, stderr)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "senro run:", err)
+		_, _ = fmt.Fprintln(stderr, "senro "+hk.name()+":", err)
 		_ = cmd.Process.Kill()
 		<-waitDone
 		return exitUsage
@@ -393,7 +396,7 @@ func runPipelineWith(ctx context.Context, cmd *exec.Cmd, mode uiMode, stdout, st
 	<-waitDone // the process may already have exited; this reaps it either way
 
 	if watchErr != nil {
-		_, _ = fmt.Fprintln(stderr, "senro run:", watchErr)
+		_, _ = fmt.Fprintln(stderr, "senro "+hk.name()+":", watchErr)
 		return processExitCode(cmd)
 	}
 	if status != "" {
@@ -476,4 +479,12 @@ func processExitCode(cmd *exec.Cmd) int {
 		}
 	}
 	return exitRunFailed
+}
+
+// name is the command word diagnostics are prefixed with.
+func (h runHooks) name() string {
+	if h.verb == "" {
+		return "run"
+	}
+	return h.verb
 }

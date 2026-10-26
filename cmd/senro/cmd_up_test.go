@@ -90,6 +90,22 @@ func TestUpRefusesAPipelineWithoutServices(t *testing.T) {
 	}
 }
 
+// The refusal is recognised by what the pipeline printed, not by its exit
+// code: this fixture's main exits 70.
+func TestUpRefusalMapsToUsageWhateverTheChildExitCode(t *testing.T) {
+	isolateRegistry(t)
+	fastRegistrationPoll(t, 10*time.Millisecond)
+
+	var stdout, stderr strings.Builder
+	code := cmdUp([]string{"./testdata/fixtures/noservicesexit", "--ui=none"}, &stdout, &stderr, false)
+	if code != exitUsage {
+		t.Fatalf("exit = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "declares no services") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
 func TestUpPrintsEndpointsAndExitsZeroOnInterrupt(t *testing.T) {
 	isolateRegistry(t)
 	fastRegistrationPoll(t, 10*time.Millisecond)

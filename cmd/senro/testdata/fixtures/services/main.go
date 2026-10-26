@@ -94,7 +94,7 @@ func realMain() int {
 			return 1
 		}
 		fmt.Fprintln(os.Stderr, err)
-		return 2
+		return 1
 	}
 	return 0
 }

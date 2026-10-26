@@ -28,6 +28,8 @@ Usage:
       them until Ctrl-C. Prints one line per endpoint as it becomes ready:
       <step>  <address>  (port <n>). Exits 0 when the session ends with every
       service settled cleanly, 2 for a pipeline that declares no services.
+      --break-on-failure is accepted and --trigger-event is forwarded, both
+      exactly as for senro run.
 
   senro attach [--pid <pid> | --run <id> | --addr <host:port>] [--follow]
       [--tls] [--ui=auto|tui|plain|none]
