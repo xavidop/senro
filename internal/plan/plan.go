@@ -60,6 +60,18 @@ type GenerateSpec struct {
 	Path string `json:"path,omitempty"`
 }
 
+// The test report formats and the Select placeholder, as plan.json spells
+// them. They are testreport's FormatGoTest, FormatTAP, FormatJUnit and
+// Placeholder; plan keeps its own copy because it imports nothing outside
+// the standard library, and TestTestsConstantsMatchTestreport fails the day
+// the two drift.
+const (
+	TestFormatGoTest = "gotest"
+	TestFormatTAP    = "tap"
+	TestFormatJUnit  = "junit"
+	TestsPlaceholder = "{tests}"
+)
+
 // TestsSpec declares how a step reports tests: the format its output is
 // read as, and how a subset of them is selected for a re-run. It mirrors
 // testreport.Spec field for field; the plan keeps its own type because the
@@ -455,7 +467,7 @@ func (n *Node) TestsStreaming() bool {
 	if n.Tests == nil {
 		return false
 	}
-	return n.Tests.Format == "gotest" || n.Tests.Format == "tap"
+	return n.Tests.Format == TestFormatGoTest || n.Tests.Format == TestFormatTAP
 }
 
 // ExecutorKey is the key of the executor this node runs on: ExecutorLocal for

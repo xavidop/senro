@@ -2257,7 +2257,8 @@ func TestValidateRejectsAnUnknownTestsFormat(t *testing.T) {
 
 func TestValidateRejectsJUnitWithoutAPath(t *testing.T) {
 	err := testsNode(&plan.TestsSpec{Format: "junit"}, nil).Validate()
-	if err == nil || !strings.Contains(err.Error(), "path") {
+	if err == nil || !strings.Contains(err.Error(),
+		`plan: step "t" declares a junit test report with no path to read it from`) {
 		t.Fatalf("err = %v", err)
 	}
 }

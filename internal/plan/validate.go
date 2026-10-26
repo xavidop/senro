@@ -182,12 +182,14 @@ func validateTests(n Node) error {
 				"the report is read from the command's output", n.ID)
 	}
 	switch t.Format {
-	case "gotest", "tap":
-	case "junit":
+	case TestFormatGoTest, TestFormatTAP:
+	case TestFormatJUnit:
 		if t.Path == "" {
 			return fmt.Errorf("plan: step %q declares a junit test report with no path to read it from", n.ID)
 		}
 		if n.ExecutorKey() != ExecutorLocal {
+			// n.Executor is non-nil here: ExecutorKey reports ExecutorLocal
+			// for a nil Executor, so only a node that names one gets this far.
 			return fmt.Errorf(
 				"plan: step %q declares a JUnit report and runs on the %s executor: a JUnit report is "+
 					"read from the coordinator's filesystem, which only the local executor shares; "+
@@ -200,7 +202,7 @@ func validateTests(n Node) error {
 	}
 	if len(t.Select) > 0 {
 		for _, a := range t.Select {
-			if strings.Contains(a, "{tests}") {
+			if strings.Contains(a, TestsPlaceholder) {
 				return nil
 			}
 		}
