@@ -129,6 +129,7 @@ func seedTestsRun(t *testing.T, root string) (runDir, out string) {
 	l.Step("s", exec.Command("sh", "-c", `echo "$@" > `+out, "sh")).
 		Tests(testreport.Spec{Format: testreport.FormatTAP, Select: []string{"--only", testreport.Placeholder}})
 	l.Step("plain", exec.Command("true"))
+	l.Step("nosel", exec.Command("true")).Tests(testreport.Spec{Format: testreport.FormatTAP})
 	if err := senro.Run(context.Background(), pipe, senro.WithDir(runDir)); err != nil {
 		t.Fatalf("seeding a run: %v", err)
 	}
@@ -213,5 +214,21 @@ func TestRerunFailedTestsWithNoneFailedIsAUsageError(t *testing.T) {
 	code := cmdRerun([]string{"--run", runDir, "--step", "s", "--failed-tests"}, &stdout, &stderr)
 	if code != exitUsage || !strings.Contains(stderr.String(), `no test on step "s" failed`) {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+}
+
+// A step that declares Tests but no Select is refused before any run starts:
+// the run directory --dir names must not exist afterwards.
+func TestRerunTestRefusesAStepWithTestsButNoSelect(t *testing.T) {
+	root := t.TempDir()
+	runDir, _ := seedTestsRun(t, root)
+	again := filepath.Join(root, "again")
+	var stdout, stderr bytes.Buffer
+	code := cmdRerun([]string{"--run", runDir, "--step", "nosel", "--test", "X", "--dir", again}, &stdout, &stderr)
+	if code != exitUsage || !strings.Contains(stderr.String(), `"nosel"`) {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if _, err := os.Stat(again); err == nil {
+		t.Error("a run directory was created for a refused selection")
 	}
 }

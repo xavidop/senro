@@ -16,7 +16,7 @@ import (
 // here, in site/src/pages/docs/cli/rerun.md and in
 // skills/senro/references/cli.md, and changing either is a breaking change.
 const rerunUsage = `Usage:
-  senro rerun [--run RUN] [--step STEP [--test NAME ... | --failed-tests]]
+  senro rerun [--run RUN] [--step STEP [[--test NAME ...] [--failed-tests]]
       [--regenerate] [--cache-dir DIR] [--dir DIR] [--local-class CLASS]
 
       Re-execute the plan a previous run recorded, from <run>/plan.json rather
@@ -45,7 +45,8 @@ const rerunUsage = `Usage:
                          never served from the full run's cache entry.
     --failed-tests       with --step, run only the tests that failed on that
                          step in the run being re-executed, read from its
-                         ledger. It is a usage error when none failed.
+                         ledger. It is a usage error when none failed. It
+                         combines with --test.
     --regenerate         ask generators for a FRESH subgraph instead of
                          replaying the recorded one. Named separately from
                          --step on purpose: silently re-deriving a graph during
@@ -153,7 +154,7 @@ func cmdRerun(args []string, stdout, stderr io.Writer) int {
 				}
 				tests = append(tests, failed...)
 			}
-			opts = append(opts, senro.WithTestSelection(step, tests...))
+			opts = append(opts, senro.WithTestSelection(step, dedupe(tests)...))
 		}
 	}
 
@@ -233,4 +234,18 @@ func findNode(p *plan.Plan, id string) *plan.Node {
 		}
 	}
 	return nil
+}
+
+// dedupe drops repeated names, keeping first-seen order, so --test A given
+// twice, or alongside a failed A, selects A once.
+func dedupe(names []string) []string {
+	seen := make(map[string]bool, len(names))
+	out := names[:0:0]
+	for _, n := range names {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
 }

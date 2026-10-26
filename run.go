@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -525,6 +526,16 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 		return fmt.Errorf("senro: %w", err)
 	}
 
+	// Refused here, with the other up-front checks, so a bad selection leaves
+	// no run directory or manifest behind.
+	if len(cfg.testSelect) > 0 {
+		narrowed, err := applyTestSelection(p, cfg.testSelect)
+		if err != nil {
+			return fmt.Errorf("senro: %w", err)
+		}
+		p = narrowed
+	}
+
 	dir, runID := cfg.dir, cfg.runID
 
 	// One list, built in one place, so "who observes this run" has a single
@@ -651,14 +662,6 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 	funcPkg := cfg.funcPkg
 	if !cfg.hasFuncPkg {
 		funcPkg = os.Getenv(funcPkgEnv)
-	}
-
-	if len(cfg.testSelect) > 0 {
-		narrowed, err := applyTestSelection(p, cfg.testSelect)
-		if err != nil {
-			return fmt.Errorf("senro: %w", err)
-		}
-		p = narrowed
 	}
 
 	status, err := engine.Run(ctx, p, engine.Options{
@@ -850,13 +853,17 @@ func registryAuthRefusal(stepID, image, field string, set *secrets.Set) error {
 // is often a recorded plan the caller reads again, and editing it would make
 // a second call narrow an already narrowed command. Only p.Nodes and the
 // affected nodes' Cmd are cloned; everything else is shared.
-//
-// It returns the plan, where the brief only had an error, because a copy has
-// to be handed back to be used.
 func applyTestSelection(p *plan.Plan, sel map[string][]string) (*plan.Plan, error) {
 	out := *p
 	out.Nodes = append([]plan.Node(nil), p.Nodes...)
-	for step, names := range sel {
+	// Sorted so that two bad selections always report the same one first.
+	steps := make([]string, 0, len(sel))
+	for step := range sel {
+		steps = append(steps, step)
+	}
+	sort.Strings(steps)
+	for _, step := range steps {
+		names := sel[step]
 		idx := -1
 		for i := range out.Nodes {
 			if out.Nodes[i].ID == step {
