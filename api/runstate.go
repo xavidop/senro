@@ -137,16 +137,27 @@ type StepState struct {
 // TestResult is one test's folded state: its latest verdict and the attempt
 // that produced it. Fields mirror TestFinishedBody, plus Attempt.
 type TestResult struct {
-	Name     string        `json:"name"`
-	Suite    string        `json:"suite,omitempty"`
-	Outcome  TestOutcome   `json:"outcome"`
+	// Name is the test's name within its suite, as TestFinishedBody.Name.
+	Name string `json:"name"`
+	// Suite groups tests (a Go package path, a JUnit classname); empty for
+	// TAP. Suite and Name together are the fold's key.
+	Suite string `json:"suite,omitempty"`
+	// Outcome is the folded verdict, the only place TestRecovered appears: a
+	// test that failed on an earlier attempt and passed on a later one.
+	Outcome TestOutcome `json:"outcome"`
+	// Duration is the reported run time of the attempt that set Outcome.
 	Duration time.Duration `json:"duration_ns,omitempty"`
 	// Attempt is the step attempt that produced this verdict. For a recovered
 	// test it is the attempt that finally passed.
-	Attempt int    `json:"attempt,omitempty"`
-	Output  string `json:"output,omitempty"`
-	File    string `json:"file,omitempty"`
-	Line    int    `json:"line,omitempty"`
+	Attempt int `json:"attempt,omitempty"`
+	// Output is the redacted output tail of a failed test, at most
+	// MaxTestOutput bytes. Like every field here it comes from the event that
+	// set Outcome, so a recovered test carries the passing attempt's (empty)
+	// Output, not the earlier failure's.
+	Output string `json:"output,omitempty"`
+	// File and Line locate the failure in source when the report has them.
+	File string `json:"file,omitempty"`
+	Line int    `json:"line,omitempty"`
 }
 
 // TestCounts is a step's tests tallied by outcome. The outcome fields are

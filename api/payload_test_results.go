@@ -38,7 +38,9 @@ type TestFinishedBody struct {
 	Suite string `json:"suite,omitempty"`
 	// Outcome is what this attempt observed: passed, failed or skipped, never
 	// recovered.
-	Outcome  TestOutcome   `json:"outcome"`
+	Outcome TestOutcome `json:"outcome"`
+	// Duration is how long the test ran as the framework reported it, zero
+	// when the format carries no timing (TAP, or a JUnit case without time).
 	Duration time.Duration `json:"duration_ns,omitempty"`
 	// Output is the redacted tail of the test's output, at most MaxTestOutput
 	// bytes. Present only for failed tests: a passing test's output is noise

@@ -24,6 +24,16 @@ func mustEvent(t *testing.T, e api.Event, body any) api.Event {
 	return e
 }
 
+// mustApply folds e into s and fails the test on an error. A setup event
+// the fold refused would leave the state the test asserts on silently short
+// of what the test thinks it built.
+func mustApply(t *testing.T, s *api.RunState, e api.Event) {
+	t.Helper()
+	if err := s.Apply(e); err != nil {
+		t.Fatalf("Apply(seq %d, %s): %v", e.Seq, e.Type, err)
+	}
+}
+
 func TestApplyTracksSeq(t *testing.T) {
 	s := api.NewRunState()
 	for _, seq := range []uint64{1, 2, 3} {
@@ -56,7 +66,7 @@ func TestApplyRunLifecycle(t *testing.T) {
 	s := api.NewRunState()
 	start := time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC)
 
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.RunStarted, Run: "01JQ"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, Type: api.RunStarted, Run: "01JQ"},
 		api.RunStartedBody{Pipeline: "./ci", EngineVersion: "0.1.0", StartedAt: start}))
 
 	if s.Run.ID != "01JQ" || s.Run.Pipeline != "./ci" {
@@ -66,7 +76,7 @@ func TestApplyRunLifecycle(t *testing.T) {
 		t.Error("run must not be done after run.started")
 	}
 
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 2, Type: api.RunFinished, Run: "01JQ"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 2, Type: api.RunFinished, Run: "01JQ"},
 		api.RunFinishedBody{Status: api.RunFailed}))
 
 	if !s.Run.Done || s.Run.Status != api.RunFailed {
@@ -81,7 +91,7 @@ func TestApplyRunLifecycle(t *testing.T) {
 // client can see without decoding payloads: the lock may still be held.
 func TestApplyFoldsCleanupAbandoned(t *testing.T) {
 	s := api.NewRunState()
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.RunFinished, Run: "01JQ"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, Type: api.RunFinished, Run: "01JQ"},
 		api.RunFinishedBody{Status: api.RunCancelled, CleanupAbandoned: true}))
 
 	if !s.Run.CleanupAbandoned {
@@ -95,7 +105,7 @@ func TestApplyStepLifecycle(t *testing.T) {
 	// takes from the event's timestamp.
 	at := time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC)
 
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, TS: at, Type: api.StepCreated, Step: "build/test"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, TS: at, Type: api.StepCreated, Step: "build/test"},
 		api.StepCreatedBody{Kind: "exec", Needs: []string{"setup"}}))
 
 	st := s.Steps["build/test"]
@@ -109,14 +119,14 @@ func TestApplyStepLifecycle(t *testing.T) {
 		t.Errorf("Order = %v", s.Order)
 	}
 
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 2, TS: at, Type: api.StepStarted, Step: "build/test", Attempt: 1},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 2, TS: at, Type: api.StepStarted, Step: "build/test", Attempt: 1},
 		api.StepStartedBody{Cmd: []string{"go", "test"}}))
 
 	if !st.Running() {
 		t.Error("step should be running after step.started")
 	}
 
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 3, TS: at.Add(time.Second), Type: api.StepFinished, Step: "build/test", Attempt: 1},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 3, TS: at.Add(time.Second), Type: api.StepFinished, Step: "build/test", Attempt: 1},
 		api.StepFinishedBody{State: api.StateSucceeded}))
 
 	if st.State != api.StateSucceeded || st.Running() {
@@ -128,7 +138,7 @@ func TestApplyStepLifecycle(t *testing.T) {
 // fold has to survive a truncated or mid-stream log.
 func TestApplyCreatesStepImplicitly(t *testing.T) {
 	s := api.NewRunState()
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.StepStarted, Step: "orphan"}, nil))
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, Type: api.StepStarted, Step: "orphan"}, nil))
 
 	if s.Steps["orphan"] == nil {
 		t.Fatal("step.started must create the step if it does not exist")
@@ -140,10 +150,10 @@ func TestApplyCreatesStepImplicitly(t *testing.T) {
 
 func TestApplyRetryBumpsAttempt(t *testing.T) {
 	s := api.NewRunState()
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.StepCreated, Step: "a"}, api.StepCreatedBody{Kind: "exec"}))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 2, Type: api.StepFinished, Step: "a", Attempt: 1},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, Type: api.StepCreated, Step: "a"}, api.StepCreatedBody{Kind: "exec"}))
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 2, Type: api.StepFinished, Step: "a", Attempt: 1},
 		api.StepFinishedBody{State: api.StateFailed, ExitCode: 1}))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 3, Type: api.StepRetried, Step: "a", Attempt: 2},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 3, Type: api.StepRetried, Step: "a", Attempt: 2},
 		api.StepRetriedBody{Attempt: 2, Predicate: "OnInfra"}))
 
 	st := s.Steps["a"]
@@ -163,14 +173,14 @@ func TestApplyRetryBumpsAttempt(t *testing.T) {
 // fetch.
 func TestApplyStepRetriedResetsLogBytes(t *testing.T) {
 	s := api.NewRunState()
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.StepCreated, Step: "a"}, api.StepCreatedBody{Kind: "exec"}))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 2, Type: api.StepLogAppended, Step: "a"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, Type: api.StepCreated, Step: "a"}, api.StepCreatedBody{Kind: "exec"}))
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 2, Type: api.StepLogAppended, Step: "a"},
 		api.StepLogAppendedBody{Stream: api.StreamStdout, Offset: 0, Len: 500}))
 	if got := s.Steps["a"].LogBytes[api.StreamStdout]; got != 500 {
 		t.Fatalf("precondition: stdout bytes = %d, want 500", got)
 	}
 
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 3, Type: api.StepRetried, Step: "a", Attempt: 2},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 3, Type: api.StepRetried, Step: "a", Attempt: 2},
 		api.StepRetriedBody{Attempt: 2, Predicate: "OnInfra"}))
 
 	if got := s.Steps["a"].LogBytes[api.StreamStdout]; got != 0 {
@@ -181,7 +191,7 @@ func TestApplyStepRetriedResetsLogBytes(t *testing.T) {
 
 	// The new attempt's smaller marker must not be swallowed by a stale
 	// high-water mark: max(500, 0+80) is 500, not 80.
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 4, Type: api.StepLogAppended, Step: "a", Attempt: 2},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 4, Type: api.StepLogAppended, Step: "a", Attempt: 2},
 		api.StepLogAppendedBody{Stream: api.StreamStdout, Offset: 0, Len: 80}))
 	if got := s.Steps["a"].LogBytes[api.StreamStdout]; got != 80 {
 		t.Errorf("stdout bytes after the new attempt's first marker = %d, want 80", got)
@@ -190,10 +200,10 @@ func TestApplyStepRetriedResetsLogBytes(t *testing.T) {
 
 func TestApplyLogBytesAccumulate(t *testing.T) {
 	s := api.NewRunState()
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.StepCreated, Step: "a"}, api.StepCreatedBody{Kind: "exec"}))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 2, Type: api.StepLogAppended, Step: "a"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, Type: api.StepCreated, Step: "a"}, api.StepCreatedBody{Kind: "exec"}))
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 2, Type: api.StepLogAppended, Step: "a"},
 		api.StepLogAppendedBody{Stream: api.StreamStdout, Offset: 0, Len: 100}))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 3, Type: api.StepLogAppended, Step: "a"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 3, Type: api.StepLogAppended, Step: "a"},
 		api.StepLogAppendedBody{Stream: api.StreamStdout, Offset: 100, Len: 50}))
 
 	if got := s.Steps["a"].LogBytes[api.StreamStdout]; got != 150 {
@@ -203,7 +213,7 @@ func TestApplyLogBytesAccumulate(t *testing.T) {
 
 func TestApplyExpansion(t *testing.T) {
 	s := api.NewRunState()
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.PlanExpanded, Step: "build/per-service"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, Type: api.PlanExpanded, Step: "build/per-service"},
 		api.PlanExpandedBody{
 			Parent:   "build/per-service",
 			Children: []string{"build/per-service[unit=a]", "build/per-service[unit=b]"},
@@ -227,8 +237,8 @@ func TestApplyExpansion(t *testing.T) {
 
 func TestApplyCacheHitMarksCached(t *testing.T) {
 	s := api.NewRunState()
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.StepCreated, Step: "a"}, api.StepCreatedBody{Kind: "exec"}))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 2, Type: api.CacheHit, Step: "a"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, Type: api.StepCreated, Step: "a"}, api.StepCreatedBody{Kind: "exec"}))
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 2, Type: api.CacheHit, Step: "a"},
 		api.CacheHitBody{Key: "4f1c", FromRun: "01JP"}))
 
 	if !s.Steps["a"].Cached {
@@ -238,7 +248,7 @@ func TestApplyCacheHitMarksCached(t *testing.T) {
 
 func TestApplyRejectsOutOfOrderSeq(t *testing.T) {
 	s := api.NewRunState()
-	_ = s.Apply(api.Event{V: 1, Seq: 5, Type: api.StepCreated, Step: "a"})
+	mustApply(t, s, api.Event{V: 1, Seq: 5, Type: api.StepCreated, Step: "a"})
 	err := s.Apply(api.Event{V: 1, Seq: 3, Type: api.StepCreated, Step: "b"})
 	if err == nil {
 		t.Error("a regressing seq means the caller lost ordering; must error")
@@ -318,12 +328,12 @@ func TestApplyRestartClearsStaleFailure(t *testing.T) {
 	s := api.NewRunState()
 	at := time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC)
 
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, TS: at, Type: api.StepCreated, Step: "a"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, TS: at, Type: api.StepCreated, Step: "a"},
 		api.StepCreatedBody{Kind: "exec"}))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 2, TS: at, Type: api.StepStarted, Step: "a", Attempt: 1}, nil))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 3, TS: at, Type: api.StepFinished, Step: "a", Attempt: 1},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 2, TS: at, Type: api.StepStarted, Step: "a", Attempt: 1}, nil))
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 3, TS: at, Type: api.StepFinished, Step: "a", Attempt: 1},
 		api.StepFinishedBody{State: api.StateFailed, ExitCode: 137, Error: "OOMKilled"}))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 4, TS: at, Type: api.StepStarted, Step: "a", Attempt: 2}, nil))
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 4, TS: at, Type: api.StepStarted, Step: "a", Attempt: 2}, nil))
 
 	st := s.Steps["a"]
 	if !st.Running() {
@@ -343,12 +353,12 @@ func TestApplyOrderRecordsEachStepOnce(t *testing.T) {
 
 	// plan.expanded materialises both children, then g[a] is touched three
 	// more times. step() must create it once and append to Order once.
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, TS: at, Type: api.PlanExpanded, Step: "g"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, TS: at, Type: api.PlanExpanded, Step: "g"},
 		api.PlanExpandedBody{Parent: "g", Children: []string{"g[a]", "g[b]"}, Count: 2}))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 2, TS: at, Type: api.StepCreated, Step: "g[a]"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 2, TS: at, Type: api.StepCreated, Step: "g[a]"},
 		api.StepCreatedBody{Kind: "exec"}))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 3, TS: at, Type: api.StepStarted, Step: "g[a]", Attempt: 1}, nil))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 4, TS: at, Type: api.CacheHit, Step: "g[a]"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 3, TS: at, Type: api.StepStarted, Step: "g[a]", Attempt: 1}, nil))
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 4, TS: at, Type: api.CacheHit, Step: "g[a]"},
 		api.CacheHitBody{Key: "4f1c"}))
 
 	if len(s.Order) != 2 {
@@ -364,8 +374,8 @@ func TestApplyLogBytesIdempotentOnReplay(t *testing.T) {
 	e := mustEvent(t, api.Event{Seq: 7, Type: api.StepLogAppended, Step: "a"},
 		api.StepLogAppendedBody{Stream: api.StreamStdout, Offset: 0, Len: 100})
 
-	_ = s.Apply(e)
-	_ = s.Apply(e) // a client resuming one seq too early replays exactly this
+	mustApply(t, s, e)
+	mustApply(t, s, e) // a client resuming one seq too early replays exactly this
 
 	if got := s.Steps["a"].LogBytes[api.StreamStdout]; got != 100 {
 		t.Errorf("stdout bytes = %d, want 100 — replaying a marker must not inflate the count", got)
@@ -377,9 +387,9 @@ func TestApplyLogBytesPerStream(t *testing.T) {
 	// StreamStderr never appears in them, so stderr bytes silently
 	// attributed to stdout go unnoticed elsewhere.
 	s := api.NewRunState()
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.StepLogAppended, Step: "a"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, Type: api.StepLogAppended, Step: "a"},
 		api.StepLogAppendedBody{Stream: api.StreamStdout, Offset: 0, Len: 100}))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 2, Type: api.StepLogAppended, Step: "a"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 2, Type: api.StepLogAppended, Step: "a"},
 		api.StepLogAppendedBody{Stream: api.StreamStderr, Offset: 0, Len: 7}))
 
 	lb := s.Steps["a"].LogBytes
@@ -393,9 +403,9 @@ func TestApplyStepCreatedDoesNotEraseExpansionGroup(t *testing.T) {
 	// body carries no group must not erase it, or Group() aggregation for that
 	// child silently degrades.
 	s := api.NewRunState()
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.PlanExpanded, Step: "g"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, Type: api.PlanExpanded, Step: "g"},
 		api.PlanExpandedBody{Parent: "g", Children: []string{"g[a]"}, Count: 1}))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 2, Type: api.StepCreated, Step: "g[a]"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 2, Type: api.StepCreated, Step: "g[a]"},
 		api.StepCreatedBody{Kind: "exec"}))
 
 	if got := s.Steps["g[a]"].Group; got != "g" {
@@ -406,7 +416,7 @@ func TestApplyStepCreatedDoesNotEraseExpansionGroup(t *testing.T) {
 func TestApplyPlanResolved(t *testing.T) {
 	// The whole plan.resolved branch can be deleted without any test noticing.
 	s := api.NewRunState()
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.PlanResolved, Run: "01JQ"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, Type: api.PlanResolved, Run: "01JQ"},
 		api.PlanResolvedBody{Digest: "sha256:abc", Nodes: 14}))
 
 	if s.Run.PlanDigest != "sha256:abc" {
@@ -576,7 +586,7 @@ func TestApplyFoldsHandlers(t *testing.T) {
 // a lock may still be held.
 func TestApplyAbandonedHandlerIsNotSucceeded(t *testing.T) {
 	s := api.NewRunState()
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.HandlerStarted, Run: "01JQ",
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, Type: api.HandlerStarted, Run: "01JQ",
 		Step: "deploy/always/unlock", Attempt: 1, TS: time.Now().UTC()},
 		api.HandlerBody{Kind: "always", Parent: "deploy"}))
 
@@ -662,7 +672,7 @@ func TestRunStateJSONIsUnchangedWithoutAPause(t *testing.T) {
 // warns about.
 func TestApplyGeneratedSubgraph(t *testing.T) {
 	s := api.NewRunState()
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.PlanGenerated, Step: "deploy/discover"},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, Type: api.PlanGenerated, Step: "deploy/discover"},
 		api.PlanGeneratedBody{
 			Generator: "deploy/discover",
 			Children:  []string{"deploy/discover/apply-a", "deploy/discover/apply-b"},
@@ -682,10 +692,10 @@ func TestApplyGeneratedSubgraph(t *testing.T) {
 
 func TestApplyFoldsATestIntoItsStep(t *testing.T) {
 	s := api.NewRunState()
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.StepStarted, Step: "test", Attempt: 1}, nil))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 2, Type: api.TestFinished, Step: "test", Attempt: 1},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, Type: api.StepStarted, Step: "test", Attempt: 1}, nil))
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 2, Type: api.TestFinished, Step: "test", Attempt: 1},
 		api.TestFinishedBody{Suite: "pkg/a", Name: "TestX", Outcome: api.TestFailed, Output: "boom"}))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 3, Type: api.TestFinished, Step: "test", Attempt: 1},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 3, Type: api.TestFinished, Step: "test", Attempt: 1},
 		api.TestFinishedBody{Suite: "pkg/a", Name: "TestY", Outcome: api.TestPassed, Duration: time.Second}))
 	st := s.Steps["test"]
 	if len(st.Tests) != 2 {
@@ -745,8 +755,8 @@ func TestApplyReplaysATestIdempotently(t *testing.T) {
 	s := api.NewRunState()
 	e := mustEvent(t, api.Event{Seq: 1, Type: api.TestFinished, Step: "test", Attempt: 1},
 		api.TestFinishedBody{Suite: "pkg/a", Name: "TestX", Outcome: api.TestFailed})
-	_ = s.Apply(e)
-	_ = s.Apply(e)
+	mustApply(t, s, e)
+	mustApply(t, s, e)
 	if n := len(s.Steps["test"].Tests); n != 1 {
 		t.Errorf("tests = %d, want 1", n)
 	}
@@ -759,12 +769,12 @@ func TestApplyReplaysATestIdempotently(t *testing.T) {
 // the last event. Replaying the promoting passed event must not demote.
 func TestApplyReplayOfTheRecoveringEventStaysRecovered(t *testing.T) {
 	s := api.NewRunState()
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.TestFinished, Step: "test", Attempt: 1},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, Type: api.TestFinished, Step: "test", Attempt: 1},
 		api.TestFinishedBody{Suite: "pkg/a", Name: "TestX", Outcome: api.TestFailed}))
 	pass := mustEvent(t, api.Event{Seq: 2, Type: api.TestFinished, Step: "test", Attempt: 2},
 		api.TestFinishedBody{Suite: "pkg/a", Name: "TestX", Outcome: api.TestPassed})
-	_ = s.Apply(pass)
-	_ = s.Apply(pass)
+	mustApply(t, s, pass)
+	mustApply(t, s, pass)
 	st := s.Steps["test"]
 	if len(st.Tests) != 1 {
 		t.Fatalf("tests = %d, want 1", len(st.Tests))
@@ -777,7 +787,7 @@ func TestApplyReplayOfTheRecoveringEventStaysRecovered(t *testing.T) {
 func TestApplyRecoveredSurvivesAThirdAttemptPass(t *testing.T) {
 	s := api.NewRunState()
 	for i, o := range []api.TestOutcome{api.TestFailed, api.TestPassed, api.TestPassed} {
-		_ = s.Apply(mustEvent(t, api.Event{Seq: uint64(i + 1), Type: api.TestFinished, Step: "test", Attempt: i + 1},
+		mustApply(t, s, mustEvent(t, api.Event{Seq: uint64(i + 1), Type: api.TestFinished, Step: "test", Attempt: i + 1},
 			api.TestFinishedBody{Suite: "pkg/a", Name: "TestX", Outcome: o}))
 	}
 	x := s.Steps["test"].Test("pkg/a", "TestX")
@@ -796,7 +806,7 @@ func TestApplySameAttemptFailedIsNotReplacedByPassed(t *testing.T) {
 		{Suite: "pkg/a", Name: "TestX", Outcome: api.TestPassed},
 		{Suite: "pkg/a", Name: "TestX", Outcome: api.TestSkipped},
 	} {
-		_ = s.Apply(mustEvent(t, api.Event{Seq: uint64(i + 1), Type: api.TestFinished, Step: "test", Attempt: 1}, b))
+		mustApply(t, s, mustEvent(t, api.Event{Seq: uint64(i + 1), Type: api.TestFinished, Step: "test", Attempt: 1}, b))
 	}
 	x := s.Steps["test"].Test("pkg/a", "TestX")
 	if x == nil || x.Outcome != api.TestFailed || x.Output != "boom" || x.Attempt != 1 {
@@ -810,7 +820,7 @@ func TestApplySameAttemptPassedIsReplacedByFailed(t *testing.T) {
 		{Suite: "pkg/a", Name: "TestX", Outcome: api.TestPassed},
 		{Suite: "pkg/a", Name: "TestX", Outcome: api.TestFailed, Output: "boom"},
 	} {
-		_ = s.Apply(mustEvent(t, api.Event{Seq: uint64(i + 1), Type: api.TestFinished, Step: "test", Attempt: 1}, b))
+		mustApply(t, s, mustEvent(t, api.Event{Seq: uint64(i + 1), Type: api.TestFinished, Step: "test", Attempt: 1}, b))
 	}
 	x := s.Steps["test"].Test("pkg/a", "TestX")
 	if x == nil || x.Outcome != api.TestFailed || x.Output != "boom" {
@@ -835,8 +845,8 @@ func TestApplyIgnoresATestEventWithNoStepID(t *testing.T) {
 
 func TestRunStateJSONIsUnchangedWithoutTests(t *testing.T) {
 	s := api.NewRunState()
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.StepStarted, Step: "a", Attempt: 1}, nil))
-	_ = s.Apply(mustEvent(t, api.Event{Seq: 2, Type: api.StepFinished, Step: "a", Attempt: 1},
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, Type: api.StepStarted, Step: "a", Attempt: 1}, nil))
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 2, Type: api.StepFinished, Step: "a", Attempt: 1},
 		api.StepFinishedBody{State: api.StateSucceeded}))
 	b, err := json.Marshal(s)
 	if err != nil {
