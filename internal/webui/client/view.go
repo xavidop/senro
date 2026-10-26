@@ -371,17 +371,17 @@ func (v *view) renderDetail(f frame) {
 func (v *view) renderTests(f frame) {
 	rows := present.Tests(f.state, f.selected)
 	var sig strings.Builder
+	// Fields are separated by NUL, which no test name or output carries in
+	// practice. A printable separator can occur inside a name or an output
+	// (":" and ";" both do), so two different lists could write the same
+	// signature and the second would never be drawn.
 	sig.WriteString(f.selected)
-	sig.WriteByte('|')
+	sig.WriteByte(0)
 	for _, r := range rows {
-		sig.WriteString(r.Name)
-		sig.WriteByte(':')
-		sig.WriteString(r.Badge.Label)
-		sig.WriteByte(':')
-		sig.WriteString(r.Duration)
-		sig.WriteByte(':')
-		sig.WriteString(r.Output)
-		sig.WriteByte(';')
+		for _, field := range []string{r.Name, r.Badge.Label, r.Duration, r.Output} {
+			sig.WriteString(field)
+			sig.WriteByte(0)
+		}
 	}
 	if !v.changed("tests", sig.String()) {
 		return
