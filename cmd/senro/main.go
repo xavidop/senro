@@ -96,15 +96,18 @@ Usage:
       a different kind of thing. Exits 0 whether or not they differ.
 
   senro shell [--pid <pid> | --run <id> | --addr <host:port>] [--tls] [--tty]
-      --step ID [-- cmd...]
+      [--offline] [--keep] [--cache-dir DIR] --step ID [--cmd ARG... | -- cmd...]
       Open an interactive session on a LIVE run's step: the step's own
       workspaces, read-only, at the paths the step saw them, on the step's
       own executor. Pair it with a breakpoint to stop the run before a step
       and look at what it was about to run against. No secrets are delivered
       into a session. Without --tty there is no terminal: no prompt, no line
       editing, no job control. --tty runs the session on a real terminal;
-      local and container host one, ssh does not. A finished run has no
-      engine to host a session; use senro ws pull.
+      local and container host one, ssh does not. A --run that is not live,
+      or --offline, restores the step's recorded workspaces into a temporary
+      directory (removed on exit unless --keep) and runs this machine's own
+      $SHELL there, not the step's image; senro ws pull writes one workspace
+      out to keep. --cmd takes the rest of the arguments as the command.
 
   senro logs fetch [--force] RUN [DEST]
       Fetch a run archived in the shared cache, a bucket or an OCI registry,

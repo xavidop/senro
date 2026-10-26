@@ -304,10 +304,11 @@ func TestAShellNeverReceivesTheStepsSecrets(t *testing.T) {
 	}
 	// This end-to-end check covers the delivery path: no secret file exists
 	// for the session to read, and the engine adds neither variable to its
-	// environment. It does NOT exercise shellEnv's filter, because the engine
-	// never puts those variables in a node's own Env in the first place; that
-	// filter's own reachable cases are pinned directly in
-	// shell_internal_test.go, where a mutation to it actually fails something.
+	// environment. It does NOT exercise plan.ShellEnv's filter, because the
+	// engine never puts those variables in a node's own Env in the first
+	// place; that filter's own reachable cases are pinned directly in
+	// internal/plan/shellenv_test.go, where a mutation to it actually fails
+	// something.
 	if strings.Contains(all, "API_TOKEN") || strings.Contains(all, "SENRO_SECRET_") {
 		t.Errorf("a session was handed a variable naming a secret's path: %q", all)
 	}
