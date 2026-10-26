@@ -103,6 +103,74 @@ func TestPlainPrintsAStepThatFinishesAfterItStarted(t *testing.T) {
 	}
 }
 
+// TestPlainNamesAFailingTestLiveOnce is the live half of
+// TestPlainSnapshotNamesEachStillFailingTestOnce: a failed test.finished that
+// arrives while Plain watches is named as it arrives, and step.finished, which
+// prints the step line with the counts, does not name it a second time. A
+// passing test.finished prints nothing.
+func TestPlainNamesAFailingTestLiveOnce(t *testing.T) {
+	dir := t.TempDir()
+	l, err := eventlog.Open(dir)
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	mustAppend := func(e api.Event) {
+		t.Helper()
+		if _, err := l.Append(e); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	mustAppend(api.Event{Type: api.RunStarted, Run: "run1", Payload: mustBody(api.RunStartedBody{
+		Pipeline: "ci", EngineVersion: "test", PlanDigest: "d", StartedAt: time.Now().UTC(),
+	})})
+	mustAppend(api.Event{Type: api.StepCreated, Run: "run1", Step: "unit", Payload: mustBody(api.StepCreatedBody{Kind: "exec"})})
+	mustAppend(api.Event{Type: api.StepStarted, Run: "run1", Step: "unit", Attempt: 1})
+
+	fs, err := source.OpenFile(dir, true)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer func() { _ = fs.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var buf syncBuffer
+	var plainErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, plainErr = render.Plain(ctx, fs, &buf)
+	}()
+	// Everything appended after the snapshot's line arrives live.
+	waitForSubstring(t, &buf, "unit started\n", 2*time.Second)
+
+	mustAppend(api.Event{Type: api.TestFinished, Run: "run1", Step: "unit", Attempt: 1, Payload: mustBody(api.TestFinishedBody{
+		Suite: "pkg/a", Name: "TestOK", Outcome: api.TestPassed,
+	})})
+	mustAppend(api.Event{Type: api.TestFinished, Run: "run1", Step: "unit", Attempt: 1, Payload: mustBody(api.TestFinishedBody{
+		Suite: "pkg/a", Name: "TestBad", Outcome: api.TestFailed, Output: "boom",
+	})})
+	waitForSubstring(t, &buf, "unit test pkg/a.TestBad failed\n", 2*time.Second)
+	mustAppend(api.Event{Type: api.StepFinished, Run: "run1", Step: "unit", Attempt: 1, Payload: mustBody(api.StepFinishedBody{
+		State: api.StateFailed, ExitCode: 1, Error: "exit status 1",
+	})})
+	waitForSubstring(t, &buf, "unit failed: exit status 1 (2 tests, 1 failed)\n", 2*time.Second)
+
+	cancel()
+	<-done
+	if plainErr != nil {
+		t.Fatalf("Plain: %v", plainErr)
+	}
+	out := buf.String()
+	if n := strings.Count(out, "unit test pkg/a.TestBad failed\n"); n != 1 {
+		t.Errorf("the failed test was named %d times, want exactly 1:\n%s", n, out)
+	}
+	if strings.Contains(out, "TestOK") {
+		t.Errorf("a passing test was named:\n%s", out)
+	}
+}
+
 // The live half of TestPlainPrintsStepOutputFromTheSnapshot: output that
 // appears while the renderer is watching must reach the log as it arrives.
 // Two steps run at once on purpose, which is why every line must name its

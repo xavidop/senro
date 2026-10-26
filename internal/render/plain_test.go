@@ -20,7 +20,10 @@ import (
 // second path would let a TTY run and a CI log drift in what they report.
 func TestPlainRendersFromAFileSource(t *testing.T) {
 	dir := writeRun(t, twoStepRun())
-	fs, _ := source.OpenFile(dir, false)
+	fs, err := source.OpenFile(dir, false)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
 	defer func() { _ = fs.Close() }()
 
 	var buf bytes.Buffer
@@ -47,7 +50,10 @@ func TestPlainRendersFromAFileSource(t *testing.T) {
 
 func TestPlainReportsAFailedRunAndNamesTheCause(t *testing.T) {
 	dir := writeRun(t, failedRun()) // "deploy" exits 9
-	fs, _ := source.OpenFile(dir, false)
+	fs, err := source.OpenFile(dir, false)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
 	defer func() { _ = fs.Close() }()
 
 	var buf bytes.Buffer
@@ -67,7 +73,10 @@ func TestPlainReportsAFailedRunAndNamesTheCause(t *testing.T) {
 // finds that out.
 func TestPlainDistinguishesRecovery(t *testing.T) {
 	dir := writeRun(t, recoveredRun())
-	fs, _ := source.OpenFile(dir, false)
+	fs, err := source.OpenFile(dir, false)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
 	defer func() { _ = fs.Close() }()
 
 	var buf bytes.Buffer
@@ -219,7 +228,10 @@ func TestPlainWritesNoAnsiEscapes(t *testing.T) {
 	// This renderer exists for non-TTY output. An escape sequence in a CI log
 	// is the most common way this feature ships broken.
 	dir := writeRun(t, twoStepRun())
-	fs, _ := source.OpenFile(dir, false)
+	fs, err := source.OpenFile(dir, false)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
 	defer func() { _ = fs.Close() }()
 
 	var buf bytes.Buffer
@@ -425,15 +437,21 @@ func TestPlainNamesEachFailingTest(t *testing.T) {
 	out := buf.String()
 	// A finished run is rendered from its folded snapshot, where TestX has
 	// recovered: it is counted on the step line, not named as failed.
-	if strings.Contains(out, "failed\n") {
-		t.Errorf("a recovered or passing test was named as failed:\n%s", out)
+	for _, line := range []string{"test test pkg/a.TestX failed\n", "test test pkg/a.TestY failed\n"} {
+		if strings.Contains(out, line) {
+			t.Errorf("a recovered or passing test was named as failed (%q):\n%s", line, out)
+		}
 	}
 	if !strings.Contains(out, "test recovered (2 tests, 1 recovered)\n") {
 		t.Errorf("output missing the step line with test counts:\n%s", out)
 	}
 }
 
-func TestPlainNamesAStillFailingTestOnceWithSuiteAndBare(t *testing.T) {
+// TestPlainSnapshotNamesEachStillFailingTestOnce renders a finished run from
+// its snapshot: each test still failed is named once, as suite.name or bare
+// when it has no suite, above the step line that counts them; a skipped test
+// is counted, not named.
+func TestPlainSnapshotNamesEachStillFailingTestOnce(t *testing.T) {
 	body := func(b api.TestFinishedBody) []byte { return mustBody(b) }
 	dir := writeRun(t, []api.Event{
 		{Type: api.RunStarted, Run: "run1", Payload: mustBody(api.RunStartedBody{
@@ -447,7 +465,10 @@ func TestPlainNamesAStillFailingTestOnceWithSuiteAndBare(t *testing.T) {
 		{Type: api.StepFinished, Run: "run1", Step: "test", Attempt: 1, Payload: mustBody(api.StepFinishedBody{State: api.StateFailed, ExitCode: 1, Error: "exit status 1"})},
 		{Type: api.RunFinished, Run: "run1", Payload: mustBody(api.RunFinishedBody{Status: api.RunFailed})},
 	})
-	fs, _ := source.OpenFile(dir, false)
+	fs, err := source.OpenFile(dir, false)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
 	defer func() { _ = fs.Close() }()
 
 	var buf bytes.Buffer
@@ -506,7 +527,10 @@ func TestPlainReportsAStepHeldAtABreakpointFromASnapshot(t *testing.T) {
 			ClientID: "operator",
 		})},
 	})
-	fs, _ := source.OpenFile(dir, false)
+	fs, err := source.OpenFile(dir, false)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
 	defer func() { _ = fs.Close() }()
 
 	var buf bytes.Buffer
