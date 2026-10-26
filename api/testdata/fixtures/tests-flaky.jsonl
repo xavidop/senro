@@ -4,7 +4,7 @@
 {"v":1,"seq":4,"ts":"2026-08-07T10:00:01Z","type":"step.started","run":"01JQ2","step":"test","attempt":1,"payload":{"cmd":["go","test","./..."]}}
 {"v":1,"seq":5,"ts":"2026-08-07T10:00:02Z","type":"test.finished","run":"01JQ2","step":"test","attempt":1,"payload":{"name":"TestX","suite":"pkg/a","outcome":"failed","duration_ns":120000000,"output":"--- FAIL: TestX\n    x_test.go:12: boom","file":"x_test.go","line":12}}
 {"v":1,"seq":6,"ts":"2026-08-07T10:00:02Z","type":"test.finished","run":"01JQ2","step":"test","attempt":1,"payload":{"name":"TestY","suite":"pkg/a","outcome":"passed","duration_ns":30000000}}
-{"v":1,"seq":7,"ts":"2026-08-07T10:00:03Z","type":"step.retried","run":"01JQ2","step":"test","attempt":2,"payload":{"attempt":2,"reason":"TestX failed","predicate":"log_match","backoff_ms":1000}}
+{"v":1,"seq":7,"ts":"2026-08-07T10:00:03Z","type":"step.retried","run":"01JQ2","step":"test","attempt":2,"payload":{"attempt":2,"reason":"TestX failed","predicate":"log_match:FAIL","backoff_ms":1000}}
 {"v":1,"seq":8,"ts":"2026-08-07T10:00:04Z","type":"step.started","run":"01JQ2","step":"test","attempt":2,"payload":{"cmd":["go","test","./..."]}}
 {"v":1,"seq":9,"ts":"2026-08-07T10:00:05Z","type":"test.finished","run":"01JQ2","step":"test","attempt":2,"payload":{"name":"TestX","suite":"pkg/a","outcome":"passed","duration_ns":110000000}}
 {"v":1,"seq":10,"ts":"2026-08-07T10:00:05Z","type":"test.finished","run":"01JQ2","step":"test","attempt":2,"payload":{"name":"TestY","suite":"pkg/a","outcome":"passed","duration_ns":28000000}}
