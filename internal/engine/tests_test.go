@@ -6,6 +6,7 @@ package engine_test
 // the step's log no longer holds.
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,8 +14,11 @@ import (
 	"github.com/xavidop/mamori/secret"
 	"github.com/xavidop/senro/api"
 	"github.com/xavidop/senro/internal/engine"
+	"github.com/xavidop/senro/internal/executor"
+	"github.com/xavidop/senro/internal/executor/localexec"
 	"github.com/xavidop/senro/internal/plan"
 	"github.com/xavidop/senro/internal/secrets"
+	"github.com/xavidop/senro/internal/storage"
 )
 
 // testsFinished returns every test.finished event in events, decoded, next
@@ -134,25 +138,25 @@ func TestATAPStepEmitsEvents(t *testing.T) {
 	assertTestsPrecedeFinish(t, evs, finished)
 }
 
-// TestAJUnitStepReadsTheReportAfterTheCommand gives the step an absolute
-// WorkDir: the engine resolves the report against cmdDirFor(n.WorkDir,
-// mounts), which is the directory the local executor starts the command in
-// only when WorkDir is an absolute host path.
-func TestAJUnitStepReadsTheReportAfterTheCommand(t *testing.T) {
-	dir := t.TempDir()
+// junitFixture is the absolute path of testparse's own JUnit fixture, which
+// a step copies into place as its report.
+func junitFixture(t *testing.T) string {
+	t.Helper()
 	report, err := filepath.Abs(filepath.Join("..", "testparse", "testdata", "junit.xml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &plan.Plan{Version: 1, Nodes: []plan.Node{{
-		ID: "t", Kind: "exec", WorkDir: dir,
-		Cmd:   []string{"sh", "-c", `cp "$1" "$PWD/report.xml"`, "sh", report},
-		Tests: &plan.TestsSpec{Format: "junit", Path: "report.xml"},
-	}}}
-	_, events, states := runPlan(t, dir, p)
+	return report
+}
 
+// assertJUnitFixtureRead checks a run that copied junitFixture into place:
+// the step succeeded, and each of the fixture's four cases became one
+// test.finished for attempt 1, ahead of the step's step.finished.
+func assertJUnitFixtureRead(t *testing.T, events []api.Event, states map[string]api.State) {
+	t.Helper()
 	if states["t"] != api.StateSucceeded {
-		t.Errorf("t = %s, want succeeded", states["t"])
+		_, b := lastStepFinished(t, events, "t")
+		t.Errorf("t = %s (%s), want succeeded", states["t"], b.Error)
 	}
 	evs, bodies := testsFinished(t, events)
 	if len(evs) != 4 {
@@ -167,10 +171,89 @@ func TestAJUnitStepReadsTheReportAfterTheCommand(t *testing.T) {
 	assertTestsPrecedeFinish(t, evs, finished)
 }
 
+// TestAJUnitStepReadsTheReportFromItsWorkingDirectory declares no WorkDir:
+// the step writes report.xml wherever the executor started it, a directory
+// only the sandbox knows, and the engine must read it from there.
+func TestAJUnitStepReadsTheReportFromItsWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{{
+		ID: "t", Kind: "exec",
+		Cmd:   []string{"sh", "-c", `cp "$1" report.xml`, "sh", junitFixture(t)},
+		Tests: &plan.TestsSpec{Format: "junit", Path: "report.xml"},
+	}}}
+	_, events, states := runPlan(t, dir, p)
+	assertJUnitFixtureRead(t, events, states)
+}
+
+// TestAJUnitReportInAWorkspaceAtTheWorkDirIsRead mounts a workspace at the
+// step's WorkDir, so the step starts inside the workspace directory and the
+// report lands in it. cmdDirFor is "" here, which is exactly the case a
+// report resolved against it could never find.
+func TestAJUnitReportInAWorkspaceAtTheWorkDirIsRead(t *testing.T) {
+	dir := t.TempDir()
+	store, err := storage.Open(filepath.Join(t.TempDir(), "cache"))
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	p := &plan.Plan{
+		Version:    1,
+		Workspaces: []plan.WorkspaceSpec{{Name: "src", Scope: "run"}},
+		Nodes: []plan.Node{{
+			ID: "t", Kind: "exec", WorkDir: "/src",
+			Mounts: []plan.MountSpec{{Workspace: "src", At: "/src"}},
+			Cmd:    []string{"sh", "-c", `cp "$1" report.xml`, "sh", junitFixture(t)},
+			Tests:  &plan.TestsSpec{Format: "junit", Path: "report.xml"},
+		}},
+	}
+	_, events, states := runPlanWith(t, dir, p, func(o *engine.Options) {
+		o.Storage = store
+		o.Executor = localexec.New(dir, store.Snapshotter)
+	})
+	assertJUnitFixtureRead(t, events, states)
+}
+
+// hiddenWorkDir is an executor whose sandboxes do not implement
+// executor.WorkDirReporter: the local executor with the capability masked by
+// embedding only the Sandbox interface.
+type hiddenWorkDir struct{ executor.Executor }
+
+func (h hiddenWorkDir) Sandbox(ctx context.Context, spec executor.SandboxSpec) (executor.Sandbox, error) {
+	sb, err := h.Executor.Sandbox(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	return struct{ executor.Sandbox }{sb}, nil
+}
+
+// TestAJUnitReportOnAnExecutorWithNoHostDirectoryFailsTheStep covers the
+// engine's own refusal, the one plan.Validate normally makes unreachable: a
+// sandbox that cannot name a host directory fails the step and says what to
+// use instead, rather than reading some unrelated coordinator path.
+func TestAJUnitReportOnAnExecutorWithNoHostDirectoryFailsTheStep(t *testing.T) {
+	dir := t.TempDir()
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{{
+		ID: "t", Kind: "exec",
+		Cmd:   []string{"sh", "-c", `cp "$1" report.xml`, "sh", junitFixture(t)},
+		Tests: &plan.TestsSpec{Format: "junit", Path: "report.xml"},
+	}}}
+	_, events, _ := runPlanWith(t, dir, p, func(o *engine.Options) {
+		o.Executor = hiddenWorkDir{localexec.New(dir, nil)}
+	})
+
+	_, b := lastStepFinished(t, events, "t")
+	if b.State != api.StateFailed {
+		t.Errorf("state = %s, want failed", b.State)
+	}
+	if !strings.Contains(b.Error, "does not share the coordinator's filesystem") ||
+		!strings.Contains(b.Error, "testreport.GoTestJSON()") {
+		t.Errorf("error = %q, want it to explain the filesystem and name the streaming formats", b.Error)
+	}
+}
+
 func TestAMissingJUnitReportFailsAPassingStep(t *testing.T) {
 	dir := t.TempDir()
 	p := &plan.Plan{Version: 1, Nodes: []plan.Node{{
-		ID: "t", Kind: "exec", WorkDir: dir, Cmd: []string{"true"},
+		ID: "t", Kind: "exec", Cmd: []string{"true"},
 		Tests: &plan.TestsSpec{Format: "junit", Path: "report.xml"},
 	}}}
 	_, events, _ := runPlan(t, dir, p)
@@ -187,7 +270,7 @@ func TestAMissingJUnitReportFailsAPassingStep(t *testing.T) {
 func TestAMissingJUnitReportOnAFailedStepIsNotTheStory(t *testing.T) {
 	dir := t.TempDir()
 	p := &plan.Plan{Version: 1, Nodes: []plan.Node{{
-		ID: "t", Kind: "exec", WorkDir: dir, Cmd: []string{"sh", "-c", "exit 3"},
+		ID: "t", Kind: "exec", Cmd: []string{"sh", "-c", "exit 3"},
 		Tests: &plan.TestsSpec{Format: "junit", Path: "report.xml"},
 	}}}
 	_, events, _ := runPlan(t, dir, p)
@@ -250,7 +333,7 @@ func TestAJUnitReportIsRedacted(t *testing.T) {
 
 	dir := t.TempDir()
 	p := &plan.Plan{Version: 1, Nodes: []plan.Node{{
-		ID: "t", Kind: "exec", WorkDir: dir,
+		ID: "t", Kind: "exec",
 		Cmd: []string{"sh", "-c",
 			`printf '%s%s%s' '<testsuite name="s"><testcase name="c"><failure>leaked token-' ` +
 				`'aaaaaaaaaa' '</failure></testcase></testsuite>' > report.xml`},

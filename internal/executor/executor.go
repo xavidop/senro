@@ -314,6 +314,24 @@ type MountReader interface {
 	ReadMount(ctx context.Context, name, dest string) error
 }
 
+// WorkDirReporter is implemented by a sandbox that shares the coordinator's
+// filesystem and can say which host directory its command started in.
+//
+// The engine needs that directory to read a file a step left behind, a JUnit
+// report, from the coordinator side. It cannot compute it: the sandbox
+// decides where a command starts (its own attempt directory, or the
+// workspace realized at the step's WorkDir), and only the sandbox knows that
+// path. A separate interface for MountReader's reason: "is there a host
+// directory to read from" must be answerable, and an executor whose command
+// runs somewhere else says no by not implementing this.
+//
+// WorkDir must name the directory Run starts a command in when the command's
+// Dir is the step's declared WorkDir, which is how the engine always runs a
+// step.
+type WorkDirReporter interface {
+	WorkDir() string
+}
+
 // Interactive is an optional Sandbox capability: running one command with a
 // stdin attached, for as long as somebody is on the other end of it.
 //

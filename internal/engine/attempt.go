@@ -558,7 +558,7 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 	// the real story under a consequence of it. Replacing res also skips the
 	// scratch read-back below, which keys on the same succeeded state.
 	if n.Tests != nil && n.Tests.Format == testreport.FormatJUnit && res.state == api.StateSucceeded {
-		if err := rc.readJUnit(n, cmdDirFor(n.WorkDir, mounts), attempt); err != nil {
+		if err := rc.readJUnit(n, sb, attempt); err != nil {
 			res = attemptResult{state: api.StateFailed, err: err, logTail: tail.String(), snapshots: snaps}
 		}
 	}

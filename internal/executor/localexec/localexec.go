@@ -289,6 +289,14 @@ func (s *sandbox) commandDir(c senroexec.Cmd) string {
 	return dir
 }
 
+// WorkDir implements senroexec.WorkDirReporter. It is commandDir applied to
+// the step's declared WorkDir, the Dir the engine runs every step with, so
+// the directory reported and the directory Run starts in come from one
+// resolution and cannot disagree (TestWorkDirIsWhereRunStarts).
+func (s *sandbox) WorkDir() string {
+	return s.commandDir(senroexec.Cmd{Dir: s.spec.WorkDir})
+}
+
 func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Writer) (int, error) {
 	if len(c.Args) == 0 {
 		return 0, fmt.Errorf("localexec: %w: empty command", senroexec.ErrInfra)
