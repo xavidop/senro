@@ -216,7 +216,10 @@ func TestCancellingAShellEndsIt(t *testing.T) {
 	cancel()
 
 	select {
-	case <-done:
+	case err := <-done:
+		if err == nil {
+			t.Error("a cancelled shell session returned no error")
+		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("cancelling the caller's context did not end the session")
 	}

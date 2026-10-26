@@ -271,7 +271,9 @@ func TestServerCloseTearsDownAHijackedSession(t *testing.T) {
 	}
 
 	select {
-	case <-engineSaw:
+	case err := <-engineSaw:
+		// EOF or a closed-connection error: either way its stdin ended.
+		t.Logf("the engine's stdin ended: %v", err)
 	case <-time.After(20 * time.Second):
 		t.Fatal("the session outlived the server that was hosting it")
 	}

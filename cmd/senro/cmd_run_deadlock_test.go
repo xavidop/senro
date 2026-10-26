@@ -44,7 +44,7 @@ func TestWaitForRegistrationOrExitFindsALateRegistration(t *testing.T) {
 		close(registered)
 	}()
 
-	waitDone := make(chan error) // the process is alive (liveSubprocess) and never exits on its own here
+	waitDone := make(chan struct{}) // the process is alive (liveSubprocess) and never exits on its own here
 	entry, found, exited := waitForRegistrationOrExit(context.Background(), pid, waitDone)
 	if !found {
 		t.Fatal("found = false, want true — a registration that arrives late must still be picked up, not missed by a deadline that already gave up")
@@ -60,8 +60,8 @@ func TestWaitForRegistrationOrExitFindsALateRegistration(t *testing.T) {
 
 func TestWaitForRegistrationOrExitReturnsOnProcessExitWithoutEverRegistering(t *testing.T) {
 	isolateRegistry(t)
-	waitDone := make(chan error, 1)
-	waitDone <- nil // the process already exited; nothing was ever registered for it
+	waitDone := make(chan struct{}, 1)
+	waitDone <- struct{}{} // the process already exited; nothing was ever registered for it
 
 	_, found, exited := waitForRegistrationOrExit(context.Background(), 999999, waitDone)
 	if found {
@@ -79,8 +79,8 @@ func TestWaitForRegistrationOrExitReturnsOnProcessExitWithoutEverRegistering(t *
 // as the real bug did, catches it.
 func TestWaitForRegistrationOrExitDoesNotDoubleDrainWaitDone(t *testing.T) {
 	isolateRegistry(t)
-	waitDone := make(chan error, 1)
-	waitDone <- nil
+	waitDone := make(chan struct{}, 1)
+	waitDone <- struct{}{}
 
 	_, found, exited := waitForRegistrationOrExit(context.Background(), 999999, waitDone)
 	if found || !exited {
@@ -104,7 +104,7 @@ func TestWaitForRegistrationOrExitDoesNotDoubleDrainWaitDone(t *testing.T) {
 func TestWaitForRegistrationOrExitRespectsContextCancellation(t *testing.T) {
 	isolateRegistry(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	waitDone := make(chan error) // never fires
+	waitDone := make(chan struct{}) // never fires
 
 	type result struct{ found, exited bool }
 	done := make(chan result, 1)

@@ -243,8 +243,14 @@ func buildPipeline(ctx context.Context, goBin, pkg string, stderr io.Writer) (bi
 // exits before registering cannot cause a double-Wait.
 func runPipeline(ctx context.Context, cmd *exec.Cmd, mode uiMode, stdout, stderr io.Writer, interrupted *atomic.Bool) int {
 	pid := cmd.Process.Pid
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- cmd.Wait() }()
+	waitDone := make(chan struct{}, 1)
+	// The channel carries "it exited", not Wait's error: every exit code
+	// below comes from cmd.ProcessState (processExitCode), which Wait has
+	// populated by the time the signal is sent, so the error has no reader.
+	go func() {
+		_ = cmd.Wait()
+		waitDone <- struct{}{}
+	}()
 
 	entry, found, exited := waitForRegistrationOrExit(ctx, pid, waitDone)
 
@@ -331,7 +337,7 @@ func runPipeline(ctx context.Context, cmd *exec.Cmd, mode uiMode, stdout, stderr
 // registration means a slow process, not one that will never register, and
 // a pipeline with WaitForClient: true blocks on exactly the connection a
 // deadline would give up making. See cmd_run_deadlock_test.go.
-func waitForRegistrationOrExit(ctx context.Context, pid int, waitDone <-chan error) (entry attachsrv.Entry, found, exited bool) {
+func waitForRegistrationOrExit(ctx context.Context, pid int, waitDone <-chan struct{}) (entry attachsrv.Entry, found, exited bool) {
 	ticker := time.NewTicker(registrationPollInterval)
 	defer ticker.Stop()
 	for {

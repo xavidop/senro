@@ -402,8 +402,7 @@ func TestCancellationIsInfrastructureAndTakesThePodWithIt(t *testing.T) {
 	for !strings.Contains(out.String(), "started") {
 		if time.Now().After(deadline) {
 			cancel()
-			<-done
-			t.Fatal("the step never started")
+			t.Fatalf("the step never started (Run returned %v)", <-done)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}

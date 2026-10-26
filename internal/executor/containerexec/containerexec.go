@@ -505,8 +505,14 @@ func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Wr
 	// can STOP it rather than merely stop waiting for it.
 	logCtx, stopLogs := context.WithCancel(bg)
 	defer stopLogs()
-	logsDone := make(chan error, 1)
-	go func() { logsDone <- s.ex.cli.ContainerLogs(logCtx, id, stdout, stderr) }()
+	// The stream's error is not the step's verdict: ContainerWait owns the
+	// exit code, and the drain below cancels the stream on purpose, so its
+	// error is expected on that path. logsDone only says "it ended".
+	logsDone := make(chan struct{}, 1)
+	go func() {
+		_ = s.ex.cli.ContainerLogs(logCtx, id, stdout, stderr)
+		logsDone <- struct{}{}
+	}()
 
 	type waitResult struct {
 		code int
