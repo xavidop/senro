@@ -2,6 +2,8 @@ package testparse
 
 import (
 	"encoding/xml"
+	"errors"
+	"fmt"
 	"io"
 	"math"
 	"strconv"
@@ -43,13 +45,26 @@ type junitProblem struct {
 // a truncated report fails with an error before it can emit half a suite.
 func ParseJUnit(r io.Reader, emit Emit) error {
 	dec := xml.NewDecoder(r)
+	sawRoot := false
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
+			// An empty file, plain text or JSON is not a report. Reading it
+			// as "0 tests" would hide a wrong report path or a runner that
+			// wrote something else, so it fails the step instead.
+			if !sawRoot {
+				return errors.New("testparse: junit report has no XML root element")
+			}
 			return nil
 		}
 		if err != nil {
 			return err
+		}
+		if se, ok := tok.(xml.StartElement); ok && !sawRoot {
+			sawRoot = true
+			if n := se.Name.Local; n != "testsuites" && n != "testsuite" {
+				return fmt.Errorf("testparse: junit root is <%s>, want <testsuites> or <testsuite>", n)
+			}
 		}
 		// Descend through <testsuites> by simply continuing to read tokens;
 		// each <testsuite> is decoded whole, nested suites included.

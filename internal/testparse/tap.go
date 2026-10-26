@@ -45,6 +45,11 @@ func (t *tap) line(b []byte) {
 	if m := tapLine.FindStringSubmatch(s); m != nil {
 		t.finish()
 		r := Result{Name: strings.TrimSpace(m[3])}
+		if r.Name == "" {
+			// Bare "ok 1" lines are legal TAP. The number keeps them from
+			// all colliding on an empty name.
+			r.Name = m[2]
+		}
 		switch {
 		case m[4] != "":
 			// A TODO test is expected to fail, so its verdict says nothing

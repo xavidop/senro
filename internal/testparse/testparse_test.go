@@ -199,6 +199,39 @@ func TestJUnitRefusesMalformedXML(t *testing.T) {
 	}
 }
 
+func TestJUnitRefusesInputThatIsNotAReport(t *testing.T) {
+	for _, in := range []string{"", "hello world", `{"tests":1}`, "<foo/>"} {
+		got, emit := collect()
+		if err := ParseJUnit(strings.NewReader(in), emit); err == nil || len(*got) != 0 {
+			t.Errorf("%q: err=%v results=%d, want error and none", in, err, len(*got))
+		}
+	}
+}
+
+func TestTAPEmptyDescriptionFallsBackToNumber(t *testing.T) {
+	got, emit := collect()
+	s := NewTAP(emit)
+	feed(t, s, "ok 1\nok 2\n")
+	s.Close()
+	if len(*got) != 2 || (*got)[0].Name != "1" || (*got)[1].Name != "2" {
+		t.Fatalf("got %+v", *got)
+	}
+}
+
+func TestGoTestSameNameInTwoPackagesEmitsBoth(t *testing.T) {
+	got, emit := collect()
+	s := NewGoTest(emit)
+	feed(t, s, `{"Action":"run","Package":"a","Test":"TestX"}`+"\n"+
+		`{"Action":"run","Package":"b","Test":"TestX"}`+"\n"+
+		`{"Action":"output","Package":"b","Test":"TestX","Output":"boom\n"}`+"\n"+
+		`{"Action":"pass","Package":"a","Test":"TestX"}`+"\n"+
+		`{"Action":"fail","Package":"b","Test":"TestX"}`+"\n")
+	r := *got
+	if len(r) != 2 || r[0].Suite != "a" || r[0].Outcome != api.TestPassed || r[1].Suite != "b" || r[1].Output != "boom\n" {
+		t.Fatalf("got %+v", r)
+	}
+}
+
 func TestNewStreamRejectsJUnit(t *testing.T) {
 	if _, err := NewStream("junit", func(Result) {}); err == nil {
 		t.Fatal("want error")
