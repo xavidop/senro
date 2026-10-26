@@ -65,6 +65,21 @@ func (h *holds) release(step string) bool {
 	return true
 }
 
+// whileHeld runs fn only if step is held, with the hold pinned until fn
+// returns: release waits on the same mutex, so the held step (and with it
+// its workspace mount locks) cannot go away mid-fn. It reports whether fn
+// ran. fn must be short and must not call back into h; a release blocks
+// for as long as it runs.
+func (h *holds) whileHeld(step string, fn func()) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.wait[step]; !ok {
+		return false
+	}
+	fn()
+	return true
+}
+
 // held reports whether step is held right now.
 func (h *holds) held(step string) bool {
 	h.mu.Lock()

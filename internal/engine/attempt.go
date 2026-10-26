@@ -181,6 +181,14 @@ func (rc *runCore) runStep(ctx context.Context, n *plan.Node, opts Options, logs
 				break retryLoop
 			}
 
+			// A run cancelled while the attempt was held (or in the instant
+			// after it failed) gets no next attempt, so announcing one with
+			// step.retried would put a retry in the ledger that never runs.
+			// The failed attempt stays the step's outcome.
+			if ctx.Err() != nil {
+				break retryLoop
+			}
+
 			recovered = true
 			next := attempt + 1
 			delay := backoff.Delay(next, rand.Float64())
@@ -389,9 +397,15 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 	// and the workspace mount locks still held by s.close's deferred
 	// release: a shell on this step mounts the workspaces as "whatever is in
 	// them now", so the hold has to come before anything a step's teardown
-	// or a sibling's cache restore could do to them. The cost is exactly
-	// that: a sibling mounting the same workspace waits on the mount lock
-	// for as long as an operator keeps this step held.
+	// or a sibling's cache restore could do to them.
+	//
+	// The cost, for as long as an operator keeps the step held: a sibling's
+	// ordinary mount of the same workspace is a shared hold and does not
+	// wait, but a cache hit restoring into it is exclusive and does, and
+	// once that restore is queued Go's RWMutex makes every LATER mount of
+	// the workspace wait behind it too. (The shell on this step is the one
+	// exception; see runShellSession.) The held step also keeps its
+	// MaxParallel slot, so with MaxParallel 1 a hold stalls the whole run.
 	//
 	// After the snapshot and the JUnit read, so the ledger already records
 	// what the failure left, and before the scratch read-back, which only a

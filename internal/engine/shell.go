@@ -270,9 +270,18 @@ func (rc *runCore) runShellSession(
 	// NOT held for the session's lifetime.
 	var mounts []executor.Mount
 	if rc.ws != nil {
-		unlock := rc.ws.lockMounts(workspaceMountNames(n))
-		mounts, err = rc.ws.handlerMounts(n)
-		unlock()
+		// A step held after failure already has a shared hold on these
+		// workspaces for the whole hold, which excludes any restore, so the
+		// read is safe without one of our own. Taking one anyway can hang:
+		// a sibling's cache-hit restore queued behind the held step blocks
+		// every NEW shared hold (Go's RWMutex favours a waiting writer), so
+		// the shell would wait for the release the operator has not given.
+		// whileHeld keeps the step from being released mid-read.
+		if !rc.holds.whileHeld(n.ID, func() { mounts, err = rc.ws.handlerMounts(n) }) {
+			unlock := rc.ws.lockMounts(workspaceMountNames(n))
+			mounts, err = rc.ws.handlerMounts(n)
+			unlock()
+		}
 		if err != nil {
 			refuseShell(req, reasonSandbox)
 			return

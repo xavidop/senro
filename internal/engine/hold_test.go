@@ -2,6 +2,8 @@ package engine_test
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,36 +36,47 @@ func failingWorkspacePlan(retry *plan.RetrySpec) *plan.Plan {
 }
 
 // breakOnFailureRun starts p with BreakOnFailure under ctx and returns the
-// run, its sink, and a channel of every breakpoint.hit.
+// run, its sink, and a channel of every event it emits.
 func breakOnFailureRun(t *testing.T, ctx context.Context, p *plan.Plan) (<-chan runResult, *shellSink, <-chan api.Event) {
 	t.Helper()
 	dir := t.TempDir()
+	return breakOnFailureRunIn(t, ctx, dir, openStore(t, dir), p, true)
+}
+
+func openStore(t *testing.T, dir string) *storage.Storage {
+	t.Helper()
 	store, err := storage.Open(filepath.Join(dir, "store"))
 	if err != nil {
 		t.Fatalf("storage.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
 
+// breakOnFailureRunIn is breakOnFailureRun in a caller's directory and
+// store, so two runs can share a cache.
+func breakOnFailureRunIn(
+	t *testing.T, ctx context.Context, dir string, store *storage.Storage, p *plan.Plan, breakOnFailure bool,
+) (<-chan runResult, *shellSink, <-chan api.Event) {
+	t.Helper()
 	s := newShellSink()
-	hits := make(chan api.Event, 8)
-	s.onEmit = func(e api.Event) {
-		if e.Type == api.BreakpointHit {
-			hits <- e
-		}
-	}
+	// Buffered past anything these plans emit, so the engine never waits
+	// on a test that only reads the events it cares about.
+	events := make(chan api.Event, 4096)
+	s.onEmit = func(e api.Event) { events <- e }
 	out := runAsync(ctx, p, engine.Options{
 		Dir: dir, Executor: localexec.New(dir, workspace.NewSnapshotter(store.CAS)),
 		Storage: store, Sink: s, MaxParallel: 4, RunID: "01HOLD",
-		BreakOnFailure: true, CleanupGrace: 4 * time.Second,
+		BreakOnFailure: breakOnFailure, CleanupGrace: 4 * time.Second,
 	})
-	return out, s, hits
+	return out, s, events
 }
 
 // waitFailureHit waits for the failure hold of attempt on build, checking
 // it says why it is held.
-func waitFailureHit(t *testing.T, hits <-chan api.Event, attempt int) {
+func waitFailureHit(t *testing.T, events <-chan api.Event, attempt int) {
 	t.Helper()
-	hit := waitForEvent(t, hits, func(e api.Event) bool { return e.Step == "build" })
+	hit := waitForEvent(t, events, func(e api.Event) bool { return e.Type == api.BreakpointHit && e.Step == "build" })
 	var body api.BreakpointHitBody
 	if err := hit.Decode(&body); err != nil {
 		t.Fatalf("decode breakpoint.hit: %v", err)
@@ -167,10 +180,18 @@ func TestBreakOnFailureHoldsEveryFailingAttempt(t *testing.T) {
 func TestCancelReleasesAHeldStep(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	out, s, hits := breakOnFailureRun(t, ctx, failingWorkspacePlan(nil))
+	// A step with retries left: the cancel must not be followed by a
+	// step.retried announcing an attempt that will never run.
+	out, s, hits := breakOnFailureRun(t, ctx, failingWorkspacePlan(
+		&plan.RetrySpec{MaxAttempts: 3, Predicate: "exit_code:3", BackoffBaseMS: 1}))
 	waitFailureHit(t, hits, 1)
 	cancel()
 	res := waitRun(t, out)
+	for _, e := range s.Events() {
+		if e.Type == api.StepRetried {
+			t.Errorf("step.retried after the run was cancelled during a hold: %+v", e)
+		}
+	}
 	if res.status == api.RunSucceeded {
 		t.Errorf("run status = %s after a cancelled hold", res.status)
 	}
@@ -211,4 +232,87 @@ func TestBreakpointSetOnAHeldStepIsRefused(t *testing.T) {
 		t.Fatalf("breakpoint.clear = %+v, want OK", resp)
 	}
 	waitRun(t, out)
+}
+
+// TestAShellOnAHeldStepIsNotBlockedByAQueuedRestore: the held step keeps a
+// shared hold on its workspace, and a sibling's cache hit on the same
+// workspace queues an exclusive restore behind it. Go's RWMutex then blocks
+// every new shared hold, so a shell taking its own would wait for the very
+// release the operator has not given yet.
+//
+// The first run (no hold) fills the cache for "sib"; the second holds
+// "build", then lets "sib" hit. build writes the same bytes in both runs, so
+// the workspace digest in sib's key is the same and the hit is certain.
+func TestAShellOnAHeldStepIsNotBlockedByAQueuedRestore(t *testing.T) {
+	root := t.TempDir()
+	store := openStore(t, root)
+	sharedPlan := func(dir string, buildExit int) *plan.Plan {
+		gate := filepath.Join(dir, "go")
+		return &plan.Plan{
+			Version:    1,
+			Workspaces: []plan.WorkspaceSpec{{Name: "src", Scope: "run"}},
+			Nodes: []plan.Node{
+				{
+					ID: "build", Kind: "exec",
+					Cmd:     []string{"sh", "-c", fmt.Sprintf("echo half-built > evidence.txt; exit %d", buildExit)},
+					WorkDir: "/src",
+					Mounts:  []plan.MountSpec{{Workspace: "src", At: "/src", Mode: "rw"}},
+				},
+				{
+					ID: "gate", Kind: "exec",
+					Cmd: []string{"sh", "-c", "while [ ! -f " + gate + " ]; do sleep 0.01; done"},
+				},
+				{
+					ID: "sib", Kind: "exec", Pure: true, Needs: []string{"gate"},
+					Inputs:  []string{"file:evidence.txt"},
+					Cmd:     []string{"sh", "-c", "echo sib > sib.txt"},
+					WorkDir: "/src",
+					Mounts:  []plan.MountSpec{{Workspace: "src", At: "/src", Mode: "rw"}},
+				},
+			},
+		}
+	}
+
+	// Run 1: fill the cache. build succeeds, so nothing holds; the gate is
+	// opened only once build has settled, so sib keys on what build wrote.
+	dir1 := filepath.Join(root, "r1")
+	out1, _, events1 := breakOnFailureRunIn(t, context.Background(), dir1, store, sharedPlan(dir1, 0), false)
+	waitForEvent(t, events1, func(e api.Event) bool { return e.Type == api.StepFinished && e.Step == "build" })
+	if err := os.WriteFile(filepath.Join(dir1, "go"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	waitRun(t, out1)
+
+	// Run 2: build fails and is held; then sib hits and queues its restore.
+	dir2 := filepath.Join(root, "r2")
+	out2, s2, hits := breakOnFailureRunIn(t, context.Background(), dir2, store, sharedPlan(dir2, 3), true)
+	waitFailureHit(t, hits, 1)
+	if err := os.WriteFile(filepath.Join(dir2, "go"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, hits, func(e api.Event) bool { return e.Type == api.CacheHit && e.Step == "sib" })
+	// cache.hit is emitted just before lockRestore; give it the moment to
+	// queue. Not what ends the test: the shell either returns or the guard
+	// below fails it.
+	time.Sleep(50 * time.Millisecond)
+
+	sn := open(t, s2, sink.ShellRequest{
+		ID: "sh1", ClientID: "c1", Step: "build", Cmd: []string{"sh", "-c", "cat evidence.txt"},
+	})
+	select {
+	case resp := <-sn.reply:
+		if !resp.OK || resp.ExitCode != 0 {
+			t.Errorf("shell response = %+v, stderr = %q", resp, sn.stderr.String())
+		}
+		if !strings.Contains(sn.stdout.String(), "half-built") {
+			t.Errorf("shell stdout = %q, want the held step's evidence", sn.stdout.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("the shell on the held step blocked behind the sibling's queued restore")
+	}
+
+	if resp := send(t, s2.controlSink, clearBuild("c1")); !resp.OK {
+		t.Fatalf("breakpoint.clear = %+v, want OK", resp)
+	}
+	waitRun(t, out2)
 }
