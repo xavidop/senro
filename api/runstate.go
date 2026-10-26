@@ -122,6 +122,67 @@ type StepState struct {
 	// keys into RunState.Handlers, so a renderer can show a step's cleanup
 	// story without re-scanning the raw stream.
 	Handlers []string `json:"handlers,omitempty"`
+	// Tests is every test the step reported, in first-seen order. A slice, not
+	// a map keyed by test, so the JSON stays a plain array every client can
+	// walk; lookups go through Test.
+	//
+	// Survives step.retried on purpose: marking a test recovered needs the
+	// failed verdict from the earlier attempt to still be here.
+	//
+	// omitempty, so a snapshot of a run with no tests is byte-for-byte what it
+	// was before this field existed.
+	Tests []*TestResult `json:"tests,omitempty"`
+}
+
+// TestResult is one test's folded state: its latest verdict and the attempt
+// that produced it. Fields mirror TestFinishedBody, plus Attempt.
+type TestResult struct {
+	Name     string        `json:"name"`
+	Suite    string        `json:"suite,omitempty"`
+	Outcome  TestOutcome   `json:"outcome"`
+	Duration time.Duration `json:"duration_ns,omitempty"`
+	// Attempt is the step attempt that produced this verdict. For a recovered
+	// test it is the attempt that finally passed.
+	Attempt int    `json:"attempt,omitempty"`
+	Output  string `json:"output,omitempty"`
+	File    string `json:"file,omitempty"`
+	Line    int    `json:"line,omitempty"`
+}
+
+// TestCounts is a step's tests tallied by outcome. The outcome fields are
+// mutually exclusive and sum to Total. Aggregation lives here so every client
+// reports identical numbers.
+type TestCounts struct{ Total, Passed, Failed, Skipped, Recovered int }
+
+// TestCounts tallies the step's tests by outcome.
+func (s *StepState) TestCounts() TestCounts {
+	c := TestCounts{Total: len(s.Tests)}
+	for _, t := range s.Tests {
+		switch t.Outcome {
+		case TestPassed:
+			c.Passed++
+		case TestFailed:
+			c.Failed++
+		case TestSkipped:
+			c.Skipped++
+		case TestRecovered:
+			c.Recovered++
+		}
+	}
+	return c
+}
+
+// Test returns the step's result for the named test, or nil when the step has
+// none. A test is identified by suite and name together. Linear on purpose:
+// an index map would add a second JSON shape for the same data, and a step's
+// tests are scanned once per event.
+func (s *StepState) Test(suite, name string) *TestResult {
+	for _, t := range s.Tests {
+		if t.Suite == suite && t.Name == name {
+			return t
+		}
+	}
+	return nil
 }
 
 // Running reports whether the step has started but not reached a terminal state.

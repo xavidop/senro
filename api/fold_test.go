@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -676,5 +677,109 @@ func TestApplyGeneratedSubgraph(t *testing.T) {
 	if got := s.Steps["deploy/discover/apply-a"].Group; got != "deploy/discover" {
 		t.Errorf("Group = %q, want %q: a generated node belongs to the generator that produced it",
 			got, "deploy/discover")
+	}
+}
+
+func TestApplyFoldsATestIntoItsStep(t *testing.T) {
+	s := api.NewRunState()
+	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.StepStarted, Step: "test", Attempt: 1}, nil))
+	_ = s.Apply(mustEvent(t, api.Event{Seq: 2, Type: api.TestFinished, Step: "test", Attempt: 1},
+		api.TestFinishedBody{Suite: "pkg/a", Name: "TestX", Outcome: api.TestFailed, Output: "boom"}))
+	_ = s.Apply(mustEvent(t, api.Event{Seq: 3, Type: api.TestFinished, Step: "test", Attempt: 1},
+		api.TestFinishedBody{Suite: "pkg/a", Name: "TestY", Outcome: api.TestPassed, Duration: time.Second}))
+	st := s.Steps["test"]
+	if len(st.Tests) != 2 {
+		t.Fatalf("tests = %d, want 2", len(st.Tests))
+	}
+	if got := st.Test("pkg/a", "TestX"); got == nil || got.Outcome != api.TestFailed || got.Output != "boom" || got.Attempt != 1 {
+		t.Errorf("TestX = %+v", got)
+	}
+	if st.Test("pkg/a", "TestZ") != nil {
+		t.Error("Test returned a result for an unknown test")
+	}
+	if c := st.TestCounts(); c != (api.TestCounts{Total: 2, Passed: 1, Failed: 1}) {
+		t.Errorf("counts = %+v", c)
+	}
+}
+
+// recovered is fold-only: it needs both attempts' verdicts, which no single
+// event carries. step.retried must leave Tests alone or there is nothing to
+// compare the later attempt against.
+func TestApplyTestRecoveredOnlyWhenALaterAttemptPasses(t *testing.T) {
+	s := api.NewRunState()
+	seq := uint64(0)
+	apply := func(typ api.Type, attempt int, body any) {
+		t.Helper()
+		seq++
+		if err := s.Apply(mustEvent(t, api.Event{Seq: seq, Type: typ, Step: "test", Attempt: attempt}, body)); err != nil {
+			t.Fatalf("Apply %s: %v", typ, err)
+		}
+	}
+	test := func(attempt int, name string, o api.TestOutcome, out string) {
+		apply(api.TestFinished, attempt, api.TestFinishedBody{Suite: "pkg/a", Name: name, Outcome: o, Output: out})
+	}
+	apply(api.StepStarted, 1, nil)
+	test(1, "TestX", api.TestFailed, "first")
+	test(1, "TestY", api.TestFailed, "first")
+	apply(api.StepRetried, 2, api.StepRetriedBody{Attempt: 2})
+	apply(api.StepStarted, 2, nil)
+	test(2, "TestX", api.TestPassed, "")
+	test(2, "TestY", api.TestFailed, "second")
+
+	st := s.Steps["test"]
+	if len(st.Tests) != 2 {
+		t.Fatalf("tests = %d, want 2 (step.retried must not clear them)", len(st.Tests))
+	}
+	if x := st.Test("pkg/a", "TestX"); x == nil || x.Outcome != api.TestRecovered || x.Attempt != 2 {
+		t.Errorf("TestX = %+v, want recovered on attempt 2", x)
+	}
+	if y := st.Test("pkg/a", "TestY"); y == nil || y.Outcome != api.TestFailed || y.Output != "second" || y.Attempt != 2 {
+		t.Errorf("TestY = %+v, want failed with attempt 2 output", y)
+	}
+	if c := st.TestCounts(); c != (api.TestCounts{Total: 2, Failed: 1, Recovered: 1}) {
+		t.Errorf("counts = %+v", c)
+	}
+}
+
+func TestApplyReplaysATestIdempotently(t *testing.T) {
+	s := api.NewRunState()
+	e := mustEvent(t, api.Event{Seq: 1, Type: api.TestFinished, Step: "test", Attempt: 1},
+		api.TestFinishedBody{Suite: "pkg/a", Name: "TestX", Outcome: api.TestFailed})
+	_ = s.Apply(e)
+	_ = s.Apply(e)
+	if n := len(s.Steps["test"].Tests); n != 1 {
+		t.Errorf("tests = %d, want 1", n)
+	}
+	if o := s.Steps["test"].Tests[0].Outcome; o != api.TestFailed {
+		t.Errorf("outcome = %q, want failed", o)
+	}
+}
+
+func TestApplyIgnoresATestEventWithNoStepID(t *testing.T) {
+	s := api.NewRunState()
+	err := s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.TestFinished, Step: ""},
+		api.TestFinishedBody{Name: "TestX", Outcome: api.TestPassed}))
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if _, ok := s.Steps[""]; ok {
+		t.Error("a test event with an empty Step field materialised a phantom \"\" step")
+	}
+	if len(s.Steps) != 0 || len(s.Order) != 0 {
+		t.Errorf("Steps = %d, Order = %v, want none", len(s.Steps), s.Order)
+	}
+}
+
+func TestRunStateJSONIsUnchangedWithoutTests(t *testing.T) {
+	s := api.NewRunState()
+	_ = s.Apply(mustEvent(t, api.Event{Seq: 1, Type: api.StepStarted, Step: "a", Attempt: 1}, nil))
+	_ = s.Apply(mustEvent(t, api.Event{Seq: 2, Type: api.StepFinished, Step: "a", Attempt: 1},
+		api.StepFinishedBody{State: api.StateSucceeded}))
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), "tests") {
+		t.Errorf("RunState JSON mentions tests for a run without any: %s", b)
 	}
 }

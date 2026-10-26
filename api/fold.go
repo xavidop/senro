@@ -182,6 +182,36 @@ func (s *RunState) Apply(e Event) error {
 		// StepLogAppended below), so leaving the old attempt's high-water
 		// mark would hide the new attempt's smaller offsets entirely.
 		st.LogBytes = nil
+		// st.Tests is deliberately NOT cleared. Recovered detection compares
+		// the next attempt's verdict against this attempt's failure, so
+		// wiping it here would leave nothing to recover from.
+
+	case TestFinished:
+		var b TestFinishedBody
+		if err := e.Decode(&b); err != nil {
+			return err
+		}
+		st := s.step(e.Step)
+		existing := st.Test(b.Suite, b.Name)
+		outcome := b.Outcome
+		// Recovered is failed on an earlier attempt, then passed on a later
+		// one. The attempt comparison is what keeps a replayed event (same
+		// attempt) from promoting itself. A recovered test that fails again
+		// is simply replaced below: only the latest verdict is kept.
+		if existing != nil && existing.Outcome == TestFailed &&
+			e.Attempt > existing.Attempt && b.Outcome == TestPassed {
+			outcome = TestRecovered
+		}
+		r := &TestResult{
+			Name: b.Name, Suite: b.Suite, Outcome: outcome,
+			Duration: b.Duration, Attempt: e.Attempt,
+			Output: b.Output, File: b.File, Line: b.Line,
+		}
+		if existing != nil {
+			*existing = *r
+		} else {
+			st.Tests = append(st.Tests, r)
+		}
 
 	case StepLogAppended:
 		var b StepLogAppendedBody

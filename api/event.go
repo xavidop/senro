@@ -33,6 +33,13 @@ const (
 	StepRetried     Type = "step.retried"
 	StepLogAppended Type = "step.log.appended"
 
+	// TestFinished is one test's verdict for one attempt of a step. It is
+	// step-scoped, emitted once per test, and always before that attempt's
+	// step.finished so a renderer never sees a settled step with tests still
+	// to come. The wire carries only passed, failed and skipped; the fold
+	// derives recovered by comparing attempts.
+	TestFinished Type = "test.finished"
+
 	CacheHit   Type = "cache.hit"
 	CacheMiss  Type = "cache.miss"
 	CacheSaved Type = "cache.saved"
@@ -203,7 +210,7 @@ var declaredTypes = map[Type]bool{
 	PlanResolved: true, PlanExpanded: true, PlanExpansionSkipped: true,
 	PlanGenerated: true,
 	StepCreated:   true, StepStarted: true, StepFinished: true,
-	StepRetried: true, StepLogAppended: true,
+	StepRetried: true, StepLogAppended: true, TestFinished: true,
 	CacheHit: true, CacheMiss: true, CacheSaved: true, CacheDegraded: true,
 	WSSnapshot: true, WSRestored: true, WSEvicted: true, BinaryStaged: true,
 	SecretResolved: true, SecretRedacted: true,

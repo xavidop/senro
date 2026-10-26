@@ -339,3 +339,16 @@ func TestFixtureForwardCompatibility(t *testing.T) {
 		t.Errorf("known events must still fold: build = %+v", st)
 	}
 }
+
+// A test that fails on attempt 1 and passes on attempt 2 folds to recovered,
+// while one that passed both times stays passed.
+func TestFixtureTestsFlaky(t *testing.T) {
+	s := replay(t, "testdata/fixtures/tests-flaky.jsonl")
+	st := s.Steps["test"]
+	if x := st.Test("pkg/a", "TestX"); x == nil || x.Outcome != api.TestRecovered || x.Attempt != 2 {
+		t.Errorf("TestX = %+v, want recovered on attempt 2", x)
+	}
+	if c := st.TestCounts(); c != (api.TestCounts{Total: 2, Passed: 1, Recovered: 1}) {
+		t.Errorf("counts = %+v", c)
+	}
+}
