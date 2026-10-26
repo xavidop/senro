@@ -181,6 +181,9 @@ func (s *RunState) Apply(e Event) error {
 		st.Error = ""
 		st.Paused = false
 		st.Held = ""
+		// The new attempt is not ready yet; keeping the old endpoints would
+		// report a dead address as live.
+		st.Service = nil
 		// Each attempt gets its own log file starting at byte 0 (see
 		// eventlog.LogSet.Path). LogBytes accumulates via max() (see
 		// StepLogAppended below), so leaving the old attempt's high-water
@@ -259,9 +262,9 @@ func (s *RunState) Apply(e Event) error {
 		}
 		st := s.step(e.Step)
 		st.Paused = true
-		if b.Reason != "" {
-			st.Held = b.Reason
-		}
+		// Unconditional: the hit is authoritative, so a plain hit clears a
+		// stale failure reason.
+		st.Held = b.Reason
 
 	case ServiceReady:
 		var b ServiceReadyBody

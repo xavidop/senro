@@ -916,6 +916,47 @@ func TestApplyFoldsAFailureHold(t *testing.T) {
 	}
 }
 
+// A retried service is pending again, so it must not stay ready.
+func TestApplyStepRetriedClearsService(t *testing.T) {
+	s := api.NewRunState()
+	ts := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 1, TS: ts, Type: api.ServiceReady, Step: "db", Attempt: 1},
+		api.ServiceReadyBody{Endpoints: []api.Endpoint{{Port: 5432, Address: "127.0.0.1:5432"}}}))
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 2, TS: ts, Type: api.StepRetried, Step: "db", Attempt: 2},
+		api.StepRetriedBody{Attempt: 2}))
+	if st := s.Steps["db"]; st.Service != nil || st.Ready() {
+		t.Errorf("Service = %+v, Ready = %v after step.retried", st.Service, st.Ready())
+	}
+}
+
+// Re-folding the last event must change nothing.
+func TestApplyServiceReadyIsIdempotentOnReplay(t *testing.T) {
+	s := api.NewRunState()
+	ts := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
+	e := mustEvent(t, api.Event{Seq: 1, TS: ts, Type: api.ServiceReady, Step: "db", Attempt: 1},
+		api.ServiceReadyBody{Endpoints: []api.Endpoint{{Port: 5432, Address: "127.0.0.1:5432"}}})
+	mustApply(t, s, e)
+	mustApply(t, s, e)
+	st := s.Steps["db"]
+	if len(st.Service.Endpoints) != 1 || !st.Service.Ready.Equal(ts) || !st.Ready() {
+		t.Errorf("Service = %+v after replay", st.Service)
+	}
+}
+
+func TestApplyFailureHoldIsIdempotentOnReplay(t *testing.T) {
+	s := api.NewRunState()
+	e := api.Event{Seq: 1, Type: api.BreakpointHit, Step: "test", Payload: json.RawMessage(`{"reason":"failure"}`)}
+	mustApply(t, s, e)
+	mustApply(t, s, e)
+	if st := s.Steps["test"]; !st.Paused || st.Held != api.HoldReasonFailure {
+		t.Errorf("Paused=%v Held=%q after replay", st.Paused, st.Held)
+	}
+	mustApply(t, s, api.Event{Seq: 2, Type: api.BreakpointHit, Step: "test", Payload: json.RawMessage(`{}`)})
+	if st := s.Steps["test"]; !st.Paused || st.Held != "" {
+		t.Errorf("plain hit: Paused=%v Held=%q, want stale reason cleared", st.Paused, st.Held)
+	}
+}
+
 // Runs without services or holds must serialize exactly as before the fields
 // existed.
 func TestRunStateJSONIsUnchangedWithoutServicesOrHolds(t *testing.T) {
