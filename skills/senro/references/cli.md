@@ -10,7 +10,8 @@ matched the event so there was nothing to run, `130` cancelled.
 ## `senro run`
 
 ```
-senro run <pkg> [--ui=auto|tui|plain|none] [--trigger-event PATH] [-- pipeline-args...]
+senro run <pkg> [--ui=auto|tui|plain|none] [--trigger-event PATH] [--break-on-failure]
+    [-- pipeline-args...]
 ```
 
 Builds the target package into a temp binary, execs it, and, if it registers
@@ -24,6 +25,34 @@ directly and its exit code propagates, with no socket and no TUI.
 itself whether the event is its business; `PATH` may be `-` for stdin. A
 pipeline that gates on it with `senro.WithTrigger` and matches nothing exits
 `78`.
+
+`--break-on-failure` reaches the pipeline as `SENRO_BREAK_ON_FAILURE=1` in its
+environment, not argv (library: `senro.WithBreakOnFailure()`). A `failed` or
+`timed_out` attempt is then held with its sandbox and workspaces intact:
+`breakpoint.hit` with `"reason":"failure"`, the TUI row
+`failed, held (s shell · B release)`. `s` opens a shell in the failed state;
+`B` (`breakpoint.clear`) releases it; `run.cancel` releases every hold. The
+outcome is unchanged: after release a retry policy continues, and holds again
+if the next attempt fails. The held step keeps its parallel slot, and a
+sibling's cache restore into a workspace it mounts waits for the release.
+
+## `senro up`
+
+```
+senro up <pkg> [--ui=auto|tui|plain|none] [-- pipeline-args...]
+```
+
+Builds and launches the pipeline as `senro run` does, with `SENRO_UP=1` in its
+environment: the run is every `Service` step and its transitive `Needs`, and
+nothing else (other steps settle `skipped_condition`, `not selected`), and the
+services are held up until Ctrl-C instead of stopping when their consumers
+settle. Under `--ui=plain` and `--ui=none` it prints one stdout line per
+endpoint as each service becomes ready: `<step>  <address>  (port <n>)`, the
+address being the published one on this machine. Exit `0` when the session
+ends (Ctrl-C included) with every service settled `succeeded`, `1` otherwise,
+`2` for usage errors, including a pipeline that declares no services
+(`this pipeline declares no services`). `--break-on-failure` is accepted and
+`--trigger-event` forwarded, as for `senro run`.
 
 ## `senro attach`
 
@@ -319,8 +348,8 @@ which `senro run` sets) is what names the package to cross-build.
 ## `senro shell`
 
 ```
-senro shell [--pid <pid> | --run <id> | --addr <host:port>] [--tls]
-    --step ID [-- cmd...]
+senro shell [--pid <pid> | --run <id> | --addr <host:port>] [--tls] [--tty]
+    [--offline] [--keep] [--cache-dir DIR] --step ID [--cmd ARG... | -- cmd...]
 ```
 
 Opens an interactive session inside a **live** run's step: that step's
@@ -328,7 +357,8 @@ workspaces, read-only, at the paths the step saw them, in the step's own
 working directory, on the step's own executor. `--step` is required, since a
 session stands in one step's workspaces and there is no default. Everything
 after `--` is the command to run instead of the default shell, and its exit
-code becomes the command's exit code.
+code becomes the command's exit code. `--cmd` takes the rest of the arguments
+as the command, the same as `--`.
 
 Pair it with a breakpoint: `b` in the TUI stops the run before a step, then
 `senro shell --step <id>` looks at what it was about to run against, then `B`
@@ -339,8 +369,24 @@ pipes: no prompt, no line editing, no job control. `--tty` runs it on a real
 terminal instead, which local, container and Kubernetes host and ssh does not
 (`executor_no_terminal`). It works on every executor: a Kubernetes session is a
 pod of its own, with the step's workspaces staged into it read-only. It is
-refused on a finished run (use `senro ws pull`) and against a read-only attach
-server. Other refusals: `unknown_step`, `run_not_active`, `sandbox_failed`.
+refused against a read-only attach server. Other refusals: `unknown_step`,
+`run_not_active`, `sandbox_failed`.
+
+Under `senro run --break-on-failure`, a failed step is held open and the same
+session stands in the failure; `B` releases it.
+
+**Offline form.** A `--run` that names no live run, or any `--run` with
+`--offline`, restores the step's latest workspace snapshots into a fresh
+temporary directory (printing
+`senro shell: offline, workspaces restored to <root>`) and runs this machine's
+own `$SHELL` (or the `--cmd` / `--` command) in the mount at the step's
+`WorkDir`, else the first mount. The environment is the step's declared one
+minus anything naming a secret, plus `PATH`, `HOME`, `TERM`, `SENRO_SHELL=1`,
+`SENRO_SHELL_RUN` and `SENRO_SHELL_STEP`. It is the coordinator's shell over
+restored files, not the step's image. Nothing is written back; the directory
+is removed on exit unless `--keep`. `--cache-dir DIR` names the content store
+to restore from. `--offline`, `--keep` and `--cache-dir` need `--run`. A step
+with no recorded snapshot is a usage error naming it.
 
 ## `senro rerun`
 

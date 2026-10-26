@@ -63,14 +63,15 @@ traced tool running inside a step joins the run's trace. See
 
 ## Types sent today
 
-All thirty-five, from `api.DeclaredTypes()`:
+All thirty-seven, from `api.DeclaredTypes()`:
 
 ```
 run.started              run.finished
 plan.resolved            plan.expanded            plan.expansion_skipped
+plan.generated
 step.created             step.started             step.finished
 step.retried             step.log.appended
-test.finished
+test.finished            service.ready
 cache.hit                cache.miss               cache.saved
 cache.degraded
 ws.snapshot              ws.restored              ws.evicted
@@ -96,13 +97,24 @@ Some only show up in certain situations:
   `Apply` folds them into `StepState.Tests`, and a test that passes on a later attempt after
   failing becomes `recovered` there. That fourth outcome exists only in the fold, never on the
   wire, because no single event sees both attempts.
+- **`service.ready`**: a [service](/docs/steps/services/) step's readiness probe passed, so the
+  steps that need it may start. Step-scoped, once per attempt that becomes ready, and always before
+  any consumer's `step.started`. Its payload is `endpoints`, each a declared `port` and the
+  `address` it is published on (`127.0.0.1:54321`), and `duration_ns`, how long it took to become
+  ready. The service keeps running: it has no `step.finished` until it is stopped or dies. Which
+  steps are services is on `step.created`, as `"service":true`. `Apply` folds the event into
+  `StepState.Service`, and `step.created`'s flag into `StepState.IsService`.
 - **`cache.degraded`**: a **shared** cache stopped working (unreachable, bad credentials, or an
   unexpected response) and the run kept going anyway. It's not a failure or a miss, just slower
   than it should have been. See [Shared cache](/docs/data/shared-cache/).
 - **`breakpoint.hit`**: fires once, when the scheduler first holds back a step that has a
   breakpoint set on it. It's the only way to tell "stopped on purpose" apart from "hung," since a
   held step never gets a `step.started` or `step.finished`. Clients show it as
-  `StepState.Paused`. See [Control operations](/docs/attach/control-ops/).
+  `StepState.Paused`. See [Control operations](/docs/attach/control-ops/). Under
+  `--break-on-failure` it also fires for a step held **after** a failed attempt, with
+  `"reason":"failure"` in its payload; an armed breakpoint has no `reason`. `Apply` copies it to
+  `StepState.Held`, so a client can offer a shell rather than a resume. See
+  [The shell](/docs/attach/shell/#stand-in-a-failure).
 - **`shell.opened` / `shell.closed`**: mark the start and end of an interactive session on a
   step's workspaces (`senro shell`, or the TUI's `s` key). See [The shell](/docs/attach/shell/).
 - **`ws.evicted`**: a [persistent workspace](/docs/data/persistent/) was cleared out because it
@@ -116,16 +128,16 @@ Some only show up in certain situations:
 
 ## Reserved names
 
-`api.Type.Known()` also recognizes a few names reserved for future use:
+`api.Type.Known()` also recognizes two names reserved for future use:
 
 ```
-plan.generated
 client.attached          client.detached
 ```
 
 These exist so that when the matching feature ships, adding the event is a compatible change for
 existing clients rather than one they need to update for. `breakpoint.hit`, `shell.opened`,
-`shell.closed` and `binary.staged` all went through this before their features landed.
+`shell.closed`, `binary.staged` and `plan.generated` all went through this before their features
+landed.
 
 > **Clients should ignore types they don't recognize.** A newer engine may emit event types this
 > build has never seen. Skip them instead of erroring, so your client keeps working across

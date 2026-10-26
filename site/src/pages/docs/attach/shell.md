@@ -48,6 +48,38 @@ the run keeps going underneath, and the footer says how the session ended once y
 `^D`. The whole loop is `b` to stop before a step, `s` to look, `B` to release it. See
 [Control operations](/docs/attach/control-ops/#breakpoints).
 
+## Stand in a failure
+
+A breakpoint stops a run before a step. To look at a step **after** it failed, before anything
+tears it down, run with `--break-on-failure`:
+
+```bash
+senro run ./ci --break-on-failure
+```
+
+An attempt that ends `failed` or `timed_out` is then held, its sandbox and workspaces intact, and
+the TUI says so on its row:
+
+```
+> build failed, held (s shell · B release)
+```
+
+The loop is the breakpoint's, one step later: `s` opens a session in the state the failure left,
+`B` releases the step. `senro shell --step build` from another terminal works the same. In the
+event stream the hold is a `breakpoint.hit` with `"reason":"failure"`, and a client folds it to
+`StepState.Held`.
+
+- **Releasing settles nothing new.** The step goes on exactly as it would have without the hold: a
+  `Retry` policy starts its next attempt, which is held again if it fails too, and a step with no
+  retry left settles `failed` or `timed_out`.
+- **`run.cancel` releases every hold**, and a step cancelled while held gets no further attempt.
+- **A hold costs the run something while it lasts.** The held step keeps its parallel slot, and a
+  sibling whose cache hit would restore into a workspace the held step mounts waits for the
+  release. Other work carries on. `breakpoint.set` on a held step is refused with `step_held`.
+
+From Go, the run option is `senro.WithBreakOnFailure()`. `senro run` passes it to the pipeline as
+`SENRO_BREAK_ON_FAILURE=1`.
+
 ## What the session sees
 
 | | |
@@ -154,21 +186,41 @@ senro shell --step build -- test -f out/binary   # exits with the command's own 
 The session's exit code becomes `senro shell`'s own exit code, so the last example drops straight
 into a script unchanged.
 
-## It needs a live run
+## A finished run: the offline shell
 
-A session runs inside a **running** engine's workspace directories, in a sandbox that engine
-opens. A finished run has neither:
+A live session runs inside a **running** engine's workspace directories, in a sandbox that engine
+opens. A finished run has neither, so `senro shell --run` on one does what
+[`senro ws pull`](/docs/cli/workspaces/) does for every workspace the step snapshotted, into one
+fresh temporary directory, and opens a shell there:
+
+```bash
+senro shell --run 20260812T151058-540c8ca44b --step build
+```
 
 ```
-senro shell: no LIVE run named "20260812T151058-540c8ca44b": a session needs the running engine
-that owns the run's workspaces. If the run has finished, `senro ws pull 20260812T151058-540c8ca44b
-<workspace>` writes its files out instead
+senro shell: offline, workspaces restored to /tmp/senro-shell-20260812T151058-540c8ca44b-build-1234
 ```
 
-`ws pull` is the right tool once a run is over. It writes the same files out from the
-content-addressed store long after the process has exited. Pressing `s` in the TUI against a run
-tailed from disk tells you the same thing. A read-only attach server also refuses a session, before
-it's even opened.
+- **When.** A `--run` that names no live run takes this form on its own. `--offline` asks for it
+  even while the run is live. `--offline`, `--keep` and `--cache-dir` need `--run`: `--pid` and
+  `--addr` always name a live run.
+- **What is restored.** The latest snapshot the step itself recorded for each workspace, at the
+  step's own mount paths under the temporary directory. The shell starts in the mount at the step's
+  `WorkDir`, else the first mount. A step that recorded no snapshot is refused, naming it.
+- **What it runs.** This machine's own `$SHELL` (`/bin/sh` when unset), or the command after
+  `--cmd` or `--`. **It is the coordinator's shell over restored files, not the step's image**: a
+  tool the step's container had and this machine lacks is missing.
+- **The environment.** The step's declared environment minus anything naming a secret, your own
+  `PATH`, `HOME` and `TERM`, `SENRO_SHELL=1`, and `SENRO_SHELL_RUN` and `SENRO_SHELL_STEP` naming
+  where you stand. No secrets, by the same rule a live session follows.
+- **The directory is yours.** Edit anything; nothing is written back. It is removed when the shell
+  exits, unless you pass `--keep`. `--cache-dir` names the content store to restore from, as for
+  `senro ws`.
+
+A workspace body that a `senro cache gc` sweep collected can't be restored, and the error says
+so: only a failed run's workspaces are protected against one. Pressing `s` in the TUI against a
+run tailed from disk still points at `senro ws pull`. A read-only attach server refuses a live
+session before it's even opened.
 
 ## Over TCP, this is a remote shell
 
@@ -225,4 +277,4 @@ and a run can't end while leaving someone inside it.
 - **[Control operations](/docs/attach/control-ops/)**: breakpoints, retry, skip and rerun-from.
 - **[The TUI](/docs/attach/tui/)**: the full key list, including `s`.
 - **[Security](/docs/attach/security/)**: what it means that this works over TCP.
-- **[Reading a failed run](/docs/run/debugging/)**: what to do once there is no live run.
+- **[Reading a failed run](/docs/run/debugging/)**: the rest of the evidence a finished run leaves.

@@ -5,17 +5,19 @@ title: "CLI: run and watch"
 
 # CLI: run and watch
 
-This page covers the four commands that start a run or connect to one: `senro run`,
+This page covers the five commands that start a run or connect to one: `senro run`, `senro up`,
 `senro attach`, `senro shell`, and `senro ui`. For the full command table and exit codes, see
 [CLI](/docs/cli/).
 
 ## `senro run`
 
 ```bash
-senro run <pkg> [--ui=auto|tui|plain|none] [--trigger-event PATH] [-- pipeline-args...]
+senro run <pkg> [--ui=auto|tui|plain|none] [--trigger-event PATH] [--break-on-failure]
+          [-- pipeline-args...]
 
 senro run ./ci                    # build, exec, auto-attach, render
 senro run ./ci -- --env=staging   # flags after -- go to the pipeline, not to senro
+senro run ./ci --break-on-failure # hold a failed step open for a shell
 ```
 
 `senro run` builds the named package with `go build` into a temporary binary, then runs it. If the
@@ -43,6 +45,54 @@ run exactly like `senro attach` would.
 `Ctrl-C` asks the engine to cancel gracefully instead of killing the process outright, so cleanup
 and `Always` handlers still get to run. If a pipeline ignores the request, senro kills it after
 five minutes so the CLI never hangs forever.
+
+### `--break-on-failure`
+
+A failed step tears its sandbox down the moment it settles, and the state that would explain the
+failure goes with it. `--break-on-failure` keeps it: an attempt that ends `failed` or `timed_out`
+is **held**, sandbox and workspaces intact, until you release it.
+
+- The flag reaches the pipeline as `SENRO_BREAK_ON_FAILURE=1` in its environment, not as argv,
+  because the pipeline binary owns its own flags. From Go it is `senro.WithBreakOnFailure()`.
+- A held step emits `breakpoint.hit` with `"reason":"failure"`, and the TUI shows it as
+  `failed, held (s shell · B release)`. Press `s` to open a shell in the state the failure left,
+  and `B` (`breakpoint.clear`) to release it. `run.cancel` releases every hold.
+- The hold never changes the outcome. Once released, a step with a `Retry` policy goes on to its
+  next attempt (and holds again if that fails too); one without settles as it would have.
+  A run cancelled while a step is held gets no further attempt.
+- **A held step keeps its parallel slot**, and a sibling whose cache hit would restore into a
+  workspace the held step mounts waits for the release. Every other step keeps running.
+
+See [The shell](/docs/attach/shell/#stand-in-a-failure).
+
+## `senro up`
+
+```bash
+senro up <pkg> [--ui=auto|tui|plain|none] [-- pipeline-args...]
+
+senro up ./ci
+```
+
+```
+db  127.0.0.1:54321  (port 5432)
+```
+
+`senro up` runs a pipeline's [services](/docs/steps/services/), and only them and whatever they
+need, and keeps them up until you press `Ctrl-C`. It builds and launches the pipeline exactly as
+`senro run` does, with `SENRO_UP=1` in its environment. Every other step is skipped as
+`not selected`, and the services are never stopped by their consumers settling, only by the
+cancellation.
+
+- **One line per endpoint, as each service becomes ready**: `<step>  <address>  (port <n>)`,
+  under `--ui=plain` and `--ui=none`. The address is the published one on this machine. Under the
+  TUI the address is in the focused service's log header instead.
+- **Exit codes.** `0` when the session ends (normally by `Ctrl-C`) with every service settled
+  `succeeded`; `1` when the run failed or a service did not settle `succeeded`; `2` for a usage
+  error, including a pipeline that declares no services, which says
+  `this pipeline declares no services`. Unlike `senro run`, an interrupt is not `130`: stopping
+  the services is what a session is for.
+- `--trigger-event` is forwarded and `--break-on-failure` accepted, both exactly as for
+  `senro run`.
 
 ## `senro attach`
 
@@ -106,11 +156,12 @@ them identically. Replaying a finished run isn't a second-class experience. See
 
 ```bash
 senro shell [--pid <pid> | --run <id> | --addr <host:port>] [--tls] [--tty]
-            --step ID [-- cmd...]
+            [--offline] [--keep] [--cache-dir DIR] --step ID [--cmd ARG... | -- cmd...]
 
 senro shell --step build                       # a session on the step's workspaces
 senro shell --step build -- cat build.log      # one command, non-interactively
 senro shell --step build --tty                 # a real terminal
+senro shell --run 20260812T151058-540c8ca44b --step build   # a finished run, offline
 ```
 
 `senro shell` opens a session inside a step of a live run. You get its workspaces (read-only), at
@@ -129,16 +180,20 @@ See [The shell](/docs/attach/shell/) for the full picture. Here are the essentia
 - **`local` and `container` executors support a terminal; `ssh` does not.** On `ssh`, `--tty` is
   refused outright rather than silently downgraded (`executor_no_terminal`). Either way, a banner
   is printed to stderr, so a redirected stdout only captures what the session itself printed.
-- **It needs a live run.** For a finished run, use [`senro ws pull`](/docs/cli/workspaces/)
-  instead. If you try `senro shell` against a finished run, it'll tell you and name the run.
+- **A finished run gets the offline form.** A `--run` that names no live run, or any `--run` with
+  `--offline`, restores the step's latest workspace snapshots into a temporary directory and runs
+  this machine's own `$SHELL` there (or the `--cmd` command), not the step's image. The directory
+  is removed on exit unless `--keep`; `--cache-dir` names the content store to restore from. The
+  three flags need `--run`, since `--pid` and `--addr` always name a live run. See
+  [The shell](/docs/attach/shell/#a-finished-run-the-offline-shell).
 - **It reaches a remote run the same way `senro attach` does**: `--addr` plus `--tls`, with the
   token from `$SENRO_ATTACH_TOKEN`. There's no `--token` flag.
 - **A read-only attach refuses it.** If the attach server was started with
   `attach.Options{ReadOnly: true}`, a shell request gets a 403. A shared dashboard never hands out
   a command prompt.
 
-Everything after `--` runs instead of the default shell, and the session's exit code is that
-command's exit code. That makes `senro shell --step build -- test -f out/app` usable in a script,
+Everything after `--` (or after `--cmd`, which takes the rest of the arguments) runs instead of
+the default shell, and the session's exit code is that command's exit code. That makes `senro shell --step build -- test -f out/app` usable in a script,
 just like running the command directly.
 
 Refusals print a short reason and exit `1`, using the same vocabulary as

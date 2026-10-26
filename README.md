@@ -101,6 +101,10 @@ debugger.
 - **Per-test results.** A step declares that it speaks `go test -json`, TAP or JUnit XML, and every
   client names the test that failed, with its output; `senro rerun --failed-tests` reruns just
   those. See [Test results](site/src/pages/docs/steps/tests.md).
+- **Services and dev shells.** A step can be a database that stays up while the steps that need it
+  run, told to them through `SENRO_SERVICE_*`; `senro up` holds just the services for local work,
+  and `--break-on-failure` keeps a failed step open for a shell. See
+  [Services](site/src/pages/docs/steps/services.md).
 - **Embeddable.** senro is a library first: no global state, no `os.Exit`, no reading your argv;
   attach is one opt-in call. The wire contract lives in `github.com/xavidop/senro/api` with no
   dependency beyond the standard library. See [Embedding](site/src/pages/docs/reference/embedding.md).

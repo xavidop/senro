@@ -1,6 +1,6 @@
 ---
 name: senro
-description: Use when defining, running, retrying, or attaching to a pipeline built with senro (github.com/xavidop/senro): writing a Pipeline of Workflows and Steps, wiring exec.Command actions or senro.Func Go functions, targeting a workflow at the local, container.Image, k8s.Pod or ssh.Host executor, Expand fan-out over a unit graph (glob, gowork, cargo, jswork, maven, gradle, pyproject, bazel, MaxParallel, MaxNodes), NeedsEach per-unit edges and Partition/TemplateShard duration-balanced shards, Affected monorepo fan-out with a change source, When/Branch/ParamIs/EnvIs conditions, retry.OnInfra policies, Timeout, OnFailure/Always handlers, workspaces and scratch caches, Pure() action caching with Inputs/Outputs/CacheEnv, senro.WithSecrets credentials with SecretEnv, trigger gating with senro.WithTrigger, notifications through senro.WithSink and the notify package, failure analysis through senro.WithAnalyzer and contrib/genkitanalyzer, the shared cache over an S3 bucket or an OCI registry, attach.Listen live attach, or the senro CLI (run, attach, shell, verify, cache gc, cache explain, ws ls/pull/diff, logs fetch, func check). CI/CD is the familiar case, not the only one senro covers.
+description: Use when defining, running, retrying, or attaching to a pipeline built with senro (github.com/xavidop/senro): writing a Pipeline of Workflows and Steps, wiring exec.Command actions or senro.Func Go functions, targeting a workflow at the local, container.Image, k8s.Pod or ssh.Host executor, Expand fan-out over a unit graph (glob, gowork, cargo, jswork, maven, gradle, pyproject, bazel, MaxParallel, MaxNodes), NeedsEach per-unit edges and Partition/TemplateShard duration-balanced shards, Affected monorepo fan-out with a change source, When/Branch/ParamIs/EnvIs conditions, retry.OnInfra policies, Service steps with service.Ports/TCP/HTTP readiness and SENRO_SERVICE_* addresses, Timeout, OnFailure/Always handlers, workspaces and scratch caches, Pure() action caching with Inputs/Outputs/CacheEnv, senro.WithSecrets credentials with SecretEnv, trigger gating with senro.WithTrigger, notifications through senro.WithSink and the notify package, failure analysis through senro.WithAnalyzer and contrib/genkitanalyzer, the shared cache over an S3 bucket or an OCI registry, attach.Listen live attach, or the senro CLI (run, run --break-on-failure, up, attach, shell including the offline form, verify, cache gc, cache explain, ws ls/pull/diff, logs fetch, func check). CI/CD is the familiar case, not the only one senro covers.
 ---
 
 # senro: a pipeline engine defined in Go
@@ -212,6 +212,67 @@ with no `Select`, a step not in the plan, or one `WithOnlySteps` leaves out
 (its tests would never run). Not
 supported: sharding by per-test timing, a `test.started` event, rerunning one
 test from the TUI.
+
+## Services: `Service`
+
+A service is a step that stays up while other steps use it (a database for
+integration tests), declared rather than inferred: a step that never exits
+looks like a hang to an engine that waits for exit.
+
+```go
+import (
+	"github.com/xavidop/senro/executor/container"
+	"github.com/xavidop/senro/service"
+)
+
+infra := p.Workflow("infra", senro.On(container.Image("postgres:16")))
+infra.Service("db", exec.Command("postgres"), service.Ports(5432)).
+	Env("POSTGRES_HOST_AUTH_METHOD", "trust")
+verify.Step("integration", exec.Command("go", "test", "./store/...")).Needs("db")
+```
+
+- `(*WorkflowBuilder).Service(id, action, opts...)` returns an ordinary
+  `*StepBuilder` (`Needs`, `Env`, `WorkDir`, `Mount`, `Timeout`, `When` work).
+  Options: `service.Ports(...)` (required), `service.TCP(port)` (default, on
+  the first port), `service.HTTP(port, path)` (ready on 200..399, redirects
+  not followed), `service.ReadyTimeout(d)` (default 60s),
+  `service.StopGrace(d)` (default 10s). `TCP`/`HTTP` do not add the port to
+  `Ports`.
+- Lifecycle: started, probed FROM THE COORDINATOR every 250 ms against the
+  published address until ready or `min(ReadyTimeout, Timeout)` (`Timeout`
+  bounds readiness, never lifetime); `service.ready` (`endpoints:[{port,
+  address}]`, `duration_ns`) is emitted, then consumers (steps that `Needs`
+  it) dispatch; it gives back its parallel slot once ready; it is stopped
+  (SIGTERM / `docker stop`, kill after `StopGrace`) once its last consumer
+  settles, or right away if nothing needs it.
+- States: stopped by senro is `succeeded` with exit 0 (`recovered` after a
+  manual `step.retry` of a failed one); `not ready after ...`, or exiting
+  before ready or before its consumers finished, is `failed` and consumers
+  still waiting are `skipped_upstream_failed`; run cancelled before ready is
+  `cancelled`, after ready `succeeded`.
+- Addresses, for each service a consumer `Needs` DIRECTLY:
+  `SENRO_SERVICE_<ID>_HOST` and `SENRO_SERVICE_<ID>_PORT_<declared>` whose
+  value is the PUBLISHED host port. `<ID>` is the id upper-cased, every
+  non-alphanumeric rune `_` (`infra/db` is `INFRA_DB`). Local consumer:
+  `127.0.0.1`. Container consumer: `host.docker.internal`, its container
+  created with `--add-host host.docker.internal:host-gateway`. A local service
+  binds its declared port itself; a container service is published to
+  `127.0.0.1` on a free port. Never part of a cache key.
+- `Build` refuses: a func-kind service, no ports, a probe on an undeclared
+  port, an HTTP path without a leading `/`, `Retry`, `Pure`, `Generates`,
+  `OnFailure`/`Always`, a service as a handler, and any executor but local or
+  container.
+- Fold: `step.created` carries `service: true` (`StepState.IsService`);
+  `service.ready` sets `StepState.Service` (`Ready` time, `Endpoints`), kept
+  after the stop; `(*StepState).Ready()` is true only while it is up. TUI
+  label `ready`, header `ready at <addr> (port N)` / `ran at` once stopped.
+- `senro up <pkg>` runs only services and their transitive needs (sets
+  `SENRO_UP=1`, which is `senro.WithHoldServices()` plus that selection;
+  every other step is `skipped_condition`, `not selected`), holds them until
+  Ctrl-C, prints `<step>  <address>  (port <n>)` per endpoint under plain/none.
+  Exit 0 if every service settled `succeeded`, 1 otherwise, 2 for no services.
+- Not supported: services on Kubernetes or SSH, command probes, a per-run
+  Docker network, retries/Pure/handlers on a service.
 
 ## `Timeout`, `OnFailure`, `Always`
 
@@ -731,7 +792,8 @@ reserved in prose any more (`ws.snapshot` was the last). `run.cancel`,
 An interactive session on a live step is **not** a control operation but its own
 route, `POST /api/shell` (`senro shell --step <id>`, the TUI's `s` key): every
 executor hosts one, no secrets delivered, every mount read-only, live engine
-required (a run tailed from disk offers `senro ws pull`). `--tty` runs it on a
+required (the TUI on a run tailed from disk offers `senro ws pull`; the CLI
+falls back to the offline shell, below). `--tty` runs it on a
 real terminal (job control, line editing, `^C` as a signal, a window size
 following yours): a session KIND, not an upgrade, since a pty is one device with
 one merged output stream. Local, container and Kubernetes host one; ssh hosts a
@@ -739,6 +801,26 @@ shell, NOT a terminal (it drives `ssh` with pipes, and ssh takes the remote
 window size from its own stdin's terminal, which it lacks):
 `executor_no_terminal`, never downgraded.
 
+- **Break on failure**: `senro run --break-on-failure` (forwarded as
+  `SENRO_BREAK_ON_FAILURE=1`; library `senro.WithBreakOnFailure()`) holds a
+  `failed` or `timed_out` attempt with its sandbox and workspaces intact,
+  emitting `breakpoint.hit` with `reason: "failure"` (folded to
+  `StepState.Held`; TUI `failed, held (s shell · B release)`). `s` opens a
+  session in the failed state, `B` (`breakpoint.clear`) releases, `run.cancel`
+  releases everything. It never changes the outcome: after release a retry
+  policy continues (and holds again on the next failure); a run cancelled
+  while held gets no further attempt. The held step keeps its parallel slot,
+  a sibling's cache restore into a workspace it mounts waits, and
+  `breakpoint.set` on it is refused `step_held`.
+- **Offline shell**: `senro shell --run <id> --step <s>` on a run that is not
+  live (or with `--offline`) restores the step's latest `ws.snapshot` per
+  workspace into a temp dir (prints
+  `senro shell: offline, workspaces restored to <root>`), and runs this
+  machine's `$SHELL` (or `--cmd ARG...` / `-- cmd`) in the mount at the step's
+  `WorkDir`, with the step's env minus secrets plus `SENRO_SHELL=1`,
+  `SENRO_SHELL_RUN`, `SENRO_SHELL_STEP`. It is the coordinator's shell, NOT
+  the step's image. Removed on exit unless `--keep`; `--cache-dir DIR` names
+  the store. `--offline`/`--keep`/`--cache-dir` need `--run`.
 - `step.skip` settles a step, and every step needing it, as `skipped_manual`:
   nothing failed, so nothing is blamed `skipped_upstream_failed`,
   `ContinueOnError` does not apply, and the run still rolls up as succeeded.
@@ -795,10 +877,13 @@ or is refused.
 ## The CLI
 
 ```
-senro run <pkg> [--ui=auto|tui|plain|none] [--trigger-event PATH] [-- pipeline-args...]
+senro run <pkg> [--ui=auto|tui|plain|none] [--trigger-event PATH] [--break-on-failure]
+    [-- pipeline-args...]
+senro up <pkg> [--ui=auto|tui|plain|none] [-- pipeline-args...]
 senro attach [--pid <pid> | --run <id> | --addr <host:port>] [--follow] [--tls]
     [--ui=auto|tui|plain|none]
-senro shell [--pid <pid> | --run <id> | --addr <host:port>] [--tls] --step ID [-- cmd...]
+senro shell [--pid <pid> | --run <id> | --addr <host:port>] [--tls] [--tty]
+    [--offline] [--keep] [--cache-dir DIR] --step ID [--cmd ARG... | -- cmd...]
 senro cache gc [--max-size 50G] [--keep-failed 168h] [--dry-run] [--cache-dir DIR]
     (--max-size has no default: without it, nothing is evicted for size)
 senro cache explain [--run RUN] [STEP]
