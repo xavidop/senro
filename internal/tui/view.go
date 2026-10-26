@@ -64,6 +64,8 @@ const helpText = `senro attach: keys
   q              detach, and the run keeps going
   /              filter the step list by substring (enter applies, esc cancels)
   pgup           load older log history for the focused step
+  t              show the focused step's tests in place of its log: failed
+                 first, with their output; press again for the log
   ?              toggle this help
 
 press ? or esc to close`
@@ -87,7 +89,11 @@ func (m *Model) View() string {
 	}
 
 	rows := filterRows(topLevelRows(st), m.filter)
-	body := lipgloss.JoinHorizontal(lipgloss.Top, m.renderSteps(st, rows), m.renderLog())
+	right := m.renderLog()
+	if m.showTests && m.focused != "" {
+		right = m.renderTests(st)
+	}
+	body := lipgloss.JoinHorizontal(lipgloss.Top, m.renderSteps(st, rows), right)
 	return lipgloss.JoinVertical(lipgloss.Left, body, m.renderFooter(st))
 }
 
@@ -106,7 +112,7 @@ func (m *Model) renderSteps(st *api.RunState, rows []string) string {
 		}
 		line := marker + id
 		if s := st.Steps[id]; s != nil {
-			line += " " + stepStatusLabel(s)
+			line += " " + stepStatusLabel(s) + testSuffix(s)
 		}
 		if _, isGroup := st.Expansions[id]; isGroup {
 			c := st.Group(id)
@@ -182,6 +188,23 @@ func (m *Model) renderLog() string {
 	return logPaneStyle.Render(b.String())
 }
 
+// renderTests is the right pane in tests mode. The proposal line is kept
+// above it for the same reason renderLog shows it: 'a' approves something
+// and the operator must be able to read what first. A step with no tests
+// says so rather than falling back to the log, so the operator can tell
+// the mode is on. All lines are rendered; there is no pagination.
+func (m *Model) renderTests(st *api.RunState) string {
+	prop := m.proposalLine()
+	var lines []string
+	if s := st.Steps[m.focused]; s != nil {
+		lines = testLines(s)
+	}
+	if len(lines) == 0 {
+		return logPaneStyle.Render(prop + m.focused + ": (no tests reported)")
+	}
+	return logPaneStyle.Render(prop + m.focused + ":\n" + strings.Join(lines, "\n"))
+}
+
 func (m *Model) renderFooter(st *api.RunState) string {
 	status := "running"
 	switch {
@@ -194,7 +217,7 @@ func (m *Model) renderFooter(st *api.RunState) string {
 		// dependency. Same reasoning as stepStatusLabel's Paused case.
 		status = "paused"
 	}
-	line := fmt.Sprintf("run: %s | enter focus · r retry · R rerun-from · x skip · b/B breakpoint · w snapshot · p/P pause · s shell · a/A proposal · c/ctrl+c cancel · q detach · / filter · ? help", status)
+	line := fmt.Sprintf("run: %s | enter focus · r retry · R rerun-from · x skip · b/B breakpoint · w snapshot · p/P pause · s shell · a/A proposal · t tests · c/ctrl+c cancel · q detach · / filter · ? help", status)
 	if m.streamErr != nil {
 		// Sticky and distinctly styled: not an ordinary status line an
 		// operator can afford to miss. See Model.streamErr.

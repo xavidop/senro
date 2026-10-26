@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -2223,5 +2224,87 @@ func TestModelWWithNoFocusDoesNotSendAControlRequestAndSaysWhy(t *testing.T) {
 	// test that cannot fail.
 	if !strings.Contains(plain(m.View()), "snapshot: no step focused") {
 		t.Fatalf("View() does not explain why 'w' did nothing:\n%s", plain(m.View()))
+	}
+}
+
+// ---- the tests pane: counts on the row, 't' swaps the log for the verdicts ----
+
+// flakyFixtureEvents loads the tests-flaky fixture, keeping events up to and
+// including seq upTo (0 keeps all). Cut at seq 6 it is the first attempt:
+// TestX failed with output, TestY passed.
+func flakyFixtureEvents(t *testing.T, upTo uint64) []api.Event {
+	t.Helper()
+	raw, err := os.ReadFile("../../api/testdata/fixtures/tests-flaky.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []api.Event
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var e api.Event
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatal(err)
+		}
+		if upTo == 0 || e.Seq <= upTo {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func flakyModel(t *testing.T, upTo uint64) *tui.Model {
+	t.Helper()
+	m := tui.New(&fakeSource{state: seedState("r1")})
+	m = update(t, m, tui.StateMsg{State: seedState("r1")})
+	for _, e := range flakyFixtureEvents(t, upTo) {
+		m = update(t, m, tui.EventMsg{Event: e})
+	}
+	return m
+}
+
+func pressT(t *testing.T, m *tui.Model) *tui.Model {
+	t.Helper()
+	return update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+}
+
+func TestModelViewShowsTestCountsOnTheStepRow(t *testing.T) {
+	m := flakyModel(t, 0)
+	if out := plain(m.View()); !strings.Contains(out, "[2 tests · 1 recovered]") {
+		t.Errorf("step row missing test counts:\n%s", out)
+	}
+}
+
+func TestModelTKeyShowsFailedTestsFirstWithOutput(t *testing.T) {
+	m := flakyModel(t, 6)
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = pressT(t, m)
+
+	out := plain(m.View())
+	fx := regexp.MustCompile(`failed\s+pkg/a\.TestX`).FindStringIndex(out)
+	py := regexp.MustCompile(`passed\s+pkg/a\.TestY`).FindStringIndex(out)
+	if fx == nil || py == nil || fx[0] > py[0] {
+		t.Fatalf("want failed TestX before passed TestY:\n%s", out)
+	}
+	if !strings.Contains(out, "    x_test.go:12: boom") {
+		t.Errorf("failed test's output missing, indented four spaces:\n%s", out)
+	}
+}
+
+func TestModelTKeyTogglesBackToTheLog(t *testing.T) {
+	m := flakyModel(t, 6)
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = pressT(t, pressT(t, m))
+	out := plain(m.View())
+	if strings.Contains(out, "pkg/a.TestX") {
+		t.Errorf("second t should restore the log pane:\n%s", out)
+	}
+	if !strings.Contains(out, "test: (no log output yet)") {
+		t.Errorf("log pane not restored:\n%s", out)
+	}
+}
+
+func TestModelTKeyWithNothingFocusedSetsAHint(t *testing.T) {
+	m := pressT(t, flakyModel(t, 6))
+	if out := plain(m.View()); !strings.Contains(out, "tests: no step focused") {
+		t.Errorf("want a hint in the footer:\n%s", out)
 	}
 }
