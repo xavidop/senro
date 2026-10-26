@@ -27,6 +27,11 @@ import (
 // out so the list is never quietly partial.
 const MaxAnnotations = 50
 
+// MaxTestAnnotationMessage caps one test annotation's message. A failing
+// test's output can be a whole stack dump; GitHub limits a message's size
+// and the list is for locating a failure, not for reading the log.
+const MaxTestAnnotationMessage = 2000
+
 // GitHubChecks returns a destination that maintains one check run on a
 // commit. owner and repo name the repository, sha is the commit, token needs
 // `checks:write`, and name is the check's UI name (empty means "senro").
@@ -83,12 +88,15 @@ type GitHubChecksRequester struct {
 	// response. Zero until then, which is what tells Request whether the
 	// next event is a create or an update.
 	id int64
-	// annotations accumulate from failed steps, sent with the completion.
+	// annotations accumulate from failed tests and steps, sent with the
+	// completion.
 	annotations []ghAnnotation
 	// dropped counts annotations past MaxAnnotations, for the summary.
 	dropped int
 	// done and failed count finished steps, for the summary.
 	done, failed int
+	// failedTests counts failed tests, annotated or not, for the title.
+	failedTests int
 }
 
 // Request builds the create, the updates and the completion. Three event
@@ -106,6 +114,12 @@ func (g *GitHubChecksRequester) Request(e api.Event) (*Request, error) {
 			return nil, nil
 		}
 		return g.create(e)
+
+	case api.TestFinished:
+		// Same rule as steps: accumulated, not sent. A test's event
+		// precedes its step's, so test annotations come first.
+		g.recordTest(e)
+		return nil, nil
 
 	case api.StepFinished:
 		g.record(e)
@@ -183,7 +197,7 @@ func (g *GitHubChecksRequester) complete(e api.Event) (*Request, error) {
 		Conclusion:  conclusionFor(b.Status),
 		CompletedAt: ghTime(e.TS),
 		Output: &ghOutput{
-			Title:       titleFor(b.Status, g.failed),
+			Title:       titleFor(b.Status, g.failed, g.failedTests),
 			Summary:     g.summary(b.Status),
 			Annotations: ann,
 		},
@@ -224,6 +238,50 @@ func (g *GitHubChecksRequester) record(e api.Event) {
 	})
 }
 
+// recordTest folds one test.finished into the check's state. Only failures
+// are annotated; passes and skips would bury the failures in the budget.
+func (g *GitHubChecksRequester) recordTest(e api.Event) {
+	var b api.TestFinishedBody
+	if err := e.Decode(&b); err != nil || b.Outcome != api.TestFailed {
+		return
+	}
+	g.failedTests++
+	if len(g.annotations) >= MaxAnnotations {
+		g.dropped++
+		return
+	}
+	// A test without a source location is annotated on ".senro" for the
+	// same reason a step is: Path is required and must not point at an
+	// unrelated file.
+	path := b.File
+	if path == "" {
+		path = ".senro"
+	}
+	line := b.Line
+	if line <= 0 {
+		line = 1
+	}
+	name := b.Name
+	if b.Suite != "" {
+		name = b.Suite + "." + b.Name
+	}
+	title := "test " + name + " failed"
+	msg := b.Output
+	if len(msg) > MaxTestAnnotationMessage {
+		msg = msg[:MaxTestAnnotationMessage] + "\n[truncated]"
+	}
+	if msg == "" {
+		// GitHub rejects an annotation with no message.
+		msg = title
+	}
+	g.annotations = append(g.annotations, ghAnnotation{
+		Path: path, StartLine: line, EndLine: line,
+		AnnotationLevel: "failure",
+		Title:           title,
+		Message:         msg,
+	})
+}
+
 func annotationMessage(step string, b api.StepFinishedBody) string {
 	var sb strings.Builder
 	sb.WriteString("Step ")
@@ -245,6 +303,9 @@ func (g *GitHubChecksRequester) summary(status api.RunStatus) string {
 	fmt.Fprintf(&sb, "senro finished %s: %d step(s) completed", status, g.done)
 	if g.failed > 0 {
 		fmt.Fprintf(&sb, ", %d failed", g.failed)
+	}
+	if g.failedTests > 0 {
+		fmt.Fprintf(&sb, ", %d test(s) failed", g.failedTests)
 	}
 	sb.WriteString(".")
 	if g.dropped > 0 {
@@ -280,7 +341,10 @@ func conclusionFor(s api.RunStatus) string {
 	}
 }
 
-func titleFor(s api.RunStatus, failed int) string {
+func titleFor(s api.RunStatus, failed, failedTests int) string {
+	if failedTests > 0 {
+		return fmt.Sprintf("%s, %d test(s) failed", s, failedTests)
+	}
 	if failed > 0 {
 		return fmt.Sprintf("%s, %d step(s) failed", s, failed)
 	}

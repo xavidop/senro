@@ -270,3 +270,113 @@ func TestACreateWithNoIDDoesNotProduceABrokenUpdate(t *testing.T) {
 		t.Fatalf("made %d requests, want only the create: %v", len(paths), paths)
 	}
 }
+
+// completionOutput drives events through a fresh destination and returns
+// the completion's output object.
+func completionOutput(t *testing.T, events ...api.Event) map[string]any {
+	t.Helper()
+	gh := newGHStub(t)
+	d := notify.GitHubChecks("acme", "web", "deadbeef", "tok", "",
+		notify.GitHubChecksAPI(gh.srv.URL))
+	drive(t, d, events...)
+	reqs := gh.seen()
+	if len(reqs) != 2 {
+		t.Fatalf("made %d requests, want 2", len(reqs))
+	}
+	out, ok := reqs[1].body["output"].(map[string]any)
+	if !ok {
+		t.Fatalf("completion carries no output: %+v", reqs[1].body)
+	}
+	return out
+}
+
+// A failed test is annotated at its own file and line, ahead of its step's
+// annotation, and the title counts it.
+func TestAFailedTestBecomesAnAnnotationWithFileAndLine(t *testing.T) {
+	out := completionOutput(t,
+		ghEvent(t, api.RunStarted, 1, "", `{"pipeline":"p"}`),
+		ghEvent(t, api.TestFinished, 2, "t", `{"name":"TestX","suite":"pkg/a","outcome":"failed","output":"boom","file":"a_test.go","line":9}`),
+		ghEvent(t, api.StepFinished, 3, "t", `{"state":"failed","exit_code":1}`),
+		ghEvent(t, api.RunFinished, 4, "", `{"status":"failed"}`),
+	)
+	ann, _ := out["annotations"].([]any)
+	if len(ann) != 2 {
+		t.Fatalf("annotations = %v, want the test and its step", out["annotations"])
+	}
+	a := ann[0].(map[string]any)
+	if a["path"] != "a_test.go" || a["start_line"] != float64(9) || a["end_line"] != float64(9) {
+		t.Errorf("test annotation location = %v:%v-%v", a["path"], a["start_line"], a["end_line"])
+	}
+	if a["title"] != "test pkg/a.TestX failed" || a["message"] != "boom" || a["annotation_level"] != "failure" {
+		t.Errorf("test annotation = %+v", a)
+	}
+	if !strings.Contains(ann[1].(map[string]any)["title"].(string), "step t") {
+		t.Errorf("second annotation is not the step's: %+v", ann[1])
+	}
+	if !strings.Contains(out["title"].(string), "1 test(s) failed") {
+		t.Errorf("title %q does not count the failed test", out["title"])
+	}
+	if !strings.Contains(out["summary"].(string), ", 1 test(s) failed") {
+		t.Errorf("summary %q does not count the failed test", out["summary"])
+	}
+}
+
+func TestAPassedTestIsNotAnnotated(t *testing.T) {
+	out := completionOutput(t,
+		ghEvent(t, api.RunStarted, 1, "", `{"pipeline":"p"}`),
+		ghEvent(t, api.TestFinished, 2, "t", `{"name":"TestOK","outcome":"passed"}`),
+		ghEvent(t, api.TestFinished, 3, "t", `{"name":"TestSkip","outcome":"skipped"}`),
+		ghEvent(t, api.StepFinished, 4, "t", `{"state":"succeeded"}`),
+		ghEvent(t, api.RunFinished, 5, "", `{"status":"succeeded"}`),
+	)
+	if ann, _ := out["annotations"].([]any); len(ann) != 0 {
+		t.Errorf("annotations = %v, want none", ann)
+	}
+	if out["title"] != "succeeded" {
+		t.Errorf("title = %v", out["title"])
+	}
+}
+
+func TestATestWithoutAFileAnnotatesDotSenro(t *testing.T) {
+	long := strings.Repeat("x", notify.MaxTestAnnotationMessage+10)
+	out := completionOutput(t,
+		ghEvent(t, api.RunStarted, 1, "", `{"pipeline":"p"}`),
+		ghEvent(t, api.TestFinished, 2, "t", `{"name":"A","outcome":"failed","output":"`+long+`"}`),
+		ghEvent(t, api.TestFinished, 3, "t", `{"name":"B","outcome":"failed"}`),
+		ghEvent(t, api.RunFinished, 4, "", `{"status":"failed"}`),
+	)
+	ann, _ := out["annotations"].([]any)
+	if len(ann) != 2 {
+		t.Fatalf("annotations = %v", ann)
+	}
+	a := ann[0].(map[string]any)
+	if a["path"] != ".senro" || a["start_line"] != float64(1) || a["end_line"] != float64(1) || a["title"] != "test A failed" {
+		t.Errorf("fallback annotation = %+v", a)
+	}
+	want := strings.Repeat("x", notify.MaxTestAnnotationMessage) + "\n[truncated]"
+	if a["message"] != want {
+		t.Errorf("message not cut to the cap with a marker (len %d)", len(a["message"].(string)))
+	}
+	if b := ann[1].(map[string]any); b["message"] != "test B failed" {
+		t.Errorf("empty output message = %v, want the title text", b["message"])
+	}
+}
+
+// Test and step annotations share one budget, and the overflow is said out
+// loud.
+func TestTestAnnotationsShareTheBudgetWithSteps(t *testing.T) {
+	events := []api.Event{ghEvent(t, api.RunStarted, 1, "", `{"pipeline":"p"}`)}
+	for i := 0; i < notify.MaxAnnotations; i++ {
+		events = append(events, ghEvent(t, api.TestFinished, uint64(2+i), "t", `{"name":"T","outcome":"failed"}`))
+	}
+	events = append(events,
+		ghEvent(t, api.StepFinished, 100, "t", `{"state":"failed"}`),
+		ghEvent(t, api.RunFinished, 101, "", `{"status":"failed"}`))
+	out := completionOutput(t, events...)
+	if ann, _ := out["annotations"].([]any); len(ann) != notify.MaxAnnotations {
+		t.Errorf("annotations = %d, want %d", len(ann), notify.MaxAnnotations)
+	}
+	if !strings.Contains(out["summary"].(string), "1 further failure(s) are not annotated here") {
+		t.Errorf("summary %q does not report the dropped step", out["summary"])
+	}
+}
