@@ -192,17 +192,29 @@ func (m *Model) renderLog() string {
 // above it for the same reason renderLog shows it: 'a' approves something
 // and the operator must be able to read what first. A step with no tests
 // says so rather than falling back to the log, so the operator can tell
-// the mode is on. All lines are rendered; there is no pagination.
+// the mode is on.
+//
+// The pane is clipped to the terminal: a step with thousands of tests would
+// otherwise push its failures, and the footer, off the top of the screen.
+// The rows left are the height minus the footer, the step's header line and
+// the proposal line when there is one.
 func (m *Model) renderTests(st *api.RunState) string {
 	prop := m.proposalLine()
-	var lines []string
+	var lines []testLine
 	if s := st.Steps[m.focused]; s != nil {
 		lines = testLines(s)
 	}
 	if len(lines) == 0 {
 		return logPaneStyle.Render(prop + m.focused + ": (no tests reported)")
 	}
-	return logPaneStyle.Render(prop + m.focused + ":\n" + strings.Join(lines, "\n"))
+	rows := 0
+	if m.height > 0 {
+		rows = m.height - 2
+		if prop != "" {
+			rows--
+		}
+	}
+	return logPaneStyle.Render(prop + m.focused + ":\n" + strings.Join(clipTestLines(lines, rows), "\n"))
 }
 
 func (m *Model) renderFooter(st *api.RunState) string {

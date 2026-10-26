@@ -2308,3 +2308,53 @@ func TestModelTKeyWithNothingFocusedSetsAHint(t *testing.T) {
 		t.Errorf("want a hint in the footer:\n%s", out)
 	}
 }
+
+// A step with hundreds of tests must not push its failures, or the footer,
+// off the screen: the pane keeps its top rows, where the failure is, and says
+// what it left out.
+func TestModelTestsPaneIsClippedToTheTerminal(t *testing.T) {
+	m := tui.New(&fakeSource{state: seedState("r1")})
+	m = update(t, m, tui.StateMsg{State: seedState("r1")})
+	m = update(t, m, tea.WindowSizeMsg{Width: 200, Height: 20})
+	seq := uint64(0)
+	emit := func(typ api.Type, body any) {
+		t.Helper()
+		seq++
+		e := api.Event{V: api.Version, Seq: seq, Type: typ, Run: "r1", Step: "unit", Attempt: 1}
+		if body != nil {
+			raw, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.Payload = raw
+		}
+		m = update(t, m, tui.EventMsg{Event: e})
+	}
+	emit(api.StepStarted, nil)
+	for i := 0; i < 200; i++ {
+		emit(api.TestFinished, api.TestFinishedBody{
+			Suite: "pkg", Name: fmt.Sprintf("TestP%03d", i), Outcome: api.TestPassed,
+		})
+	}
+	emit(api.TestFinished, api.TestFinishedBody{
+		Suite: "pkg", Name: "TestBroken", Outcome: api.TestFailed, Output: "boom\n",
+	})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = pressT(t, m)
+
+	out := plain(m.View())
+	if !regexp.MustCompile(`failed\s+pkg\.TestBroken`).MatchString(out) {
+		t.Errorf("the failed test is not shown:\n%s", out)
+	}
+	more := regexp.MustCompile(`… (\d+) more lines \((\d+) passed\)`).FindStringSubmatch(out)
+	if more == nil {
+		t.Fatalf("no \"more lines\" marker:\n%s", out)
+	}
+	shown := strings.Count(out, "pkg.TestP")
+	if lines := shown + 1; lines >= 20 {
+		t.Errorf("pane shows %d test lines, want fewer than 20", lines)
+	}
+	if want := fmt.Sprint(200 - shown); more[2] != want {
+		t.Errorf("marker says %s passed hidden, want %s", more[2], want)
+	}
+}

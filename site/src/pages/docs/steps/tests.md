@@ -160,7 +160,8 @@ again.
 - **[The terminal UI](/docs/attach/tui/)**: a step's row gets ` [N tests · F failed · R recovered]`,
   with the failed and recovered parts shown only when non-zero. Press `t` on the focused step to
   swap its log for a tests pane: failed tests first with their output, then recovered, skipped and
-  passed. Press `t` again for the log.
+  passed. The pane is cut to fit the terminal, keeping the failures at the top and ending with
+  `… N more lines (M passed)`. Press `t` again for the log.
 - **Plain output**: each failing test prints a line as it is reported,
   `unit test example.com/m/store.TestCheckout failed`, and the step's own line ends with
   `(N tests, F failed, R recovered)`.
