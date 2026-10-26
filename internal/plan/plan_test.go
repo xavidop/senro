@@ -2,6 +2,7 @@ package plan_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -2216,5 +2217,89 @@ func TestAClaimRefusalIsDeterministic(t *testing.T) {
 		if got := mk().Validate(); got.Error() != first.Error() {
 			t.Fatalf("the same broken plan produced two errors:\n %v\n %v", first, got)
 		}
+	}
+}
+
+// testsNode is a well-formed exec step with the given Tests declaration, so
+// each refusal below is one deviation from it.
+func testsNode(ts *plan.TestsSpec, mutate func(*plan.Node)) *plan.Plan {
+	n := plan.Node{ID: "t", Kind: "exec", Cmd: []string{"go", "test", "-json"}, Tests: ts}
+	if mutate != nil {
+		mutate(&n)
+	}
+	return &plan.Plan{Version: 1, Nodes: []plan.Node{n}}
+}
+
+func TestValidateAcceptsAWellFormedTestsDeclaration(t *testing.T) {
+	ts := &plan.TestsSpec{Format: "gotest", Select: []string{"-run", "^({tests})$"}, Join: "|"}
+	if err := testsNode(ts, nil).Validate(); err != nil {
+		t.Fatalf("Validate refused a well-formed Tests: %v", err)
+	}
+}
+
+func TestValidateRejectsTestsOnAFuncStep(t *testing.T) {
+	p := testsNode(&plan.TestsSpec{Format: "gotest"}, func(n *plan.Node) {
+		n.Kind, n.Cmd = "func", nil
+		n.Func = &plan.FuncSpec{Name: "f"}
+	})
+	err := p.Validate()
+	if err == nil || !strings.Contains(err.Error(), `step "t" is a func step and declares Tests`) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestValidateRejectsAnUnknownTestsFormat(t *testing.T) {
+	err := testsNode(&plan.TestsSpec{Format: "xunit"}, nil).Validate()
+	if err == nil || !strings.Contains(err.Error(), `unknown test report format "xunit"`) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestValidateRejectsJUnitWithoutAPath(t *testing.T) {
+	err := testsNode(&plan.TestsSpec{Format: "junit"}, nil).Validate()
+	if err == nil || !strings.Contains(err.Error(), "path") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestValidateRejectsJUnitOffTheCoordinator(t *testing.T) {
+	p := k8sPlan(func(n *plan.Node) {
+		n.Tests = &plan.TestsSpec{Format: "junit", Path: "r.xml"}
+	})
+	err := p.Validate()
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "gotestjson") || !strings.Contains(strings.ToLower(err.Error()), "tap") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestValidateRejectsASelectWithoutThePlaceholder(t *testing.T) {
+	err := testsNode(&plan.TestsSpec{Format: "gotest", Select: []string{"-run", "TestX"}}, nil).Validate()
+	if err == nil || !strings.Contains(err.Error(), "{tests}") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestTestsStreaming(t *testing.T) {
+	for format, want := range map[string]bool{"gotest": true, "tap": true, "junit": false} {
+		n := plan.Node{Tests: &plan.TestsSpec{Format: format}}
+		if got := n.TestsStreaming(); got != want {
+			t.Errorf("%s: TestsStreaming() = %v, want %v", format, got, want)
+		}
+	}
+	if (&plan.Node{}).TestsStreaming() {
+		t.Error("a node with no Tests streams")
+	}
+}
+
+// TestANodeWithNoTestsDigestsExactlyAsItAlwaysHas: Tests is a pointer with
+// omitempty, so a node that declares none marshals with no "tests" key and
+// every existing digest and golden stays put.
+func TestANodeWithNoTestsDigestsExactlyAsItAlwaysHas(t *testing.T) {
+	b, err := json.Marshal(plan.Node{ID: "a", Kind: "exec", Cmd: []string{"echo"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), `"tests"`) {
+		t.Fatalf("a node with no Tests marshals a tests key: %s", b)
 	}
 }

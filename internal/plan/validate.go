@@ -157,10 +157,58 @@ func nodeShape(n Node) error {
 		// configured; refuse it at plan time rather than after an incident.
 		return fmt.Errorf("plan: step %q retry policy allows %d attempt(s), want at least 2", n.ID, n.Retry.MaxAttempts)
 	}
+	if err := validateTests(n); err != nil {
+		return err
+	}
 	if err := validateExecutor(n); err != nil {
 		return err
 	}
 	return validateSecrets(n)
+}
+
+// validateTests checks a node's test-report declaration. Each refusal is a
+// declaration that would otherwise compile and then quietly report nothing,
+// which for a test report reads as "all passed".
+func validateTests(n Node) error {
+	t := n.Tests
+	if t == nil {
+		return nil
+	}
+	if n.Kind == "func" {
+		// A function has no stdout to read and no exit status to pair with
+		// a report, so the declaration could never take effect.
+		return fmt.Errorf(
+			"plan: step %q is a func step and declares Tests, which only an exec step can: "+
+				"the report is read from the command's output", n.ID)
+	}
+	switch t.Format {
+	case "gotest", "tap":
+	case "junit":
+		if t.Path == "" {
+			return fmt.Errorf("plan: step %q declares a junit test report with no path to read it from", n.ID)
+		}
+		if n.ExecutorKey() != ExecutorLocal {
+			return fmt.Errorf(
+				"plan: step %q declares a JUnit report and runs on the %s executor: a JUnit report is "+
+					"read from the coordinator's filesystem, which only the local executor shares; "+
+					"report over stdout with testreport.GoTestJSON() or testreport.TAP() instead",
+				n.ID, n.Executor.Kind)
+		}
+	default:
+		return fmt.Errorf("plan: step %q declares unknown test report format %q, want \"gotest\", \"tap\" or \"junit\"",
+			n.ID, t.Format)
+	}
+	if len(t.Select) > 0 {
+		for _, a := range t.Select {
+			if strings.Contains(a, "{tests}") {
+				return nil
+			}
+		}
+		return fmt.Errorf(
+			"plan: step %q declares a test selection with no {tests} placeholder in it, so a re-run "+
+				"would select nothing; put {tests} in one of the arguments", n.ID)
+	}
+	return nil
 }
 
 // validateFuncSecrets refuses the one secret channel a func step cannot be

@@ -60,6 +60,26 @@ type GenerateSpec struct {
 	Path string `json:"path,omitempty"`
 }
 
+// TestsSpec declares how a step reports tests: the format its output is
+// read as, and how a subset of them is selected for a re-run. It mirrors
+// testreport.Spec field for field; the plan keeps its own type because the
+// plan package is internal and testreport is the public surface.
+//
+// The declaration lives in the plan, not only in the engine's options,
+// because "senro rerun --test" works from plan.json alone and needs Select
+// and Join there.
+type TestsSpec struct {
+	// Format is "gotest", "tap" or "junit".
+	Format string `json:"format"`
+	// Path is the report file, for "junit" only.
+	Path string `json:"path,omitempty"`
+	// Select is argv appended to the step's command to run only some tests,
+	// with "{tests}" where their names go.
+	Select []string `json:"select,omitempty"`
+	// Join separates the chosen names where they replace "{tests}".
+	Join string `json:"join,omitempty"`
+}
+
 // FuncSpec is a registered Go function and the parameters it is called with.
 //
 // Params is canonical JSON (CanonicalParams: keys sorted at every level,
@@ -359,13 +379,17 @@ type Node struct {
 	// Generate is set for a step whose output produces a plan fragment, and
 	// nil for every ordinary step: omitempty keeps a plan that declares no
 	// generator at exactly the digest it has always had.
-	Generate        *GenerateSpec `json:"generate,omitempty"`
-	WorkDir         string        `json:"workdir,omitempty"`
-	Env             []string      `json:"env,omitempty"`
-	Needs           []string      `json:"needs,omitempty"`
-	ContinueOnError bool          `json:"continue_on_error,omitempty"`
-	Retry           *RetrySpec    `json:"retry,omitempty"`
-	TimeoutMS       int64         `json:"timeout_ms,omitempty"`
+	Generate *GenerateSpec `json:"generate,omitempty"`
+	// Tests is set for a step that reports individual test results, and nil
+	// for every other: omitempty on a pointer keeps a plan that declares no
+	// tests at exactly the digest it has always had.
+	Tests           *TestsSpec `json:"tests,omitempty"`
+	WorkDir         string     `json:"workdir,omitempty"`
+	Env             []string   `json:"env,omitempty"`
+	Needs           []string   `json:"needs,omitempty"`
+	ContinueOnError bool       `json:"continue_on_error,omitempty"`
+	Retry           *RetrySpec `json:"retry,omitempty"`
+	TimeoutMS       int64      `json:"timeout_ms,omitempty"`
 
 	// Executor is where this node runs, or nil for the coordinator. A
 	// handler inherits its parent step's executor; Validate refuses one
@@ -421,6 +445,17 @@ type Node struct {
 	// forms parsed by internal/cond. omitempty keeps condition-less nodes
 	// at their old digest.
 	When []string `json:"when,omitempty"`
+}
+
+// TestsStreaming reports whether this node's test results arrive on its
+// stdout while it runs (gotest, tap), as opposed to in a file read after it
+// exits (junit) or not at all. The engine uses it to decide whether to
+// watch the output as it passes.
+func (n *Node) TestsStreaming() bool {
+	if n.Tests == nil {
+		return false
+	}
+	return n.Tests.Format == "gotest" || n.Tests.Format == "tap"
 }
 
 // ExecutorKey is the key of the executor this node runs on: ExecutorLocal for

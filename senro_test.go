@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,8 +23,10 @@ import (
 	"github.com/xavidop/senro/executor/k8s"
 	"github.com/xavidop/senro/executor/ssh"
 	"github.com/xavidop/senro/internal/eventlog"
+	"github.com/xavidop/senro/internal/plan"
 	"github.com/xavidop/senro/internal/redact"
 	"github.com/xavidop/senro/retry"
+	"github.com/xavidop/senro/testreport"
 	"github.com/xavidop/senro/unit/glob"
 )
 
@@ -2681,4 +2684,22 @@ func pipelineOfRunStarted(t *testing.T, dir string) string {
 	}
 	t.Fatalf("no run.started in the ledger at %s", dir)
 	return ""
+}
+
+func TestTestsLowersIntoThePlan(t *testing.T) {
+	spec := testreport.GoTestJSON()
+	p := senro.New("p")
+	w := p.Workflow("w")
+	w.Step("t", exec.Command("go", "test", "-json", "./...")).Tests(spec)
+	spec.Select[0] = "mutated" // Build must not alias the caller's slice
+
+	pl, err := p.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	n, _ := pl.Node("t")
+	want := &plan.TestsSpec{Format: "gotest", Select: []string{"-run", "^({tests})$"}, Join: "|"}
+	if !reflect.DeepEqual(n.Tests, want) {
+		t.Fatalf("Tests = %+v, want %+v", n.Tests, want)
+	}
 }

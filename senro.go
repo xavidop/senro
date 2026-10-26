@@ -53,6 +53,7 @@ import (
 	"github.com/xavidop/senro/internal/stepid"
 	"github.com/xavidop/senro/internal/unit"
 	"github.com/xavidop/senro/retry"
+	"github.com/xavidop/senro/testreport"
 )
 
 // Action is what a step does.
@@ -1378,6 +1379,11 @@ func toNode(sb *StepBuilder, path map[*StepBuilder]bool) (plan.Node, error) {
 	if sb.generate != nil {
 		n.Generate = &plan.GenerateSpec{Path: sb.generate.path}
 	}
+	if sb.tests != nil {
+		t := *sb.tests
+		t.Select = append([]string(nil), sb.tests.Select...)
+		n.Tests = &t
+	}
 	n.Pure = sb.pure
 	n.NoSnapshot = sb.noSnapshot
 	n.CacheEnv = append([]string(nil), sb.cacheEnv...)
@@ -1723,6 +1729,10 @@ type StepBuilder struct {
 	// lowers it into plan.Node.Generate.
 	generate *Generator
 
+	// tests is set by Tests and nil for every step that reports no
+	// individual results; toNode lowers it into plan.Node.Tests.
+	tests *plan.TestsSpec
+
 	mounts     []Mount
 	pure       bool
 	inputs     []artifact.Selector
@@ -1996,6 +2006,25 @@ func (s *StepBuilder) CacheEnv(names ...string) *StepBuilder {
 // take when it settles. For a step whose filesystem output nobody consumes.
 func (s *StepBuilder) NoSnapshot() *StepBuilder {
 	s.noSnapshot = true
+	return s
+}
+
+// Tests declares that this step runs tests and how it reports them, so the
+// run records one result per test rather than one exit code for the step.
+// Build a spec with testreport.GoTestJSON, testreport.TAP or
+// testreport.JUnitXML.
+//
+// A bad declaration (a func step, an unknown format, a JUnit report off the
+// coordinator) is refused by plan.Validate at Build, not here: this method
+// returns a *StepBuilder so calls chain, and the one place that checks every
+// plan is the one place that must.
+func (s *StepBuilder) Tests(spec testreport.Spec) *StepBuilder {
+	s.tests = &plan.TestsSpec{
+		Format: spec.Format,
+		Path:   spec.Path,
+		Select: append([]string(nil), spec.Select...),
+		Join:   spec.Join,
+	}
 	return s
 }
 
