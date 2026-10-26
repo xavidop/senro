@@ -365,6 +365,10 @@ func (rc *runCore) emitControlApplied(req sink.ControlRequest, args map[string]s
 func (rc *runCore) unsettleLocked(h schedHandle, id string) (nextAttempt int, anchor handlerAnchor, hadAnchor bool) {
 	delete(h.states, id)
 	delete(rc.oc.finished, id)
+	// A service going round again is a new process that has not passed its
+	// probe yet: a stale ready would dispatch its dependents against an
+	// address nothing is listening on.
+	delete(rc.oc.ready, id)
 	anchor, hadAnchor = rc.oc.handlerAnchors[id]
 	delete(rc.oc.handlerAnchors, id)
 	// attempts is deliberately NOT cleared: it is the high-water mark of

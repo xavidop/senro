@@ -14,6 +14,7 @@ import (
 	"github.com/xavidop/senro/internal/eventlog"
 	"github.com/xavidop/senro/internal/executor"
 	"github.com/xavidop/senro/internal/plan"
+	"github.com/xavidop/senro/internal/redact"
 	"github.com/xavidop/senro/internal/testparse"
 	"github.com/xavidop/senro/retry"
 	"github.com/xavidop/senro/testreport"
@@ -315,6 +316,144 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 		defer cancel()
 	}
 
+	// attemptCtx, not ctx: the attempt's own deadline bounds its setup too
+	// (scratch realization, the sandbox, secret delivery), exactly as it
+	// bounds the command.
+	s, err := rc.prepareAttempt(attemptCtx, n, opts, logs, attempt)
+	if err != nil {
+		return attemptResult{state: api.StateFailed, err: err}
+	}
+	defer s.close()
+
+	// A step's own executor, and no failure: a step is not cleaning up
+	// after anything, which is what makes ctx.Failure report ok=false.
+	//
+	// attemptStart is taken immediately before the command runs so a JUnit
+	// report older than it is recognisably not this attempt's: a workspace
+	// mounted at WorkDir outlives attempts and runs, and can still hold the
+	// report a previous one wrote.
+	attemptStart := time.Now()
+	exit, runErr := rc.invoke(attemptCtx, n, invocation{key: n.ExecutorKey(), ex: s.ex}, s.sb,
+		executor.Cmd{Args: n.Cmd, Env: s.cmdEnv, Dir: cmdDirFor(n.WorkDir, s.mounts)},
+		s.mounts, s.secretPaths, attempt, s.stdout, s.stderr, opts)
+
+	if err := rc.flushAttempt(n, attempt, s); err != nil && runErr == nil {
+		runErr = err
+	}
+
+	// Snapshotting happens while the sandbox is still open and on EVERY
+	// path: failure is when the workspace matters most, and a snapshot
+	// taken after the sandbox closed would capture whatever teardown left.
+	// Each attempt snapshots for itself, so a retry does not erase the
+	// evidence of the attempt before it. WithoutCancel: a cancelled run's
+	// workspace still has to be captured.
+	snaps, snapErr := rc.snapshotMounts(context.WithoutCancel(ctx), s.sb, n, s.mounts, attempt)
+	if snapErr != nil && runErr == nil && exit == 0 {
+		// A step whose workspace could not be captured produced a result
+		// nothing downstream can key on; reported as a step failure, but
+		// only when the step itself passed, so a genuine workload failure
+		// is not masked.
+		return attemptResult{state: api.StateFailed, err: snapErr, logTail: s.tail.String(), snapshots: snaps}
+	}
+	if rc.ws != nil {
+		rc.ws.record(snaps)
+	}
+
+	res := classifyAttempt(ctx, attemptCtx, exit, runErr, s.tail, snaps)
+
+	// A JUnit report is read on two outcomes, with different stakes.
+	//
+	// A step that SUCCEEDED but left no readable report has not shown its
+	// tests passed, so a missing, malformed or stale report fails it with an
+	// error naming the path. Replacing res also skips the scratch read-back
+	// below, which keys on the same succeeded state.
+	//
+	// A step that FAILED with a plain non-zero exit is the case the report
+	// matters most for: a red test run is exactly when someone needs to know
+	// which test. So it is read best-effort: whatever parses is emitted, and
+	// a missing or malformed file is ignored, leaving the step's state, exit
+	// code and (empty) error as the exit made them, because the step may have
+	// died before writing a report and "report missing" would bury the real
+	// story under a consequence of it. A timed-out, cancelled or panicked
+	// step, or one that failed with an error of its own, is not read: its
+	// command did not run to an exit, so any report is partial at best.
+	if n.Tests != nil && n.Tests.Format == testreport.FormatJUnit {
+		switch {
+		case res.state == api.StateSucceeded:
+			if err := rc.readJUnit(n, s.sb, attempt, attemptStart); err != nil {
+				res = attemptResult{state: api.StateFailed, err: err, logTail: s.tail.String(), snapshots: snaps}
+			}
+		case res.state == api.StateFailed && res.err == nil && res.exitCode != 0:
+			_ = rc.readJUnit(n, s.sb, attempt, attemptStart)
+		}
+	}
+
+	// A scratch cache on a target that does not share the coordinator's
+	// filesystem comes back HERE or not at all: the sandbox is still open,
+	// and by the time this function returns it is closed and the pod or the
+	// attempt directory is gone. Only on a SUCCEEDED attempt, because that is
+	// the only kind saveScratch can ever store from, and a read-back is a
+	// full transfer of the whole cache. WithoutCancel, as the snapshot above
+	// is: what a step left is still worth having.
+	if rc.ws != nil && res.state == api.StateSucceeded && len(s.scratch) > 0 {
+		rc.ws.readScratch(context.WithoutCancel(ctx), s.sb, s.scratch)
+	}
+	return res
+}
+
+// attemptSetup is everything one attempt of a node runs with, built by
+// prepareAttempt: the sandbox, its mounts and delivered secrets, the
+// command's environment, and the log writers wrapped for redaction, markers,
+// the tail buffer and a streaming test parser.
+//
+// close releases all of it, in the order runAttempt's own defers used to:
+// the writers, then the sandbox, then the workspace hold. It is safe to call
+// exactly once, after flushAttempt.
+type attemptSetup struct {
+	ex          executor.Executor
+	sb          executor.Sandbox
+	mounts      []executor.Mount
+	scratch     []executor.Mount
+	secretPaths map[string]string
+	cmdEnv      []string
+	stdout      *redact.Writer
+	stderr      *redact.Writer
+	tests       testparse.Stream
+	tail        *tailBuffer
+	close       func()
+}
+
+// prepareAttempt opens one attempt of n: it emits step.started, takes the
+// workspace hold, realizes the mounts, opens the sandbox, delivers secrets,
+// builds the environment and opens the log writers.
+//
+// Extracted from runAttempt so a service (runService) is started in exactly
+// the sandbox, environment and log plumbing a step is; two copies of this
+// setup are two places for a secret's delivery or the redactor's position to
+// drift.
+//
+// On error everything already acquired is released before returning, so the
+// caller has nothing to close. step.started has been emitted either way: a
+// step whose sandbox could not be opened still started and then failed.
+func (rc *runCore) prepareAttempt(
+	ctx context.Context, n *plan.Node, opts Options, logs *eventlog.LogSet, attempt int,
+) (s attemptSetup, err error) {
+	// Releases run in reverse of acquisition; on success they become close,
+	// on failure they run before this returns.
+	var releases []func()
+	defer func() {
+		if err != nil {
+			for i := len(releases) - 1; i >= 0; i-- {
+				releases[i]()
+			}
+		}
+	}()
+	s.close = func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+	}
+
 	// The span this attempt runs under, minted by the event announcing it
 	// and taken as a return value so there is exactly one answer to "which
 	// span is this attempt": the one the ledger published. The step's own
@@ -324,8 +463,8 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 	// Shared hold on every workspace n mounts, for this attempt's entire
 	// span (mount realization, the process running, the post-run snapshot):
 	// while held, no sibling's cache hit can RemoveAll-then-Rename the same
-	// directory out from under this attempt. defer, because every return
-	// path above rc.ws.record must release it too.
+	// directory out from under this attempt. Released by close, so every
+	// return path of the caller must release it too.
 	//
 	// Deliberately NOT held across the retry loop's backoff sleep (sleeping
 	// is not working), nor across OnFailure/Always handlers: a handler
@@ -334,31 +473,26 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 	// this hold that far would keep the workspace exclusive to one step for
 	// the whole of its cleanup.
 	if rc.ws != nil {
-		unlock := rc.ws.lockMounts(workspaceMountNames(n))
-		defer unlock()
+		releases = append(releases, rc.ws.lockMounts(workspaceMountNames(n)))
 	}
 
 	// rc.ws is nil only when the plan declares nothing needing storage;
 	// Run's upfront check (planNeedsStorage) guarantees a node with a
 	// workspace mount never reaches here with rc.ws == nil.
-	var mounts []executor.Mount
 	if rc.ws != nil {
-		var err error
-		mounts, err = rc.ws.mounts(n)
+		s.mounts, err = rc.ws.mounts(n)
 		if err != nil {
-			return attemptResult{state: api.StateFailed, err: err}
+			return s, err
 		}
 	}
 
 	// Scratch mounts are kept out of mounts itself: they must never reach
 	// snapshotMounts, since a scratch cache is not a workspace and its
 	// digest must never enter a ws.snapshot event or a cache key.
-	var scratchMounts []executor.Mount
 	if rc.ws != nil {
-		var err error
-		scratchMounts, err = rc.ws.scratchMounts(attemptCtx, n)
+		s.scratch, err = rc.ws.scratchMounts(ctx, n)
 		if err != nil {
-			return attemptResult{state: api.StateFailed, err: err}
+			return s, err
 		}
 	}
 
@@ -371,22 +505,38 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 		specSecrets = append(specSecrets, executor.SecretRef{Name: sec.Name, Source: sec.Source})
 	}
 
-	ex, err := rc.executorFor(n)
+	s.ex, err = rc.executorFor(n)
 	if err != nil {
-		return attemptResult{state: api.StateFailed, err: err}
+		return s, err
 	}
+
+	// Read once, here, so the environment below and the sandbox's resolver
+	// agree on which services this attempt was given.
+	serviceEnv := rc.serviceEnv(n)
 
 	// Node.Env verbatim: the step gets its declared environment and nothing
 	// else.
-	sb, err := ex.Sandbox(attemptCtx, executor.SandboxSpec{
+	spec := executor.SandboxSpec{
 		StepID: n.ID, Attempt: attempt, Env: n.Env, WorkDir: n.WorkDir,
 		Secrets: specSecrets,
-		Mounts:  append(append([]executor.Mount(nil), mounts...), scratchMounts...),
-	})
-	if err != nil {
-		return attemptResult{state: api.StateFailed, err: err}
+		Mounts:  append(append([]executor.Mount(nil), s.mounts...), s.scratch...),
 	}
-	defer func() { _ = sb.Close(context.WithoutCancel(ctx), false) }()
+	if n.IsService() {
+		spec.Ports = n.Service.Ports
+	}
+	if len(serviceEnv) > 0 && consumesFromContainer(n) {
+		// The one address scheme a container consumer is given
+		// (host.docker.internal and the published port) resolves only with
+		// this entry on Linux; Docker Desktop has it built in, and adding it
+		// there is harmless. See serviceTable.envFor.
+		spec.ExtraHosts = []string{dockerHostGateway}
+	}
+	s.sb, err = s.ex.Sandbox(ctx, spec)
+	if err != nil {
+		return s, err
+	}
+	sb := s.sb
+	releases = append(releases, func() { _ = sb.Close(context.WithoutCancel(ctx), false) })
 
 	// Secret delivery: one FILE per declared secret, with its PATH in the
 	// environment. Nothing here ever puts a VALUE in the environment, which
@@ -395,7 +545,6 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 	// copy of n.Env so the plan's slice is never mutated and a retry starts
 	// from the declared environment, not the previous attempt's paths.
 	cmdEnv := n.Env
-	var secretPaths map[string]string
 	if len(n.Secrets) > 0 && delegatesSecrets(sb) {
 		// The executor fetches its own secrets with its own identity; senro
 		// resolves nothing and only the SOURCE crosses. See
@@ -407,7 +556,7 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 		}
 	} else if len(n.Secrets) > 0 {
 		cmdEnv = append([]string(nil), n.Env...)
-		secretPaths = make(map[string]string, len(n.Secrets))
+		s.secretPaths = make(map[string]string, len(n.Secrets))
 		for _, sec := range n.Secrets {
 			v, ok := rc.secrets.Value(sec.Name)
 			if !ok {
@@ -415,14 +564,14 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 				// reaching here means a hand-assembled *plan.Plan. Failing
 				// keeps the invariant that a step never runs believing it
 				// has a credential it does not.
-				return attemptResult{state: api.StateFailed, err: fmt.Errorf(
-					"engine: step %q needs secret %q, which was not resolved", n.ID, sec.Name)}
+				return s, fmt.Errorf(
+					"engine: step %q needs secret %q, which was not resolved", n.ID, sec.Name)
 			}
-			path, err := sb.PutSecret(attemptCtx, sec.Name, v)
+			path, err := sb.PutSecret(ctx, sec.Name, v)
 			if err != nil {
-				return attemptResult{state: api.StateFailed, err: err}
+				return s, err
 			}
-			secretPaths[sec.Name] = path
+			s.secretPaths[sec.Name] = path
 			cmdEnv = append(cmdEnv, plan.SecretEnvVar(sec.Name)+"="+path)
 			if sec.Env != "" {
 				cmdEnv = append(cmdEnv, sec.Env+"="+path)
@@ -443,23 +592,36 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 	// (TestTwoRunsInDifferentTracesShareACacheKey).
 	cmdEnv = rc.spans.outboundEnv(cmdEnv, span)
 
+	// Where every service this node needs answers (SENRO_SERVICE_*), after
+	// the trace context. Outside the cache key for the same reason the
+	// trace context is: the key digests CacheEnv-declared names from the
+	// DECLARED environment only, and a published port differs every run, so
+	// digesting it would make a pure consumer miss every run
+	// (TestServiceEnvNeverEntersTheCacheKey). A copy, never an append onto
+	// cmdEnv in place: with no secrets and no trace it is still n.Env, and
+	// an append into its spare capacity would write into the plan.
+	if len(serviceEnv) > 0 {
+		cmdEnv = append(append([]string(nil), cmdEnv...), serviceEnv...)
+	}
+	s.cmdEnv = cmdEnv
+
 	// Both writers are scoped to (step, attempt): LogSet.Path folds the
 	// attempt number into the file's path, so a fresh attempt number is
-	// automatically a fresh file. Closing them at the end of THIS function
+	// automatically a fresh file. Closing them when the attempt ends
 	// bounds descriptor use per attempt in flight.
 	stdoutW, err := logs.Writer(n.ID, attempt, api.StreamStdout)
 	if err != nil {
-		return attemptResult{state: api.StateFailed, err: err}
+		return s, err
 	}
-	defer func() { _ = stdoutW.Close() }()
+	releases = append(releases, func() { _ = stdoutW.Close() })
 
 	stderrW, err := logs.Writer(n.ID, attempt, api.StreamStderr)
 	if err != nil {
-		return attemptResult{state: api.StateFailed, err: err}
+		return s, err
 	}
-	defer func() { _ = stderrW.Close() }()
+	releases = append(releases, func() { _ = stderrW.Close() })
 
-	tail := &tailBuffer{}
+	s.tail = &tailBuffer{}
 	// The redactor sits UPSTREAM of logMarker and the tail buffer, so every
 	// downstream consumer sees redacted bytes and exactly one place can be
 	// wrong. Upstream of logMarker because the marker records byte offsets
@@ -481,120 +643,56 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 	// TAP both report on stdout, and stderr's chatter interleaved into a
 	// line-oriented parser would split lines that were never broken.
 	stdoutSinks := []io.Writer{
-		&logMarker{rc: rc, w: stdoutW, step: n.ID, attempt: attempt, stream: api.StreamStdout}, tail,
+		&logMarker{rc: rc, w: stdoutW, step: n.ID, attempt: attempt, stream: api.StreamStdout}, s.tail,
 	}
-	var tests testparse.Stream
 	if n.TestsStreaming() {
-		tests, err = testparse.NewStream(n.Tests.Format, rc.testEmitter(n.ID, attempt))
+		s.tests, err = testparse.NewStream(n.Tests.Format, rc.testEmitter(n.ID, attempt))
 		if err != nil {
-			return attemptResult{state: api.StateFailed, err: fmt.Errorf("engine: step %q: %w", n.ID, err)}
+			return s, fmt.Errorf("engine: step %q: %w", n.ID, err)
 		}
-		stdoutSinks = append(stdoutSinks, tests)
+		stdoutSinks = append(stdoutSinks, s.tests)
 	}
-	stdoutRW := rc.redact.Writer(io.MultiWriter(stdoutSinks...))
-	stderrRW := rc.redact.Writer(io.MultiWriter(
-		&logMarker{rc: rc, w: stderrW, step: n.ID, attempt: attempt, stream: api.StreamStderr}, tail))
+	s.stdout = rc.redact.Writer(io.MultiWriter(stdoutSinks...))
+	s.stderr = rc.redact.Writer(io.MultiWriter(
+		&logMarker{rc: rc, w: stderrW, step: n.ID, attempt: attempt, stream: api.StreamStderr}, s.tail))
+	return s, nil
+}
 
-	// A step's own executor, and no failure: a step is not cleaning up
-	// after anything, which is what makes ctx.Failure report ok=false.
-	//
-	// attemptStart is taken immediately before the command runs so a JUnit
-	// report older than it is recognisably not this attempt's: a workspace
-	// mounted at WorkDir outlives attempts and runs, and can still hold the
-	// report a previous one wrote.
-	attemptStart := time.Now()
-	exit, runErr := rc.invoke(attemptCtx, n, invocation{key: n.ExecutorKey(), ex: ex}, sb,
-		executor.Cmd{Args: n.Cmd, Env: cmdEnv, Dir: cmdDirFor(n.WorkDir, mounts)},
-		mounts, secretPaths, attempt, stdoutRW, stderrRW, opts)
-
-	// Flush both streams before anything else, so every step.log.appended
-	// marker precedes this attempt's step.finished, and a partial match's
-	// held-back tail reaches the file. Explicit rather than deferred: the
-	// deferred writer closes would run first, and a flush into a closed
-	// LogWriter returns ErrClosed with the bytes lost. A backgrounded child
-	// can still be writing at this moment (localexec's waitDelay);
-	// redact.Writer is mutex-guarded for exactly that race.
-	if err := stdoutRW.Flush(); err != nil && runErr == nil {
-		runErr = err
+// flushAttempt drains one attempt's output once its process has ended, and
+// returns the first flush error.
+//
+// Flush both streams before anything else, so every step.log.appended
+// marker precedes this attempt's step.finished, and a partial match's
+// held-back tail reaches the file. Explicit rather than left to close: the
+// writer closes would run first, and a flush into a closed LogWriter
+// returns ErrClosed with the bytes lost. A backgrounded child can still be
+// writing at this moment (localexec's waitDelay); redact.Writer is
+// mutex-guarded for exactly that race.
+func (rc *runCore) flushAttempt(n *plan.Node, attempt int, s attemptSetup) error {
+	var first error
+	if err := s.stdout.Flush(); err != nil {
+		first = err
 	}
-	if err := stderrRW.Flush(); err != nil && runErr == nil {
-		runErr = err
+	if err := s.stderr.Flush(); err != nil && first == nil {
+		first = err
 	}
 	// After both flushes, so the redactor's held-back tail has reached the
 	// parser, and before step.finished, so a trailing line with no newline
 	// still settles its test in time. Close's error is ignored because its
 	// contract is that it has none: a malformed line was already dropped.
-	if tests != nil {
-		_ = tests.Close()
+	if s.tests != nil {
+		_ = s.tests.Close()
 	}
 	// One event per attempt carrying both streams' counts:
 	// api.SecretRedactedBody has only a Count, so two events would be
 	// indistinguishable to a reader.
-	if c := stdoutRW.Redacted() + stderrRW.Redacted(); c > 0 {
+	if c := s.stdout.Redacted() + s.stderr.Redacted(); c > 0 {
 		rc.emit(api.Event{
 			Type: api.SecretRedacted, Step: n.ID, Attempt: attempt,
 			Payload: mustMarshal(api.SecretRedactedBody{Count: c}),
 		})
 	}
-
-	// Snapshotting happens while the sandbox is still open and on EVERY
-	// path: failure is when the workspace matters most, and a snapshot
-	// taken after the sandbox closed would capture whatever teardown left.
-	// Each attempt snapshots for itself, so a retry does not erase the
-	// evidence of the attempt before it. WithoutCancel: a cancelled run's
-	// workspace still has to be captured.
-	snaps, snapErr := rc.snapshotMounts(context.WithoutCancel(ctx), sb, n, mounts, attempt)
-	if snapErr != nil && runErr == nil && exit == 0 {
-		// A step whose workspace could not be captured produced a result
-		// nothing downstream can key on; reported as a step failure, but
-		// only when the step itself passed, so a genuine workload failure
-		// is not masked.
-		return attemptResult{state: api.StateFailed, err: snapErr, logTail: tail.String(), snapshots: snaps}
-	}
-	if rc.ws != nil {
-		rc.ws.record(snaps)
-	}
-
-	res := classifyAttempt(ctx, attemptCtx, exit, runErr, tail, snaps)
-
-	// A JUnit report is read on two outcomes, with different stakes.
-	//
-	// A step that SUCCEEDED but left no readable report has not shown its
-	// tests passed, so a missing, malformed or stale report fails it with an
-	// error naming the path. Replacing res also skips the scratch read-back
-	// below, which keys on the same succeeded state.
-	//
-	// A step that FAILED with a plain non-zero exit is the case the report
-	// matters most for: a red test run is exactly when someone needs to know
-	// which test. So it is read best-effort: whatever parses is emitted, and
-	// a missing or malformed file is ignored, leaving the step's state, exit
-	// code and (empty) error as the exit made them, because the step may have
-	// died before writing a report and "report missing" would bury the real
-	// story under a consequence of it. A timed-out, cancelled or panicked
-	// step, or one that failed with an error of its own, is not read: its
-	// command did not run to an exit, so any report is partial at best.
-	if n.Tests != nil && n.Tests.Format == testreport.FormatJUnit {
-		switch {
-		case res.state == api.StateSucceeded:
-			if err := rc.readJUnit(n, sb, attempt, attemptStart); err != nil {
-				res = attemptResult{state: api.StateFailed, err: err, logTail: tail.String(), snapshots: snaps}
-			}
-		case res.state == api.StateFailed && res.err == nil && res.exitCode != 0:
-			_ = rc.readJUnit(n, sb, attempt, attemptStart)
-		}
-	}
-
-	// A scratch cache on a target that does not share the coordinator's
-	// filesystem comes back HERE or not at all: the sandbox is still open,
-	// and by the time this function returns it is closed and the pod or the
-	// attempt directory is gone. Only on a SUCCEEDED attempt, because that is
-	// the only kind saveScratch can ever store from, and a read-back is a
-	// full transfer of the whole cache. WithoutCancel, as the snapshot above
-	// is: what a step left is still worth having.
-	if rc.ws != nil && res.state == api.StateSucceeded && len(scratchMounts) > 0 {
-		rc.ws.readScratch(context.WithoutCancel(ctx), sb, scratchMounts)
-	}
-	return res
+	return first
 }
 
 // classifyAttempt turns one attempt's outcome into its result.

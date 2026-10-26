@@ -80,6 +80,14 @@ type outcomes struct {
 	// the same lock as states/running/finished/attempts, so the event fires
 	// only for a genuine handler pass and never twice for the same one.
 	handlerAnchors map[string]handlerAnchor
+
+	// ready is every service whose readiness probe has passed in its
+	// current execution. Its own map rather than a state in `states`: a
+	// ready service is still running, and `states` holds only terminal
+	// outcomes, which is what lets readySet keep reading "absent" as "not
+	// finished". readySet reads it under mu beside states; markReady is the
+	// only writer, and unsettleLocked clears it for a node going round again.
+	ready map[string]bool
 }
 
 // handlerAnchor is one node's currently pending handler evidence: the
@@ -99,7 +107,16 @@ func newOutcomes(nodes int) *outcomes {
 		alwaysRun:      make(map[string]bool),
 		attempts:       make(map[string]int, nodes),
 		handlerAnchors: make(map[string]handlerAnchor),
+		ready:          make(map[string]bool),
 	}
+}
+
+// markReady records that service id passed its readiness probe, so its
+// dependents may be dispatched while it keeps running. See outcomes.ready.
+func (oc *outcomes) markReady(id string) {
+	oc.mu.Lock()
+	defer oc.mu.Unlock()
+	oc.ready[id] = true
 }
 
 // settle records id's terminal state and reports whether the caller is the

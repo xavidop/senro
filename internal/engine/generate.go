@@ -138,6 +138,7 @@ func (rc *runCore) publish(generatorID string, nodes []plan.Node, digest string)
 			Type: api.StepCreated, Step: nodes[i].ID, Group: generatorID,
 			Payload: mustMarshal(api.StepCreatedBody{
 				Kind: nodes[i].Kind, Group: generatorID, Needs: nodes[i].Needs,
+				Service: nodes[i].IsService(),
 			}),
 		})
 	}
