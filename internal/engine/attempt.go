@@ -458,6 +458,10 @@ type attemptSetup struct {
 	tests       testparse.Stream
 	tail        *tailBuffer
 	close       func()
+	// unlockMounts releases the workspace hold early, idempotently (close
+	// calls it again harmlessly). Only runService calls it; nil when the
+	// run has no workspaces.
+	unlockMounts func()
 }
 
 // prepareAttempt opens one attempt of n: it emits step.started, takes the
@@ -516,15 +520,34 @@ func (rc *runCore) prepareAttempt(
 	// settle-time Always can hold the full cleanup grace and stretching
 	// this hold that far would keep the workspace exclusive to one step for
 	// the whole of its cleanup.
+	//
+	// A service is the exception: it may run for the whole run, and a hold
+	// that long deadlocks against a sibling's cache restore into the same
+	// workspace (the restore waits for the hold, and with it every later
+	// mount, while the service waits for consumers that cannot mount). So
+	// it gets unlockMounts, and runService drops the hold as soon as the
+	// process has started.
 	if rc.ws != nil {
-		releases = append(releases, rc.ws.lockMounts(workspaceMountNames(n)))
+		unlock := sync.OnceFunc(rc.ws.lockMounts(workspaceMountNames(n)))
+		s.unlockMounts = unlock
+		releases = append(releases, unlock)
 	}
 
 	// rc.ws is nil only when the plan declares nothing needing storage;
 	// Run's upfront check (planNeedsStorage) guarantees a node with a
 	// workspace mount never reaches here with rc.ws == nil.
+	//
+	// A service mounts its workspaces the way a handler does
+	// (handlerMounts: what is there now, read-only) because it is never a
+	// producer: it takes no post-run snapshot, so nothing it wrote would
+	// reach the ledger or a cache key, and a write it expected a consumer
+	// to see would be a race with no evidence behind it.
 	if rc.ws != nil {
-		s.mounts, err = rc.ws.mounts(n)
+		if n.IsService() {
+			s.mounts, err = rc.ws.handlerMounts(n)
+		} else {
+			s.mounts, err = rc.ws.mounts(n)
+		}
 		if err != nil {
 			return s, err
 		}

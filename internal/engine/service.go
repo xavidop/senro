@@ -397,6 +397,15 @@ func (rc *runCore) serviceAttempt(
 	if err != nil {
 		return serviceFailure(ctx, err)
 	}
+	// The process has its mounts (a local cwd and links, a container's
+	// binds), so the workspace hold has done its job; keeping it for the
+	// service's life would block a sibling's cache restore into the same
+	// workspace, and every mount queued behind that restore, until the
+	// service stops: a deadlock when the blocked mount is a consumer's. See
+	// prepareAttempt.
+	if s.unlockMounts != nil {
+		s.unlockMounts()
+	}
 	grace := time.Duration(n.Service.StopGraceMS) * time.Millisecond
 
 	// Wait is called once, here, and its answer raced against everything
