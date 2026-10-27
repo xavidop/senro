@@ -281,11 +281,25 @@ func (rc *runCore) runShellSession(
 		// let go mid-read, and it is redone under our own lock, which no
 		// longer has a held step to wait behind. Checked rather than
 		// pinned, so a breakpoint.clear never waits on this read.
-		tok, held := rc.holds.token(n.ID)
-		if held {
+		//
+		// Twice before the fallback: a release followed at once by the next
+		// attempt's hold (a retry failing again inside the read) leaves the
+		// first token stale while a hold is in place again, and the lock
+		// would then queue behind that hold's restore exactly as above. A
+		// third consecutive hold inside two reads is a retry loop faster
+		// than a directory walk, and is left to the lock.
+		var covered bool
+		for range 2 {
+			tok, held := rc.holds.token(n.ID)
+			if !held {
+				break
+			}
 			mounts, err = rc.ws.handlerMounts(n)
+			if covered = rc.holds.stillHeld(n.ID, tok); covered {
+				break
+			}
 		}
-		if !held || !rc.holds.stillHeld(n.ID, tok) {
+		if !covered {
 			unlock := rc.ws.lockMounts(workspaceMountNames(n))
 			mounts, err = rc.ws.handlerMounts(n)
 			unlock()

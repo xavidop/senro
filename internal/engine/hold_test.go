@@ -114,7 +114,10 @@ func TestBreakOnFailureHoldsUntilCleared(t *testing.T) {
 	out, s, hits := breakOnFailureRun(t, context.Background(), failingWorkspacePlan(nil))
 	waitFailureHit(t, hits, 1)
 
-	// Held, not settled: no step.finished yet for build.
+	// Held, not settled: no step.finished yet for build, even a while after
+	// the hit. Read at once, the check would pass for a step that settles a
+	// moment after announcing the hold.
+	time.Sleep(100 * time.Millisecond)
 	for _, e := range s.Events() {
 		if e.Type == api.StepFinished && e.Step == "build" {
 			t.Fatal("build settled while held")
