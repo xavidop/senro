@@ -629,6 +629,10 @@ func (rc *runCore) handleBreakpoint(h schedHandle, req sink.ControlRequest) {
 		return
 	}
 	_, armed := h.breakpoints[n.ID]
+	// released says which of the two a clear let go of, in control.applied,
+	// so a client folding the ledger knows whether the step is still held
+	// (api.RunState.Apply clears Held only on "hold").
+	released := ""
 	switch {
 	case req.Op == api.OpBreakpointSet && armed:
 		refuse(req, reasonBreakpointExists)
@@ -640,12 +644,19 @@ func (rc *runCore) handleBreakpoint(h schedHandle, req sink.ControlRequest) {
 		h.breakpoints[n.ID] = &breakpoint{clientID: req.ClientID}
 	case armed:
 		delete(h.breakpoints, n.ID)
+		released = api.ReleasedBreakpoint
 	case !rc.holds.release(n.ID):
 		// Neither armed nor held after a failure: nothing to clear.
 		refuse(req, reasonNoBreakpoint)
 		return
+	default:
+		released = api.ReleasedHold
 	}
-	rc.emitControlApplied(req, map[string]string{"step": n.ID})
+	args := map[string]string{"step": n.ID}
+	if released != "" {
+		args["released"] = released
+	}
+	rc.emitControlApplied(req, args)
 	req.Reply <- sink.ControlResponse{ID: req.ID, OK: true}
 }
 

@@ -157,6 +157,58 @@ func TestBreakOnFailureHoldsUntilCleared(t *testing.T) {
 	}
 }
 
+// TestClearingAnArmedAndHeldStepReleasesTheBreakpointFirst: a breakpoint
+// armed while the step ran, then a failure hold. The first clear releases
+// the armed breakpoint and says so in control.applied; the step is still
+// held, and the fold agrees. The second releases the hold.
+func TestClearingAnArmedAndHeldStepReleasesTheBreakpointFirst(t *testing.T) {
+	p := failingWorkspacePlan(nil)
+	p.Nodes[0].Cmd = []string{"sh", "-c", "sleep 0.5; echo half-built > evidence.txt; exit 3"}
+	out, s, events := breakOnFailureRun(t, context.Background(), p)
+	waitForEvent(t, events, func(e api.Event) bool { return e.Type == api.StepStarted && e.Step == "build" })
+	if resp := send(t, s.controlSink, sink.ControlRequest{
+		ID: "arm", Op: api.OpBreakpointSet, ClientID: "tester", Args: map[string]string{"step": "build"},
+	}); !resp.OK {
+		t.Fatalf("breakpoint.set = %+v, want OK", resp)
+	}
+	waitFailureHit(t, events, 1)
+
+	released := func() []string {
+		var out []string
+		for _, e := range s.Events() {
+			if e.Type == api.ControlApplied {
+				if b := controlAppliedBody(t, e); b.Op == api.OpBreakpointClear {
+					out = append(out, b.Args["released"])
+				}
+			}
+		}
+		return out
+	}
+	if resp := send(t, s.controlSink, clearBuild("c1")); !resp.OK {
+		t.Fatalf("first breakpoint.clear = %+v, want OK", resp)
+	}
+	if got := released(); len(got) != 1 || got[0] != api.ReleasedBreakpoint {
+		t.Fatalf("released = %v, want [breakpoint]", got)
+	}
+	st := api.NewRunState()
+	for _, e := range s.Events() {
+		if err := st.Apply(e); err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+	}
+	if b := st.Steps["build"]; !b.Paused || b.Held != api.HoldReasonFailure {
+		t.Errorf("after the first clear Paused=%v Held=%q, want still held", b.Paused, b.Held)
+	}
+
+	if resp := send(t, s.controlSink, clearBuild("c2")); !resp.OK {
+		t.Fatalf("second breakpoint.clear = %+v, want OK", resp)
+	}
+	waitRun(t, out)
+	if got := released(); len(got) != 2 || got[1] != api.ReleasedHold {
+		t.Errorf("released = %v, want [breakpoint hold]", got)
+	}
+}
+
 // TestBreakOnFailureHoldsEveryFailingAttempt: after a release the retry loop
 // carries on as if nothing had held it, and its next failure is held too.
 func TestBreakOnFailureHoldsEveryFailingAttempt(t *testing.T) {

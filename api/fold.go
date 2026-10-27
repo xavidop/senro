@@ -290,10 +290,18 @@ func (s *RunState) Apply(e Event) error {
 		// ledger conjure steps that were never in any plan.
 		switch b.Op {
 		case OpBreakpointClear:
-			if st, ok := s.Steps[b.Args["step"]]; ok {
-				st.Paused = false
-				st.Held = ""
+			st, ok := s.Steps[b.Args["step"]]
+			if !ok {
+				break
 			}
+			// Releasing an armed breakpoint leaves a failure hold in place:
+			// the step is still stopped. Anything else (a released hold, or
+			// a ledger that predates "released") lets go of everything.
+			if b.Args["released"] == ReleasedBreakpoint && st.Held != "" {
+				break
+			}
+			st.Paused = false
+			st.Held = ""
 		case OpRunPause:
 			// Unlike a breakpoint, no separate event announces the scheduler
 			// acted: a pause takes effect the instant it is accepted, so this

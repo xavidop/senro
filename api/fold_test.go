@@ -916,6 +916,37 @@ func TestApplyFoldsAFailureHold(t *testing.T) {
 	}
 }
 
+// A step both armed and held takes one clear for each. The first releases
+// the armed breakpoint and says so; the step is still held, so the fold keeps
+// Held and Paused until the clear that releases the hold.
+func TestApplyClearingTheArmedBreakpointOfAHeldStepKeepsItHeld(t *testing.T) {
+	s := api.NewRunState()
+	mustApply(t, s, api.Event{Seq: 1, Type: api.BreakpointHit, Step: "test",
+		Payload: json.RawMessage(`{"reason":"failure"}`)})
+	clear := func(seq uint64, released string) {
+		mustApply(t, s, mustEvent(t, api.Event{Seq: seq, Type: api.ControlApplied},
+			api.ControlAppliedBody{Op: api.OpBreakpointClear, ClientID: "tui-1",
+				Args: map[string]string{"step": "test", "released": released}}))
+	}
+	clear(2, api.ReleasedBreakpoint)
+	if st := s.Steps["test"]; !st.Paused || st.Held != api.HoldReasonFailure {
+		t.Fatalf("Paused=%v Held=%q after releasing only the armed breakpoint, want still held", st.Paused, st.Held)
+	}
+	clear(3, api.ReleasedHold)
+	if st := s.Steps["test"]; st.Paused || st.Held != "" {
+		t.Errorf("Paused=%v Held=%q after releasing the hold", st.Paused, st.Held)
+	}
+
+	// A plain breakpoint hit, released as a breakpoint: nothing holds it.
+	mustApply(t, s, api.Event{Seq: 4, Type: api.BreakpointHit, Step: "plain", Payload: json.RawMessage(`{}`)})
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 5, Type: api.ControlApplied},
+		api.ControlAppliedBody{Op: api.OpBreakpointClear,
+			Args: map[string]string{"step": "plain", "released": api.ReleasedBreakpoint}}))
+	if st := s.Steps["plain"]; st.Paused {
+		t.Error("a plain breakpoint released as one is still paused")
+	}
+}
+
 // A retried service is pending again, so it must not stay ready.
 func TestApplyStepRetriedClearsService(t *testing.T) {
 	s := api.NewRunState()

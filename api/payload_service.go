@@ -6,6 +6,17 @@ import "time"
 // attempt failed, as opposed to one a client armed a breakpoint on.
 const HoldReasonFailure = "failure"
 
+// The values of a breakpoint.clear's control.applied "released" argument:
+// which of the two a step can be stopped by the clear let go of. A step
+// armed while it ran and then held after failing has both, and one clear
+// releases the armed breakpoint only; the step is still held. Absent in a
+// ledger written before the argument existed, where a clear is read as
+// releasing everything.
+const (
+	ReleasedBreakpoint = "breakpoint"
+	ReleasedHold       = "hold"
+)
+
 // Endpoint is one address a service step listens on.
 type Endpoint struct {
 	// Port is the port the service was declared to listen on.
