@@ -196,11 +196,12 @@ func WithBreakOnFailure() Option {
 	return func(c *runConfig) { c.breakOnFailure = true }
 }
 
-// WithLock applies the lock file at path: every container and Kubernetes
-// image the plan names by tag must have an entry, and the executor pulls the
-// locked digest instead of the tag. The plan keeps the reference as written,
-// so plan.json and the plan's digest do not change; the executor's Class
-// reports the locked digest, which is what reaches the cache key.
+// WithLock applies the lock file at path: every container image the plan
+// names by tag must have an entry (Kubernetes steps already require a digest
+// at Build), and the executor pulls the locked digest instead of the tag.
+// The plan keeps the reference as written, so plan.json and the plan's
+// digest do not change; the executor's Class reports the locked digest,
+// which is what reaches the cache key.
 //
 // Read when RunPlan starts. Without this option RunPlan reads SENRO_LOCK,
 // which `senro run` and `senro up` set to <pkg>/senro.lock when that file
@@ -594,11 +595,24 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 		opt(&cfg)
 	}
 
+	// Writing or checking a lock runs nothing and leaves no run directory,
+	// and both are pure functions of the plan's images, not of one delivery:
+	// they come before the trigger, so an event no trigger matches cannot
+	// turn `senro lock` into an exit 78, and before SENRO_UP and the test
+	// selection, which narrow a run this never starts.
+	if path := os.Getenv(lockWriteEnv); path != "" {
+		return writeLockMode(ctx, p, path, cfg)
+	}
+	if path := os.Getenv(lockCheckEnv); path != "" {
+		return checkLockMode(ctx, p, path, cfg)
+	}
+
 	// Decided before anything touches disk, starts a goroutine or opens the
 	// cache: a no-match has to be genuinely inert, with no partial state for
-	// something to misread later as a run that died. Only Build, which is
-	// pure, runs ahead of this. The error is wrapped so it reads like every
-	// other error here; errors.Is(err, trigger.ErrNoMatch) still recovers it.
+	// something to misread later as a run that died. Only Build and the lock
+	// modes above, which never start a run, run ahead of this. The error is
+	// wrapped so it reads like every other error here; errors.Is(err,
+	// trigger.ErrNoMatch) still recovers it.
 	match, err := trigger.Select(cfg.triggerEvent, cfg.triggers...)
 	if err != nil {
 		return fmt.Errorf("senro: %w", err)
@@ -621,15 +635,8 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 		cfg.breakOnFailure = true
 	}
 
-	// The lock modes sit with the other up-front decisions: writing or
-	// checking a lock runs nothing and leaves no run directory, and an image
-	// missing from an applied lock is refused before one exists.
-	if path := os.Getenv(lockWriteEnv); path != "" {
-		return writeLockMode(ctx, p, path, cfg)
-	}
-	if path := os.Getenv(lockCheckEnv); path != "" {
-		return checkLockMode(ctx, p, path, cfg)
-	}
+	// An applied lock sits with the other up-front decisions: an image
+	// missing from it is refused before a run directory exists.
 	lockPath := cfg.lockPath
 	if lockPath == "" {
 		lockPath = os.Getenv(lockEnv)
@@ -995,17 +1002,20 @@ var (
 )
 
 // lockable reports whether spec names an image a lock can pin: a container
-// or Kubernetes target whose image is not already a digest reference.
+// target whose image is not already a digest reference. Kubernetes targets
+// are not lockable because they never need it: validateK8s (internal/plan)
+// already refuses a k8s image that is not a digest reference at Build, so a
+// built plan's k8s images are pinned before a lock is consulted.
 func lockable(spec *plan.ExecutorSpec) bool {
-	if spec == nil || (spec.Kind != plan.ExecutorContainer && spec.Kind != plan.ExecutorK8s) {
+	if spec == nil || spec.Kind != plan.ExecutorContainer {
 		return false
 	}
 	return spec.Image != "" && !lock.IsDigestRef(spec.Image)
 }
 
-// lockImages returns every container and Kubernetes image reference in p
-// that is not already a digest reference, sorted and without duplicates:
-// exactly the set a lock file for p holds.
+// lockImages returns every container image reference in p that is not
+// already a digest reference, sorted and without duplicates: exactly the set
+// a lock file for p holds.
 func lockImages(p *Plan) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -1132,7 +1142,7 @@ func writeLockMode(ctx context.Context, p *Plan, path string, cfg runConfig) err
 	}
 	if len(refs) == 0 {
 		_, _ = fmt.Fprintf(lockStderr,
-			"senro: this pipeline names no container or Kubernetes image by tag; wrote an empty %s\n", path)
+			"senro: this pipeline names no container image by tag; wrote an empty %s\n", path)
 	}
 	return nil
 }
@@ -1140,6 +1150,11 @@ func writeLockMode(ctx context.Context, p *Plan, path string, cfg runConfig) err
 // checkLockMode is SENRO_LOCK_CHECK: resolve, compare with the file at path,
 // print every difference, write nothing and run nothing. An entry the plan no
 // longer names is a difference too: `senro lock` would drop it.
+//
+// Drift returns an error wrapping lock.ErrDrift and prints lock.DriftDetected
+// to stderr as a line of its own. The line is the library's, not main's, so
+// `senro lock --check` can map drift to exit 1 whatever the pipeline's main
+// prints or exits with.
 func checkLockMode(ctx context.Context, p *Plan, path string, cfg runConfig) error {
 	locked, err := lock.Read(path)
 	if err != nil {
@@ -1180,7 +1195,8 @@ func checkLockMode(ctx context.Context, p *Plan, path string, cfg runConfig) err
 		_, _ = fmt.Fprintf(lockStdout, "%s  %s  ->  %s\n", ref, was, now)
 	}
 	if differ > 0 {
-		return fmt.Errorf("senro: %s is out of date: %d image(s) differ; run senro lock", path, differ)
+		_, _ = fmt.Fprintln(lockStderr, lock.DriftDetected)
+		return fmt.Errorf("senro: %s: %w: %d image(s) differ; run senro lock", path, lock.ErrDrift, differ)
 	}
 	return nil
 }

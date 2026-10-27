@@ -17,6 +17,7 @@ import (
 	"github.com/xavidop/senro/internal/secrets"
 	"github.com/xavidop/senro/internal/storage"
 	"github.com/xavidop/senro/lock"
+	"github.com/xavidop/senro/trigger"
 )
 
 const (
@@ -258,5 +259,77 @@ func TestWithLockAppliesWithoutTheEnvironment(t *testing.T) {
 		WithDir(t.TempDir()), WithCacheDir(t.TempDir()))
 	if err == nil || !strings.Contains(err.Error(), "is not in "+path) {
 		t.Fatalf("err = %v, want the unlocked-image refusal", err)
+	}
+}
+
+// captureLockStderr swaps the lock modes' stderr for a buffer.
+func captureLockStderr(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	old := lockStderr
+	lockStderr = &buf
+	t.Cleanup(func() { lockStderr = old })
+	return &buf
+}
+
+// Drift is recognisable two ways: the error wraps lock.ErrDrift for a main
+// that inspects it, and the library itself prints lock.DriftDetected as its
+// own stderr line, which is what `senro lock --check` reads.
+func TestLockCheckModeDriftIsErrDriftAndSaysSo(t *testing.T) {
+	p := lockPlan(t, "golang:1.26")
+	path := writeLockFile(t, map[string]string{"golang:1.26": lockDigestA})
+	fakeResolver(t, map[string]string{"golang:1.26": lockDigestB})
+	captureLockOutput(t)
+	stderr := captureLockStderr(t)
+	t.Setenv(lockCheckEnv, path)
+	err := RunPlan(context.Background(), p, WithDir(t.TempDir()), WithCacheDir(t.TempDir()))
+	if !errors.Is(err, lock.ErrDrift) {
+		t.Fatalf("err = %v, want one wrapping lock.ErrDrift", err)
+	}
+	if stderr.String() != lock.DriftDetected+"\n" {
+		t.Errorf("stderr = %q, want the drift line alone", stderr.String())
+	}
+
+	// A lock that cannot be read is a failure, not drift.
+	t.Setenv(lockCheckEnv, filepath.Join(t.TempDir(), "missing.lock"))
+	stderr.Reset()
+	err = RunPlan(context.Background(), p, WithDir(t.TempDir()), WithCacheDir(t.TempDir()))
+	if err == nil || errors.Is(err, lock.ErrDrift) {
+		t.Fatalf("err = %v, want a non-drift failure", err)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr = %q, want no drift line", stderr.String())
+	}
+}
+
+// Writing or checking a lock is about the pipeline's images, not about one
+// delivery: an event no trigger matches must not stop it, or `senro lock`
+// would exit 78 for a pipeline whose main passes a stale event through.
+func TestLockModesIgnoreTheTrigger(t *testing.T) {
+	p := lockPlan(t, "golang:1.26")
+	fakeResolver(t, map[string]string{"golang:1.26": lockDigestA})
+	captureLockOutput(t)
+	captureLockStderr(t)
+	ev := &trigger.Event{
+		Kind: trigger.Push, Provider: "github", Repo: "acme/app",
+		Ref: "refs/heads/wip", Branch: "wip", DefaultBranch: "main",
+	}
+	noMatch := WithTrigger(ev, trigger.OnPush(trigger.Branches("main")))
+
+	path := filepath.Join(t.TempDir(), "senro.lock")
+	t.Setenv(lockWriteEnv, path)
+	if err := RunPlan(context.Background(), p, noMatch,
+		WithDir(t.TempDir()), WithCacheDir(t.TempDir())); err != nil {
+		t.Fatalf("write mode under a non-matching event: %v", err)
+	}
+	if f, err := lock.Read(path); err != nil || f.Images["golang:1.26"] != lockDigestA {
+		t.Fatalf("lock = %+v, %v", f, err)
+	}
+
+	t.Setenv(lockWriteEnv, "")
+	t.Setenv(lockCheckEnv, path)
+	if err := RunPlan(context.Background(), p, noMatch,
+		WithDir(t.TempDir()), WithCacheDir(t.TempDir())); err != nil {
+		t.Fatalf("check mode under a non-matching event: %v", err)
 	}
 }

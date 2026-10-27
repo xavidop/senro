@@ -261,3 +261,12 @@ func (s *stderrSniffer) saw(msg string) bool {
 	defer s.mu.Unlock()
 	return bytes.Contains(s.buf, []byte(msg))
 }
+
+// sawLine reports whether line appeared as a whole line of its own, so a
+// longer line merely containing it does not count.
+func (s *stderrSniffer) sawLine(line string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l := []byte(line + "\n")
+	return bytes.HasPrefix(s.buf, l) || bytes.Contains(s.buf, append([]byte("\n"), l...))
+}

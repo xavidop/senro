@@ -42,6 +42,7 @@ func TestResolveTagNormalisesReferences(t *testing.T) {
 		{"docker.io/acme/tool:2", "", "https://registry-1.docker.io/v2/acme/tool/manifests/2"},
 		{"acme/tool:2", "", "https://registry-1.docker.io/v2/acme/tool/manifests/2"},
 		{"ghcr.io/acme/tool:v1", "", "https://ghcr.io/v2/acme/tool/manifests/v1"},
+		{"ghcr.io/acme/tool", "", "https://ghcr.io/v2/acme/tool/manifests/latest"},
 		{"localhost:5000/x:y", "yes", "https://localhost:5000/v2/x/manifests/y"},
 	} {
 		t.Run(tc.ref, func(t *testing.T) {

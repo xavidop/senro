@@ -42,13 +42,14 @@ Usage:
       detects nothing.
 
   senro lock <pkg> [--check] [--file PATH] [-- pipeline-args...]
-      Resolve every container and Kubernetes image the pipeline names by tag
-      to a registry digest and write PATH (default <pkg>/senro.lock), one
-      stdout line per image: <reference>  <digest>. Runs no step. senro run
-      and senro up apply <pkg>/senro.lock when it exists, unless SENRO_LOCK
-      is set, and refuse an image it lacks. --check writes nothing and prints
-      each difference as <reference>  <locked>  ->  <current>, and the
-      pipeline exits non-zero (its main picks the code) when any tag moved.
+      Resolve every container image the pipeline names by tag to a registry
+      digest and write PATH (default <pkg>/senro.lock), one stdout line per
+      image: <reference>  <digest> (Kubernetes steps already require a
+      digest at Build). Runs no step. senro run and senro up apply
+      <pkg>/senro.lock when it exists, unless SENRO_LOCK is set, and refuse
+      an image it lacks. --check writes nothing, prints each difference as
+      <reference>  <locked>  ->  <current>, and on drift prints the line
+      "senro: drift detected" to stderr and exits 1.
 
   senro attach [--pid <pid> | --run <id> | --addr <host:port>] [--follow]
       [--tls] [--ui=auto|tui|plain|none]

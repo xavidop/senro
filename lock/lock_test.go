@@ -78,7 +78,7 @@ func TestReadWrongVersionNamesBoth(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := lock.Read(p)
-	if err == nil || !strings.Contains(err.Error(), "99") || !strings.Contains(err.Error(), "1") {
+	if err == nil || !strings.Contains(err.Error(), "version 99") || !strings.Contains(err.Error(), "reads version 1") {
 		t.Fatalf("error must name both versions, got %v", err)
 	}
 }
@@ -102,6 +102,34 @@ func TestPinned(t *testing.T) {
 	}
 	if got, ok := f.Pinned("alpine:3"); ok || got != "" {
 		t.Errorf("an unlocked ref was pinned: %q", got)
+	}
+}
+
+// A reference already naming a digest is pinned already: it is returned as
+// written, whether or not the lock has an entry for it.
+func TestPinnedLeavesADigestRefAlone(t *testing.T) {
+	t.Parallel()
+	ref := "golang@" + digest
+	got, ok := lock.File{Version: lock.Version}.Pinned(ref)
+	if !ok || got != ref {
+		t.Errorf("Pinned(%q) = %q, %v; want it unchanged and true", ref, got, ok)
+	}
+}
+
+// A zero Version is filled in, so a File built without one is still a lock
+// Read accepts.
+func TestWriteDefaultsTheVersion(t *testing.T) {
+	t.Parallel()
+	p := filepath.Join(t.TempDir(), "senro.lock")
+	if err := lock.Write(p, lock.File{Images: map[string]string{"a:1": digest}}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := lock.Read(p)
+	if err != nil {
+		t.Fatalf("reading back a lock written without a version: %v", err)
+	}
+	if f.Version != lock.Version {
+		t.Errorf("version = %d, want %d", f.Version, lock.Version)
 	}
 }
 

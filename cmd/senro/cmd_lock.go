@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/xavidop/senro/lock"
 )
 
 // lockFileName is the lock `senro lock` writes beside a pipeline and
@@ -36,8 +38,17 @@ type lockOptions struct {
 // does, with SENRO_LOCK_WRITE (or SENRO_LOCK_CHECK) set to PATH, so the
 // pipeline resolves its own images and writes or checks the lock instead of
 // running. The child's stdout ("<reference>  <digest>" lines, or the drift
-// under --check) is forwarded verbatim, and so is its exit code: 0 written or
-// current, non-zero for a failure or drift, 2 for usage errors.
+// under --check) is forwarded verbatim, and so is its exit code, with one
+// exception: drift under --check exits 1. 0 means written or current, 1
+// drift, 2 a usage error, and any other non-zero code is the pipeline's own
+// for a check or write that could not run.
+//
+// Drift is recognised by what the child prints, not by its code: each
+// pipeline's main picks its own code for an error (1, 70, ...), but the
+// senro library itself prints lock.DriftDetected to stderr, as a line of its
+// own, when a check finds drift. That line needs nothing from main, so the
+// mapping holds for a main that exits 70, log.Fatals, or ignores the error.
+// An interrupt keeps its 130.
 func cmdLock(args []string, stdout, stderr io.Writer) int {
 	opts, err := parseLockOptions(args)
 	if err != nil {
@@ -45,7 +56,17 @@ func cmdLock(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	run := runOptions{pkg: opts.pkg, ui: string(uiNone), pipelineArgs: opts.pipelineArgs}
-	return runBuilt("lock", run, false, runHooks{env: lockChildEnv(opts)}, stdout, stderr, false)
+	hk := runHooks{env: lockChildEnv(opts)}
+	var sniff *stderrSniffer
+	if opts.check {
+		sniff = &stderrSniffer{}
+		hk.childStderr = sniff
+	}
+	code := runBuilt("lock", run, false, hk, stdout, stderr, false)
+	if sniff != nil && code != exitCancelled && sniff.sawLine(lock.DriftDetected) {
+		return exitRunFailed
+	}
+	return code
 }
 
 // parseLockOptions splits senro lock's arguments the way parseRunOptions
@@ -97,13 +118,15 @@ func parseLockOptions(args []string) (lockOptions, error) {
 
 // lockChildEnv is childEnv for senro lock: the lock mode set, and every lock
 // variable this process inherited removed, so the child never applies a lock
-// while it writes or checks one.
+// while it writes or checks one. An inherited SENRO_UP or
+// SENRO_BREAK_ON_FAILURE is removed too: both shape a run, and this child
+// runs nothing.
 func lockChildEnv(o lockOptions) []string {
 	env := []string{funcPkgEnv + "=" + o.pkg}
 	for _, e := range os.Environ() {
 		name, _, _ := strings.Cut(e, "=")
 		switch name {
-		case lockEnv, lockWriteEnv, lockCheckEnv, funcPkgEnv:
+		case lockEnv, lockWriteEnv, lockCheckEnv, funcPkgEnv, upEnv, breakOnFailureEnv:
 			continue
 		}
 		env = append(env, e)

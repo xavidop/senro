@@ -9,6 +9,7 @@ package lock
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,16 @@ import (
 
 // Version is the only file format this package reads and writes.
 const Version = 1
+
+// ErrDrift is what a lock check wraps when the lock file no longer matches
+// what the pipeline's tags resolve to: errors.Is(err, lock.ErrDrift) tells
+// drift from a check that could not run.
+var ErrDrift = errors.New("lock file is out of date")
+
+// DriftDetected is the stderr line a lock check prints, on its own, when it
+// finds drift. `senro lock --check` reads it to exit 1 whatever code the
+// pipeline's main chose, and a shell can grep for it.
+const DriftDetected = "senro: drift detected"
 
 // File is the content of a lock file.
 type File struct {
@@ -51,8 +62,11 @@ func Read(path string) (File, error) {
 // Write stores f at path. The bytes depend only on the content (sorted keys,
 // two-space indent, trailing newline), so an unchanged lock produces an
 // unchanged diff. It is written to a temporary file and renamed, so a reader
-// never sees half a lock.
+// never sees half a lock. A zero Version is written as Version.
 func Write(path string, f File) error {
+	if f.Version == 0 {
+		f.Version = Version
+	}
 	images := f.Images
 	if images == nil {
 		images = map[string]string{}
@@ -107,8 +121,12 @@ func Write(path string, f File) error {
 
 // Pinned returns ref with its tag replaced by the locked digest
 // ("golang:1.26" becomes "golang@sha256:..."), and false when ref is not
-// locked.
+// locked. A ref that already names a digest is pinned as written: it is
+// returned unchanged with true.
 func (f File) Pinned(ref string) (string, bool) {
+	if IsDigestRef(ref) {
+		return ref, true
+	}
 	digest, ok := f.Images[ref]
 	if !ok {
 		return "", false
