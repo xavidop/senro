@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -95,6 +96,13 @@ func TestInitRendersAddForASingleMatch(t *testing.T) {
 	}
 	if strings.Contains(out, "unit/gowork") {
 		t.Errorf("imports unit/gowork for a single module:\n%s", out)
+	}
+}
+
+func TestInitGeneratedMainPrintsRunsError(t *testing.T) {
+	out := renderFixture(t, "single")
+	if !strings.Contains(out, "log.Print(err)\n\t\tos.Exit(1)") {
+		t.Errorf("senro.Run's error is not printed before os.Exit(1):\n%s", out)
 	}
 }
 
@@ -317,5 +325,99 @@ func TestInitGeneratedPipelineBuilds(t *testing.T) {
 	cmd.Dir = filepath.Join(dir, "ci")
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, b)
+	}
+}
+
+func TestInitOutOutsideDirGetsItsOwnModule(t *testing.T) {
+	dir := copyInitFixture(t, "single")
+	out := filepath.Join(t.TempDir(), "pipe")
+	before, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := cmdInit([]string{dir, "--out", out, "--no-tidy"}, &stdout, &stderr); code != exitSuccess {
+		t.Fatalf("exit %d; stderr:\n%s", code, stderr.String())
+	}
+	mod, err := os.ReadFile(filepath.Join(out, "go.mod"))
+	if err != nil {
+		t.Fatalf("no go.mod written in an --out outside DIR: %v\n%s", err, stderr.String())
+	}
+	if !strings.Contains(string(mod), "module single/pipe\n") {
+		t.Errorf("go.mod:\n%s", mod)
+	}
+	if !strings.Contains(stderr.String(), "Run these in "+out) {
+		t.Errorf("commands not aimed at --out:\n%s", stderr.String())
+	}
+	after, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("DIR's go.mod changed")
+	}
+}
+
+func TestInitRefusesAnOutThatIsAFile(t *testing.T) {
+	dir := copyInitFixture(t, "py")
+	ci := filepath.Join(dir, "ci")
+	if err := os.WriteFile(ci, []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := cmdInit([]string{dir}, &stdout, &stderr); code != exitUsage {
+		t.Fatalf("exit %d, want %d; stderr:\n%s", code, exitUsage, stderr.String())
+	}
+	msg := stderr.String()
+	if !strings.Contains(msg, "ci") || !strings.Contains(msg, "not a directory") || strings.Contains(msg, "detected") {
+		t.Errorf("stderr:\n%s", msg)
+	}
+	if b, err := os.ReadFile(ci); err != nil || string(b) != "not a directory\n" {
+		t.Errorf("ci changed: %q, %v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("go.mod written (or stat failed: %v)", err)
+	}
+}
+
+func TestInitReportsUpdatingAnExistingModule(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake go is a shell script")
+	}
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls")
+	script := "#!/bin/sh\necho \"$PWD: $*\" >> " + log + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	dir := copyInitFixture(t, "single")
+	var stdout, stderr bytes.Buffer
+	if code := cmdInit([]string{dir}, &stdout, &stderr); code != exitSuccess {
+		t.Fatalf("exit %d; stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Updated go.mod: go get github.com/xavidop/senro@") {
+		t.Errorf("no Updated line:\n%s", stderr.String())
+	}
+	calls, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(calls), "get github.com/xavidop/senro@") || !strings.Contains(string(calls), "mod tidy") {
+		t.Errorf("go calls:\n%s", calls)
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	for in, want := range map[string]string{
+		"./ci":         "./ci",
+		"/tmp/a b":     "'/tmp/a b'",
+		"it's":         `'it'\''s'`,
+		"":             "''",
+		"repo/sub-dir": "repo/sub-dir",
+	} {
+		if got := shellQuote(in); got != want {
+			t.Errorf("shellQuote(%q) = %s, want %s", in, got, want)
+		}
 	}
 }

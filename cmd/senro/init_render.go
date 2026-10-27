@@ -58,6 +58,7 @@ func main() {
 	// Run builds p first, so a duplicate id or a bad option surfaces here,
 	// before anything executes.
 	if err := senro.Run(ctx, p, senro.WithAttach(att)); err != nil {
+		log.Print(err)
 		os.Exit(1)
 	}
 }

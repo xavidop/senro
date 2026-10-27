@@ -133,6 +133,10 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 			"or --dry-run to print what would be written\n", shownMain)
 		return exitUsage
 	}
+	if info, err := os.Stat(outDir); err == nil && !info.IsDir() {
+		_, _ = fmt.Fprintf(stderr, "senro init: %s exists and is not a directory; choose another --out\n", opts.out)
+		return exitUsage
+	}
 
 	_, _ = fmt.Fprintln(stderr, "senro init: detected")
 	for _, m := range matches {
@@ -147,48 +151,66 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "senro init:", err)
 		return exitRunFailed
 	}
-	written := []string{shownMain}
+	_, _ = fmt.Fprintln(stderr, "Wrote", shownMain)
 
-	wroteMod := !fileExists(filepath.Join(dir, "go.mod")) && !fileExists(filepath.Join(outDir, "go.mod"))
 	if err := initModule(ctx, dir, outDir, cliVersion(), opts.noTidy, stderr); err != nil {
 		_, _ = fmt.Fprintln(stderr, "senro init:", err)
 		return exitRunFailed
 	}
-	if wroteMod {
-		written = append(written, filepath.Join(opts.out, "go.mod"))
-	}
 
-	for _, w := range written {
-		_, _ = fmt.Fprintln(stderr, "Wrote", w)
-	}
-	run := "senro run ./" + filepath.ToSlash(filepath.Clean(opts.out))
+	run := "senro run " + shellQuote("./"+filepath.ToSlash(filepath.Clean(opts.out)))
 	if filepath.IsAbs(opts.out) {
-		run = "senro run " + opts.out
+		run = "senro run " + shellQuote(opts.out)
 	}
 	if cwd, err := os.Getwd(); err != nil || cwd != dir {
-		run = "cd " + opts.dir + " && " + run
+		run = "cd " + shellQuote(opts.dir) + " && " + run
 	}
 	_, _ = fmt.Fprintln(stderr, "Next:", run)
 	return exitSuccess
 }
 
+// hostModule picks the directory whose go.mod the pipeline in out belongs
+// to, and whether senro init has to write that go.mod itself. dir's module
+// hosts it only when out is inside dir; an out elsewhere gets a module of its
+// own unless it already has one.
+func hostModule(dir, out string) (modDir string, write bool) {
+	if within(out, dir) && fileExists(filepath.Join(dir, "go.mod")) {
+		return dir, false
+	}
+	return out, !fileExists(filepath.Join(out, "go.mod"))
+}
+
+// within reports whether path is dir or below it, comparing cleaned absolute
+// paths.
+func within(path, dir string) bool {
+	p, err1 := filepath.Abs(path)
+	d, err2 := filepath.Abs(dir)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	rel, err := filepath.Rel(d, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // initModule makes the package in out buildable, step 4 of senro init. When
-// dir already holds a go.mod the pipeline joins that module; when out holds
-// one it is used as is; otherwise out/go.mod is written, naming the
-// toolchain's Go version and, when SENRO_INIT_REPLACE is set, a replace of
-// the senro module. It then runs `go get github.com/xavidop/senro@version`
-// and `go mod tidy` in the module's directory, or with noTidy prints them
-// instead.
+// dir holds a go.mod and out is inside dir, the pipeline joins that module;
+// when out holds one it is used as is; otherwise out/go.mod is written,
+// naming the toolchain's Go version and, when SENRO_INIT_REPLACE is set, a
+// replace of the senro module. It then runs
+// `go get github.com/xavidop/senro@version` and `go mod tidy` in the
+// module's directory, or with noTidy prints them instead. It reports on
+// stderr the go.mod it wrote, or the existing one it updated.
 //
-// Only writing out/go.mod can fail it: a command that fails, or a missing go binary, is a warning on stderr, since
-// the pipeline file is already written and the module can be fixed by hand.
+// Only writing out/go.mod can fail it: a command that fails, or a missing go
+// binary, is a warning on stderr, since the pipeline file is already written
+// and the module can be fixed by hand.
 func initModule(ctx context.Context, dir, out, version string, noTidy bool, stderr io.Writer) error {
-	modDir := out
-	switch {
-	case fileExists(filepath.Join(dir, "go.mod")):
-		modDir = dir
-	case fileExists(filepath.Join(out, "go.mod")):
-	default:
+	modDir, write := hostModule(dir, out)
+	shownMod := filepath.Join(modDir, "go.mod")
+	if rel, err := filepath.Rel(dir, shownMod); err == nil && within(shownMod, dir) {
+		shownMod = rel
+	}
+	if write {
 		var b strings.Builder
 		fmt.Fprintf(&b, "module %s/%s\n", moduleSegment(filepath.Base(dir)), moduleSegment(filepath.Base(out)))
 		if v := goDirective(runtime.Version()); v != "" {
@@ -200,6 +222,7 @@ func initModule(ctx context.Context, dir, out, version string, noTidy bool, stde
 		if err := os.WriteFile(filepath.Join(out, "go.mod"), []byte(b.String()), 0o644); err != nil {
 			return err
 		}
+		_, _ = fmt.Fprintln(stderr, "Wrote", shownMod)
 	}
 
 	cmds := [][]string{
@@ -234,7 +257,23 @@ func initModule(ctx context.Context, dir, out, version string, noTidy bool, stde
 			return nil
 		}
 	}
+	if !write {
+		_, _ = fmt.Fprintf(stderr, "Updated %s: go get %s@%s\n", shownMod, senroModule, version)
+	}
 	return nil
+}
+
+// shellQuote returns s as is when a shell would read it as one plain word,
+// and single-quoted otherwise, so a printed command can be pasted.
+func shellQuote(s string) string {
+	plain := func(r rune) bool {
+		return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+			strings.ContainsRune("./_-+=:,@%", r)
+	}
+	if s != "" && strings.IndexFunc(s, func(r rune) bool { return !plain(r) }) < 0 {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // cliVersion is the senro module version this binary was built from, which is
