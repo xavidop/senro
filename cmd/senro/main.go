@@ -41,6 +41,15 @@ Usage:
       --force; --dry-run prints the file and writes nothing. Exits 2 when it
       detects nothing.
 
+  senro lock <pkg> [--check] [--file PATH] [-- pipeline-args...]
+      Resolve every container and Kubernetes image the pipeline names by tag
+      to a registry digest and write PATH (default <pkg>/senro.lock), one
+      stdout line per image: <reference>  <digest>. Runs no step. senro run
+      and senro up apply <pkg>/senro.lock when it exists, unless SENRO_LOCK
+      is set, and refuse an image it lacks. --check writes nothing and prints
+      each difference as <reference>  <locked>  ->  <current>, and the
+      pipeline exits non-zero (its main picks the code) when any tag moved.
+
   senro attach [--pid <pid> | --run <id> | --addr <host:port>] [--follow]
       [--tls] [--ui=auto|tui|plain|none]
       Attach to a live run (bare, or by pid), or a finished one (--run).
@@ -162,6 +171,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdUp(args[1:], stdout, stderr, stdoutIsTTY())
 	case "init":
 		return cmdInit(args[1:], stdout, stderr)
+	case "lock":
+		return cmdLock(args[1:], stdout, stderr)
 	case "run":
 		return cmdRun(args[1:], stdout, stderr, stdoutIsTTY())
 	case "attach":

@@ -111,6 +111,9 @@ func runBuilt(verb string, opts runOptions, up bool, hk runHooks, stdout, stderr
 	// `senro run ./ci` need no option in the pipeline's own source; an
 	// explicit senro.WithFuncBuild takes precedence.
 	cmd.Env = childEnv(pkg, opts.breakOnFailure, up)
+	if hk.env != nil {
+		cmd.Env = hk.env
+	}
 	// tui owns the whole terminal (alt screen); a child scribbling on the
 	// same one would corrupt it. Relaying is safe for plain/none, since an
 	// attach-embedding pipeline does not print on its own.
@@ -154,6 +157,10 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 // process's own, plus what only the CLI knows (see funcPkgEnv) and the
 // switches that select a mode. They travel as environment, not argv, because
 // senro.Run never reads the pipeline's argv (see upEnv in the senro package).
+//
+// A <pkg>/senro.lock is applied through SENRO_LOCK unless the user set
+// SENRO_LOCK themselves; an empty value counts as unset, since an empty path
+// names no lock to apply.
 func childEnv(pkg string, breakOnFailure, up bool) []string {
 	env := append(os.Environ(), funcPkgEnv+"="+pkg)
 	if breakOnFailure {
@@ -161,6 +168,11 @@ func childEnv(pkg string, breakOnFailure, up bool) []string {
 	}
 	if up {
 		env = append(env, upEnv+"=1")
+	}
+	if os.Getenv(lockEnv) == "" {
+		if path, ok := existingLock(pkg); ok {
+			env = append(env, lockEnv+"="+path)
+		}
 	}
 	return env
 }
@@ -175,8 +187,8 @@ type runOptions struct {
 	breakOnFailure bool
 }
 
-// runHooks is what senro up adds to the shared run path. The zero value is
-// senro run.
+// runHooks is what senro up and senro lock add to the shared run path. The
+// zero value is senro run.
 type runHooks struct {
 	// wrapSource wraps the attach Source the UI renders from, so a caller can
 	// observe the stream the UI sees without a second subscription.
@@ -186,6 +198,9 @@ type runHooks struct {
 	exitCode func(status api.RunStatus, interrupted bool) int
 	// childStderr receives a copy of the pipeline's stderr.
 	childStderr io.Writer
+	// env, when non-nil, replaces childEnv as the pipeline's environment
+	// (senro lock, whose child must never apply a lock).
+	env []string
 	// verb names the command in diagnostics; empty means run.
 	verb string
 }
