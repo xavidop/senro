@@ -1242,7 +1242,7 @@ func (rc *runCore) handleStepRetry(h schedHandle, req sink.ControlRequest) bool 
 		// cached is always false: this path bypasses runStep and never
 		// consults the cache. A manual retry is a request to actually run
 		// the step again.
-		state := rc.finishStep(n, start, nextAttempt, finalState, res.exitCode, errText(res), false)
+		state := rc.finishStep(n, start, nextAttempt, finalState, res.exitCode, errText(res), false, res.usage)
 
 		// A manually retried attempt that failed again is offered to the
 		// analyzer like any other failure; leaving it out would make the

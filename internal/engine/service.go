@@ -452,7 +452,7 @@ func (rc *runCore) runService(
 	if finalState == api.StateSucceeded && retried {
 		finalState = api.StateRecovered
 	}
-	state := rc.finishStep(n, start, attempt, finalState, res.exitCode, errText(res), false)
+	state := rc.finishStep(n, start, attempt, finalState, res.exitCode, errText(res), false, res.usage)
 	// After finishStep, as runStep does: an analyzer's proposal refers to a
 	// failure that must already be in the ledger. A service that died before
 	// it was ready, or before its consumers finished, is a failure somebody

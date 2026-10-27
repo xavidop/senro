@@ -105,6 +105,22 @@ type StepFinishedBody struct {
 	// its Duration.
 	ParentSpanID  string   `json:"parent_span_id,omitempty"`
 	LinkedSpanIDs []string `json:"linked_span_ids,omitempty"`
+
+	// Usage is the CPU and memory the concluding attempt consumed, when its
+	// executor can measure them. Nil when it cannot (k8s, ssh), and for a
+	// step that never ran. Additive and omitempty.
+	Usage *ResourceUsage `json:"usage,omitempty"`
+}
+
+// ResourceUsage is what one attempt of a step consumed. CPU is split into
+// user and system time, summed over the workload's processes; MaxRSS is the
+// peak resident memory in bytes. For a container it is the peak cgroup
+// memory less the inactive page cache, so a step that only read files is not
+// charged for the kernel's cache of them.
+type ResourceUsage struct {
+	CPUUser   time.Duration `json:"cpu_user_ns"`
+	CPUSystem time.Duration `json:"cpu_system_ns"`
+	MaxRSS    int64         `json:"max_rss_bytes"`
 }
 
 // StepRetriedBody is the payload of a step.retried event.

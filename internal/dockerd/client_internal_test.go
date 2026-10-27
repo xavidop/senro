@@ -741,3 +741,59 @@ func TestClassifyStartFailureIgnoresErrorsThatAreNotTheDaemons(t *testing.T) {
 		}
 	}
 }
+
+// TestContainerStatsDecodesEachSampleOfTheStream: the daemon streams one JSON
+// object per line on stats?stream=true, and each one reaches the callback
+// decoded, until the stream ends.
+func TestContainerStatsDecodesEachSampleOfTheStream(t *testing.T) {
+	var gotPath, gotQuery string
+	c := fakeDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"cpu_stats":{"cpu_usage":{"total_usage":500,"usage_in_usermode":300,"usage_in_kernelmode":200}},`+
+			`"memory_stats":{"usage":4096,"stats":{"inactive_file":1024}}}`+"\n")
+		w.(http.Flusher).Flush()
+		_, _ = io.WriteString(w, `{"cpu_stats":{"cpu_usage":{"total_usage":900}},"memory_stats":{"usage":2048}}`+"\n")
+	})
+	var got []StatsSample
+	err := c.ContainerStats(ctx(t), "abc", func(s StatsSample) bool {
+		got = append(got, s)
+		return true
+	})
+	if err != nil {
+		t.Fatalf("ContainerStats: %v", err)
+	}
+	if gotPath != "/"+APIVersion+"/containers/abc/stats" || gotQuery != "stream=true" {
+		t.Errorf("request = %s?%s", gotPath, gotQuery)
+	}
+	want := []StatsSample{
+		{CPUTotal: 500, CPUUser: 300, CPUKernel: 200, MemUsage: 4096, MemInactiveFile: 1024},
+		{CPUTotal: 900, MemUsage: 2048},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("samples = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("sample %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestContainerStatsStopsWhenTheCallbackSaysSo: returning false ends the
+// stream early without an error.
+func TestContainerStatsStopsWhenTheCallbackSaysSo(t *testing.T) {
+	c := fakeDaemon(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		for range 3 {
+			_, _ = io.WriteString(w, `{"memory_stats":{"usage":1}}`+"\n")
+		}
+	})
+	n := 0
+	if err := c.ContainerStats(ctx(t), "abc", func(StatsSample) bool { n++; return false }); err != nil {
+		t.Fatalf("ContainerStats: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("callback ran %d times, want 1", n)
+	}
+}

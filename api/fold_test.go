@@ -1006,3 +1006,41 @@ func TestRunStateJSONIsUnchangedWithoutServicesOrHolds(t *testing.T) {
 		}
 	}
 }
+
+// step.finished records the attempt's usage, and step.retried clears it: the
+// next attempt's figures are its own, never a carry-over.
+func TestApplyFoldsUsageAndRetryClearsIt(t *testing.T) {
+	s := api.NewRunState()
+	ts := time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC)
+	mustApply(t, s, api.Event{Seq: 1, TS: ts, Type: api.StepStarted, Step: "build", Attempt: 1})
+	u := api.ResourceUsage{CPUUser: time.Second, CPUSystem: 2 * time.Millisecond, MaxRSS: 4096}
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 2, TS: ts, Type: api.StepFinished, Step: "build", Attempt: 1},
+		api.StepFinishedBody{State: api.StateFailed, ExitCode: 1, Usage: &u}))
+	if got := s.Steps["build"].Usage; got == nil || *got != u {
+		t.Fatalf("Usage = %+v, want %+v", got, u)
+	}
+	mustApply(t, s, mustEvent(t, api.Event{Seq: 3, TS: ts, Type: api.StepRetried, Step: "build", Attempt: 2},
+		api.StepRetriedBody{Attempt: 2, Reason: "exit 1", Predicate: "exit_code"}))
+	if got := s.Steps["build"].Usage; got != nil {
+		t.Errorf("Usage = %+v after step.retried, want nil", got)
+	}
+}
+
+// The wire names are published API, and a step with no usage omits the key.
+func TestResourceUsageJSONTags(t *testing.T) {
+	b, err := json.Marshal(api.StepFinishedBody{State: api.StateSucceeded,
+		Usage: &api.ResourceUsage{CPUUser: 1, CPUSystem: 2, MaxRSS: 3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"usage":{"cpu_user_ns":1,"cpu_system_ns":2,"max_rss_bytes":3}`) {
+		t.Errorf("encoded = %s", b)
+	}
+	b, err = json.Marshal(api.StepFinishedBody{State: api.StateSucceeded})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "usage") {
+		t.Errorf("usage not omitted when nil: %s", b)
+	}
+}

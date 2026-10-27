@@ -746,6 +746,60 @@ func (c *Client) ContainerLogs(ctx context.Context, id string, stdout, stderr io
 	return demux(resp.Body, stdout, stderr)
 }
 
+// StatsSample is the part of one stats-stream object senro reads: the
+// container's cumulative CPU time in nanoseconds and its current memory in
+// bytes. CPUUser and CPUKernel are zero on cgroup v2 daemons that do not
+// split the total; MemInactiveFile is zero when the daemon omits it.
+type StatsSample struct {
+	CPUTotal, CPUUser, CPUKernel uint64
+	MemUsage, MemInactiveFile    uint64
+}
+
+// ContainerStats follows GET /containers/{id}/stats?stream=true, calling
+// each with every sample in order until the stream ends (the daemon closes
+// it when the container stops), each returns false, or ctx ends. A stream
+// that ends normally is not an error.
+func (c *Client) ContainerStats(ctx context.Context, id string, each func(StatsSample) bool) error {
+	resp, err := c.do(ctx, http.MethodGet, "/containers/"+ref(id)+"/stats?stream=true", nil, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var doc struct {
+			CPU struct {
+				Usage struct {
+					Total  uint64 `json:"total_usage"`
+					User   uint64 `json:"usage_in_usermode"`
+					Kernel uint64 `json:"usage_in_kernelmode"`
+				} `json:"cpu_usage"`
+			} `json:"cpu_stats"`
+			Mem struct {
+				Usage uint64 `json:"usage"`
+				Stats struct {
+					InactiveFile uint64 `json:"inactive_file"`
+				} `json:"stats"`
+			} `json:"memory_stats"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("dockerd: decoding stats for %s: %w", id, err)
+		}
+		if !each(StatsSample{
+			CPUTotal:        doc.CPU.Usage.Total,
+			CPUUser:         doc.CPU.Usage.User,
+			CPUKernel:       doc.CPU.Usage.Kernel,
+			MemUsage:        doc.Mem.Usage,
+			MemInactiveFile: doc.Mem.Stats.InactiveFile,
+		}) {
+			return nil
+		}
+	}
+}
+
 // ContainerWait blocks until the container is not running and reports its
 // status code.
 //

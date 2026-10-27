@@ -154,6 +154,14 @@ type StepState struct {
 	// omitempty, so a snapshot of a run with no holds is byte-for-byte what it
 	// was before this field existed.
 	Held string `json:"held,omitempty"`
+	// Usage is the CPU and memory of the attempt that concluded, from
+	// step.finished; nil while the step runs or when the executor could not
+	// measure it. Cleared by step.retried, so a new attempt never shows the
+	// previous one's figures.
+	//
+	// omitempty, so a snapshot of a run with no usage is byte-for-byte what
+	// it was before this field existed.
+	Usage *ResourceUsage `json:"usage,omitempty"`
 }
 
 // ServiceState is a service step's readiness: when its probe passed and where

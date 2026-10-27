@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xavidop/senro/api"
 )
@@ -364,5 +365,18 @@ func TestFixtureServiceAndHold(t *testing.T) {
 	}
 	if st := s.Steps["test"]; st.Held != "" || st.Paused || st.State != api.StateFailed {
 		t.Errorf("test: Held=%q Paused=%v State=%q", st.Held, st.Paused, st.State)
+	}
+}
+
+// A step.finished that carries usage folds it onto the step verbatim; one
+// without usage leaves the step's Usage nil.
+func TestFixtureUsage(t *testing.T) {
+	s := replay(t, "testdata/fixtures/usage.jsonl")
+	want := api.ResourceUsage{CPUUser: 1200 * time.Millisecond, CPUSystem: 300 * time.Millisecond, MaxRSS: 85000000}
+	if u := s.Steps["build"].Usage; u == nil || *u != want {
+		t.Errorf("build Usage = %+v, want %+v", u, want)
+	}
+	if u := s.Steps["lint"].Usage; u != nil {
+		t.Errorf("lint Usage = %+v, want nil: no usage was reported", u)
 	}
 }

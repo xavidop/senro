@@ -161,6 +161,7 @@ func (s *RunState) Apply(e Event) error {
 		st.Finished = e.TS
 		st.Paused = false
 		st.Held = ""
+		st.Usage = b.Usage
 		if b.Cached {
 			st.Cached = true
 		}
@@ -184,6 +185,8 @@ func (s *RunState) Apply(e Event) error {
 		// The new attempt is not ready yet; keeping the old endpoints would
 		// report a dead address as live.
 		st.Service = nil
+		// Usage belongs to the attempt that reported it.
+		st.Usage = nil
 		// Each attempt gets its own log file starting at byte 0 (see
 		// eventlog.LogSet.Path). LogBytes accumulates via max() (see
 		// StepLogAppended below), so leaving the old attempt's high-water

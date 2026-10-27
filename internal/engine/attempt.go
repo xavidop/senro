@@ -36,6 +36,23 @@ type attemptResult struct {
 	err       error // nil for a plain non-zero exit or a clean success
 	logTail   string
 	snapshots []wsSnapshot
+	// usage is what the attempt's command consumed, nil when its sandbox
+	// could not say (see sandboxUsage). Carried to step.finished.
+	usage *api.ResourceUsage
+}
+
+// sandboxUsage asks sb for the usage of the Run that just returned, nil when
+// sb does not implement executor.UsageReporter or measured nothing.
+func sandboxUsage(sb executor.Sandbox) *api.ResourceUsage {
+	ur, ok := sb.(executor.UsageReporter)
+	if !ok {
+		return nil
+	}
+	u, ok := ur.Usage()
+	if !ok {
+		return nil
+	}
+	return &api.ResourceUsage{CPUUser: u.CPUUser, CPUSystem: u.CPUSystem, MaxRSS: u.MaxRSS}
 }
 
 // runStep executes one node to a terminal state, retrying it according to
@@ -84,7 +101,7 @@ func (rc *runCore) runStep(ctx context.Context, n *plan.Node, opts Options, logs
 			// to run correctly: an undeclared or missing input is the
 			// author's to declare. It settles as an ordinary failure, so
 			// its handlers still run.
-			return rc.finishStep(n, stepStart, first, api.StateFailed, 0, err.Error(), false)
+			return rc.finishStep(n, stepStart, first, api.StateFailed, 0, err.Error(), false, nil)
 		}
 		if dec.hit && rc.forcedRegen(n) {
 			// Refused on purpose, and recorded as a miss with its own
@@ -96,7 +113,7 @@ func (rc *runCore) runStep(ctx context.Context, n *plan.Node, opts Options, logs
 		if dec.hit {
 			if rc.serveFromCache(ctx, n, opts, logs, dec) {
 				rc.recordDecision(opts.Dir, n, dec)
-				return rc.finishStep(n, stepStart, first, api.StateCached, dec.result.ExitCode, "", true)
+				return rc.finishStep(n, stepStart, first, api.StateCached, dec.result.ExitCode, "", true, nil)
 			}
 			// The entry could not be reproduced; serveFromCache already
 			// emitted cache.miss and forgot the broken entry
@@ -189,7 +206,10 @@ func (rc *runCore) runStep(ctx context.Context, n *plan.Node, opts Options, logs
 			// predicate wanted another try and the run's cancel is what
 			// stopped it. The failed attempt's tail and snapshots are kept.
 			if err := ctx.Err(); err != nil {
-				res = attemptResult{state: api.StateCancelled, err: err, logTail: res.logTail, snapshots: res.snapshots}
+				res = attemptResult{
+					state: api.StateCancelled, err: err, logTail: res.logTail, snapshots: res.snapshots,
+					usage: res.usage,
+				}
 				break retryLoop
 			}
 
@@ -218,13 +238,15 @@ func (rc *runCore) runStep(ctx context.Context, n *plan.Node, opts Options, logs
 				// failure the predicate happened not to reach. The slot was
 				// already given back and is not reacquired; holding stays
 				// false, so the deferred giveBack correctly does nothing.
-				res = attemptResult{state: api.StateCancelled, err: ctx.Err()}
+				// usage kept: step.finished names `attempt`, the one that
+				// ran, and its figures are still true.
+				res = attemptResult{state: api.StateCancelled, err: ctx.Err(), usage: res.usage}
 				break retryLoop
 			}
 			// Reacquiring respects cancellation too: a run being torn down must
 			// not block here waiting for a slot that may never free up.
 			if err := acquire(ctx); err != nil {
-				res = attemptResult{state: api.StateCancelled, err: err}
+				res = attemptResult{state: api.StateCancelled, err: err, usage: res.usage}
 				break retryLoop
 			}
 			holding = true
@@ -270,7 +292,7 @@ func (rc *runCore) runStep(ctx context.Context, n *plan.Node, opts Options, logs
 		}
 	}
 
-	state := rc.finishStep(n, stepStart, attempt, finalState, res.exitCode, errText(res), false)
+	state := rc.finishStep(n, stepStart, attempt, finalState, res.exitCode, errText(res), false, res.usage)
 
 	// After finishStep, never before: an analyzer's proposal refers to a
 	// failure that must be in the ledger before anything explaining it.
@@ -345,6 +367,9 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 	exit, runErr := rc.invoke(attemptCtx, n, invocation{key: n.ExecutorKey(), ex: s.ex}, s.sb,
 		executor.Cmd{Args: n.Cmd, Env: s.cmdEnv, Dir: cmdDirFor(n.WorkDir, s.mounts)},
 		s.mounts, s.secretPaths, attempt, s.stdout, s.stderr, opts)
+	// Read once, right after the command, and set on whichever result this
+	// attempt returns below.
+	usage := sandboxUsage(s.sb)
 
 	if err := rc.flushAttempt(n, attempt, s); err != nil && runErr == nil {
 		runErr = err
@@ -362,7 +387,7 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 		// nothing downstream can key on; reported as a step failure, but
 		// only when the step itself passed, so a genuine workload failure
 		// is not masked.
-		return attemptResult{state: api.StateFailed, err: snapErr, logTail: s.tail.String(), snapshots: snaps}
+		return attemptResult{state: api.StateFailed, err: snapErr, logTail: s.tail.String(), snapshots: snaps, usage: usage}
 	}
 	if rc.ws != nil {
 		rc.ws.record(snaps)
@@ -448,6 +473,10 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 	if rc.ws != nil && res.state == api.StateSucceeded && len(s.scratch) > 0 {
 		rc.ws.readScratch(context.WithoutCancel(ctx), s.sb, s.scratch)
 	}
+	// Here rather than at classifyAttempt: the JUnit and CheckGenerated
+	// verdicts above replace res wholesale, and the command's usage is the
+	// same whichever verdict stands.
+	res.usage = usage
 	return res
 }
 
@@ -891,6 +920,7 @@ func (rc *runCore) emitStepStarted(ctx context.Context, n *plan.Node, attempt in
 // node's step.finished.
 func (rc *runCore) finishStep(
 	n *plan.Node, start time.Time, attempt int, state api.State, exitCode int, errMsg string, cached bool,
+	usage *api.ResourceUsage,
 ) api.State {
 	if !rc.oc.settle(n.ID, state) {
 		return state
@@ -899,6 +929,9 @@ func (rc *runCore) finishStep(
 	body := api.StepFinishedBody{
 		State: state, ExitCode: exitCode,
 		Duration: time.Since(start), Error: errMsg, Cached: cached,
+		// The concluding attempt's, and only its: an earlier attempt's
+		// figures went with its sandbox.
+		Usage: usage,
 	}
 	// Usually this closes the span emitStepStarted opened, and only the
 	// span ID goes on the wire (step.started already said where it hangs).

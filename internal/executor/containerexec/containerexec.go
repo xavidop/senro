@@ -340,6 +340,10 @@ type sandbox struct {
 
 	mu sync.Mutex
 	id string // the container, once Run has created one
+	// usage is the most recent Run's, folded from the daemon's stats stream
+	// by followStats and read by Usage. See usage.go.
+	usage   senroexec.ResourceUsage
+	usageOK bool
 }
 
 // HostSecretDir is the coordinator-side directory this sandbox delivers
@@ -475,6 +479,8 @@ func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Wr
 	if len(c.Args) == 0 {
 		return 0, fmt.Errorf("containerexec: %w: empty command", senroexec.ErrInfra)
 	}
+	// Never report a previous Run's figures as this one's.
+	s.resetUsage()
 	spec, err := s.containerSpecFor(c)
 	if err != nil {
 		return 0, err
@@ -508,6 +514,13 @@ func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Wr
 	// cancellation, so a killed container is still reaped and its output
 	// still lands in the step's log.
 	bg := context.WithoutCancel(ctx)
+	// The stats stream starts right after start, so the first sample the
+	// daemon takes is not missed, and survives cancellation like the log
+	// stream: a killed workload still consumed something. The daemon ends
+	// it when the container stops; the drain below bounds that.
+	statsCtx, stopStats := context.WithCancel(bg)
+	defer stopStats()
+	statsDone := s.followStats(statsCtx, id)
 	// The log stream gets its own cancellable context so the drain below
 	// can STOP it rather than merely stop waiting for it.
 	logCtx, stopLogs := context.WithCancel(bg)
@@ -557,6 +570,15 @@ func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Wr
 	case <-time.After(logDrainGrace):
 		stopLogs()
 		<-logsDone
+	}
+	// The same bounded drain for the stats stream, so Usage, read by the
+	// engine as soon as Run returns, sees every sample the daemon sent and
+	// no goroutine is left writing the sandbox's usage afterwards.
+	select {
+	case <-statsDone:
+	case <-time.After(logDrainGrace):
+		stopStats()
+		<-statsDone
 	}
 
 	switch {

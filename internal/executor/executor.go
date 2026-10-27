@@ -348,6 +348,27 @@ type WorkDirReporter interface {
 	WorkDir() string
 }
 
+// UsageReporter is an optional Sandbox capability: the CPU and memory the
+// most recent Run consumed. The engine asserts it on a sandbox after Run
+// returns, so the figures it reports are the attempt that just concluded.
+//
+// ok is false when nothing was measured: no Run yet, a platform without
+// rusage, or a container whose stats stream never produced a sample. A
+// killed workload still reports what it consumed before it died.
+//
+// Implemented by localexec and containerexec; k8s and ssh do not.
+type UsageReporter interface {
+	Usage() (ResourceUsage, bool)
+}
+
+// ResourceUsage is what one Run consumed: CPU split into user and system
+// time, and peak resident memory in bytes. It mirrors api.ResourceUsage
+// field for field; the executor package does not import api.
+type ResourceUsage struct {
+	CPUUser, CPUSystem time.Duration
+	MaxRSS             int64
+}
+
 // Interactive is an optional Sandbox capability: running one command with a
 // stdin attached, for as long as somebody is on the other end of it.
 //
