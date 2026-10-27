@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -77,6 +79,70 @@ func GitHubChecksAPI(base string) DestinationOption {
 	}
 }
 
+// ExistingCheckRun adopts a check run that already exists (for example one
+// created by a GitHub App on the user's behalf): run.started PATCHes it to
+// in_progress instead of creating one, and completion PATCHes it as usual.
+func ExistingCheckRun(id int64) DestinationOption {
+	return func(d *Destination) {
+		if g, ok := d.requester.(*GitHubChecksRequester); ok && id != 0 {
+			g.id = id
+			g.adopted = true
+		}
+	}
+}
+
+// DetailsURL sets the check's details_url on every request. {run} in the
+// template is replaced by the run id.
+func DetailsURL(template string) DestinationOption {
+	return func(d *Destination) {
+		if g, ok := d.requester.(*GitHubChecksRequester); ok {
+			g.details = template
+		}
+	}
+}
+
+// Environment variables read by GitHubChecksFromEnv.
+const (
+	EnvGitHubToken      = "SENRO_GITHUB_TOKEN"
+	EnvGitHubAPI        = "SENRO_GITHUB_API"
+	EnvGitHubRepo       = "SENRO_GITHUB_REPO" // owner/name
+	EnvGitHubSHA        = "SENRO_GITHUB_SHA"
+	EnvGitHubCheckRun   = "SENRO_GITHUB_CHECK_RUN"
+	EnvGitHubCheckName  = "SENRO_GITHUB_CHECK_NAME"
+	EnvGitHubDetailsURL = "SENRO_GITHUB_DETAILS_URL"
+)
+
+// GitHubChecksFromEnv builds a GitHub Checks destination from the SENRO_GITHUB_*
+// environment. ok is false, with a nil destination, when the token is empty,
+// the repository is not owner/name, or the check run id is not a number. An
+// empty SENRO_GITHUB_CHECK_RUN means create a check run, as GitHubChecks does.
+func GitHubChecksFromEnv() (*Destination, bool) {
+	token := os.Getenv(EnvGitHubToken)
+	if token == "" {
+		return nil, false
+	}
+	owner, repo, found := strings.Cut(os.Getenv(EnvGitHubRepo), "/")
+	if !found || owner == "" || repo == "" {
+		return nil, false
+	}
+	var opts []DestinationOption
+	if v := os.Getenv(EnvGitHubAPI); v != "" {
+		opts = append(opts, GitHubChecksAPI(v))
+	}
+	if v := os.Getenv(EnvGitHubCheckRun); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, false
+		}
+		opts = append(opts, ExistingCheckRun(id))
+	}
+	if v := os.Getenv(EnvGitHubDetailsURL); v != "" {
+		opts = append(opts, DetailsURL(v))
+	}
+	return GitHubChecks(owner, repo, os.Getenv(EnvGitHubSHA), token,
+		os.Getenv(EnvGitHubCheckName), opts...), true
+}
+
 // GitHubChecksRequester is the state machine behind GitHubChecks, exported
 // so the type is nameable and GitHubChecksAPI can reach it. Its methods run
 // one event at a time on the notifier's delivery goroutine; the mutex only
@@ -90,6 +156,13 @@ type GitHubChecksRequester struct {
 	// response. Zero until then, which is what tells Request whether the
 	// next event is a create or an update.
 	id int64
+	// adopted is set by ExistingCheckRun: id was given, not learned, so
+	// run.started updates that check instead of creating one. started
+	// makes the update happen once.
+	adopted, started bool
+	// details is the details_url template; {run} is the run id. Empty
+	// means no details_url is sent.
+	details string
 	// steps accumulate one annotation per failed step.finished, in arrival
 	// order, sent with the completion.
 	steps []stepAnnotation
@@ -122,6 +195,15 @@ func (g *GitHubChecksRequester) Request(e api.Event) (*Request, error) {
 
 	switch e.Type {
 	case api.RunStarted:
+		if g.adopted {
+			// An adopted check run already exists: starting is a PATCH to
+			// in_progress, once.
+			if g.started {
+				return nil, nil
+			}
+			g.started = true
+			return g.update(e)
+		}
 		if g.id != 0 {
 			// A second create would leave the first check in progress
 			// forever.
@@ -159,7 +241,9 @@ func (g *GitHubChecksRequester) Request(e api.Event) (*Request, error) {
 // ReadResponse learns the check run's id from the create; GitHub assigns it
 // and it appears only in the create's response body.
 func (g *GitHubChecksRequester) ReadResponse(e api.Event, body []byte) {
-	if e.Type != api.RunStarted {
+	if e.Type != api.RunStarted || g.adopted {
+		// An adopted check's id was given; a PATCH response does not
+		// name a new one.
 		return
 	}
 	var res struct {
@@ -187,7 +271,7 @@ func (g *GitHubChecksRequester) create(e api.Event) (*Request, error) {
 		HeadSHA:    g.sha,
 		Status:     "in_progress",
 		StartedAt:  ghTime(e.TS),
-		DetailsURL: "",
+		DetailsURL: g.detailsURL(e.Run),
 		Output: &ghOutput{
 			Title:   "Running",
 			Summary: "senro run " + e.Run + " is running.",
@@ -197,6 +281,40 @@ func (g *GitHubChecksRequester) create(e api.Event) (*Request, error) {
 		return nil, err
 	}
 	return &Request{Method: "POST", URL: g.checkRunsURL(), Body: body}, nil
+}
+
+// update moves an adopted check run to in_progress. It carries no head_sha
+// or name: the check exists, and a PATCH only changes what it names.
+func (g *GitHubChecksRequester) update(e api.Event) (*Request, error) {
+	body, err := json.Marshal(struct {
+		Status     string   `json:"status"`
+		StartedAt  string   `json:"started_at,omitempty"`
+		DetailsURL string   `json:"details_url,omitempty"`
+		Output     ghOutput `json:"output"`
+	}{
+		Status:     "in_progress",
+		StartedAt:  ghTime(e.TS),
+		DetailsURL: g.detailsURL(e.Run),
+		Output: ghOutput{
+			Title:   "Running",
+			Summary: "senro run " + e.Run + " is running.",
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Request{
+		Method: "PATCH",
+		URL:    fmt.Sprintf("%s/%d", g.checkRunsURL(), g.id),
+		Body:   body,
+	}, nil
+}
+
+func (g *GitHubChecksRequester) detailsURL(run string) string {
+	if g.details == "" {
+		return ""
+	}
+	return strings.ReplaceAll(g.details, "{run}", run)
 }
 
 func (g *GitHubChecksRequester) complete(e api.Event) (*Request, error) {
@@ -213,6 +331,7 @@ func (g *GitHubChecksRequester) complete(e api.Event) (*Request, error) {
 		Status:      "completed",
 		Conclusion:  conclusionFor(b.Status),
 		CompletedAt: ghTime(e.TS),
+		DetailsURL:  g.detailsURL(e.Run),
 		Output: &ghOutput{
 			Title:       titleFor(b.Status, g.failed, failedTests),
 			Summary:     g.summary(b.Status, failedTests),

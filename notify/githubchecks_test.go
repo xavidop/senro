@@ -491,3 +491,132 @@ func TestTheTitleCountsFailedTestsAndSteps(t *testing.T) {
 		t.Errorf("title = %q, want %q", out["title"], want)
 	}
 }
+
+func TestExistingCheckRunPatchesInProgress(t *testing.T) {
+	gh := newGHStub(t)
+	d := notify.GitHubChecks("acme", "web", "deadbeef", "tok", "",
+		notify.GitHubChecksAPI(gh.srv.URL), notify.ExistingCheckRun(42))
+
+	drive(t, d,
+		ghEvent(t, api.RunStarted, 1, "", `{"pipeline":"p"}`),
+		ghEvent(t, api.RunFinished, 2, "", `{"status":"succeeded"}`),
+	)
+
+	reqs := gh.seen()
+	if len(reqs) != 2 {
+		t.Fatalf("made %d requests, want 2: %+v", len(reqs), reqs)
+	}
+	for i, r := range reqs {
+		if r.method != http.MethodPatch || r.path != "/repos/acme/web/check-runs/42" {
+			t.Errorf("request %d = %s %s, want PATCH .../42", i, r.method, r.path)
+		}
+	}
+	if reqs[0].body["status"] != "in_progress" {
+		t.Errorf("start status = %v, want in_progress", reqs[0].body["status"])
+	}
+	if reqs[0].body["started_at"] == nil {
+		t.Errorf("start has no started_at: %v", reqs[0].body)
+	}
+	if _, ok := reqs[0].body["head_sha"]; ok {
+		t.Errorf("start carries head_sha, which is for a create: %v", reqs[0].body)
+	}
+	if reqs[1].body["status"] != "completed" {
+		t.Errorf("finish status = %v, want completed", reqs[1].body["status"])
+	}
+}
+
+func TestDetailsURLIsRenderedOnEveryPatch(t *testing.T) {
+	gh := newGHStub(t)
+	d := notify.GitHubChecks("acme", "web", "deadbeef", "tok", "",
+		notify.GitHubChecksAPI(gh.srv.URL), notify.ExistingCheckRun(42),
+		notify.DetailsURL("https://ci.example/runs/{run}"))
+	drive(t, d,
+		ghEvent(t, api.RunStarted, 1, "", `{"pipeline":"p"}`),
+		ghEvent(t, api.RunFinished, 2, "", `{"status":"succeeded"}`),
+	)
+	reqs := gh.seen()
+	if len(reqs) != 2 {
+		t.Fatalf("made %d requests, want 2", len(reqs))
+	}
+	for i, r := range reqs {
+		if r.body["details_url"] != "https://ci.example/runs/r1" {
+			t.Errorf("request %d details_url = %v", i, r.body["details_url"])
+		}
+	}
+
+	gh2 := newGHStub(t)
+	d2 := notify.GitHubChecks("acme", "web", "deadbeef", "tok", "",
+		notify.GitHubChecksAPI(gh2.srv.URL), notify.ExistingCheckRun(42))
+	drive(t, d2,
+		ghEvent(t, api.RunStarted, 1, "", `{"pipeline":"p"}`),
+		ghEvent(t, api.RunFinished, 2, "", `{"status":"succeeded"}`),
+	)
+	for i, r := range gh2.seen() {
+		if _, ok := r.body["details_url"]; ok {
+			t.Errorf("request %d has details_url without the option", i)
+		}
+	}
+}
+
+func setGHEnv(t *testing.T, apiURL string) {
+	t.Helper()
+	t.Setenv(notify.EnvGitHubToken, "tok")
+	t.Setenv(notify.EnvGitHubAPI, apiURL)
+	t.Setenv(notify.EnvGitHubRepo, "acme/web")
+	t.Setenv(notify.EnvGitHubSHA, "deadbeef")
+	t.Setenv(notify.EnvGitHubCheckRun, "42")
+	t.Setenv(notify.EnvGitHubCheckName, "ci/senro")
+	t.Setenv(notify.EnvGitHubDetailsURL, "https://ci.example/runs/{run}")
+}
+
+func TestGitHubChecksFromEnv(t *testing.T) {
+	events := []api.Event{
+		ghEvent(t, api.RunStarted, 1, "", `{"pipeline":"p"}`),
+		ghEvent(t, api.RunFinished, 2, "", `{"status":"succeeded"}`),
+	}
+
+	gh := newGHStub(t)
+	setGHEnv(t, gh.srv.URL)
+	d, ok := notify.GitHubChecksFromEnv()
+	if !ok || d == nil {
+		t.Fatalf("ok = %v, d = %v, want a destination", ok, d)
+	}
+	drive(t, d, events...)
+	reqs := gh.seen()
+	if len(reqs) != 2 {
+		t.Fatalf("made %d requests, want 2", len(reqs))
+	}
+	if reqs[0].method != http.MethodPatch || reqs[0].path != "/repos/acme/web/check-runs/42" {
+		t.Errorf("start = %s %s", reqs[0].method, reqs[0].path)
+	}
+	if reqs[1].body["name"] != "ci/senro" || reqs[1].body["head_sha"] != "deadbeef" {
+		t.Errorf("completion name/sha = %v/%v", reqs[1].body["name"], reqs[1].body["head_sha"])
+	}
+	if reqs[1].body["details_url"] != "https://ci.example/runs/r1" {
+		t.Errorf("details_url = %v", reqs[1].body["details_url"])
+	}
+
+	// No check run id: the requester creates, as GitHubChecks does.
+	gh2 := newGHStub(t)
+	setGHEnv(t, gh2.srv.URL)
+	t.Setenv(notify.EnvGitHubCheckRun, "")
+	d, ok = notify.GitHubChecksFromEnv()
+	if !ok {
+		t.Fatal("ok = false without a check run id")
+	}
+	drive(t, d, events...)
+	if r := gh2.seen(); len(r) == 0 || r[0].method != http.MethodPost {
+		t.Errorf("without an id the first request = %+v, want POST", r)
+	}
+
+	t.Setenv(notify.EnvGitHubCheckRun, "abc")
+	if d, ok := notify.GitHubChecksFromEnv(); ok || d != nil {
+		t.Errorf("non-numeric id: ok = %v, d = %v, want false, nil", ok, d)
+	}
+
+	t.Setenv(notify.EnvGitHubCheckRun, "42")
+	t.Setenv(notify.EnvGitHubToken, "")
+	if d, ok := notify.GitHubChecksFromEnv(); ok || d != nil {
+		t.Errorf("empty token: ok = %v, d = %v, want false, nil", ok, d)
+	}
+}
