@@ -620,3 +620,63 @@ func TestGitHubChecksFromEnv(t *testing.T) {
 		t.Errorf("empty token: ok = %v, d = %v, want false, nil", ok, d)
 	}
 }
+
+// A run id is spliced into a URL path, so it is path-escaped: a run id
+// holding a slash or a space must not change the URL's shape.
+func TestDetailsURLPathEscapesTheRunID(t *testing.T) {
+	gh := newGHStub(t)
+	d := notify.GitHubChecks("acme", "web", "deadbeef", "tok", "",
+		notify.GitHubChecksAPI(gh.srv.URL), notify.ExistingCheckRun(42),
+		notify.DetailsURL("https://ci.example/runs/{run}"))
+	start := ghEvent(t, api.RunStarted, 1, "", `{"pipeline":"p"}`)
+	start.Run = "a b/c"
+	drive(t, d, start)
+	reqs := gh.seen()
+	if len(reqs) != 1 {
+		t.Fatalf("made %d requests, want 1", len(reqs))
+	}
+	if got, want := reqs[0].body["details_url"], "https://ci.example/runs/a%20b%2Fc"; got != want {
+		t.Errorf("details_url = %v, want %v", got, want)
+	}
+}
+
+func TestDetailsURLWithoutAPlaceholderIsSentVerbatim(t *testing.T) {
+	gh := newGHStub(t)
+	d := notify.GitHubChecks("acme", "web", "deadbeef", "tok", "",
+		notify.GitHubChecksAPI(gh.srv.URL), notify.ExistingCheckRun(42),
+		notify.DetailsURL("https://ci.example/dashboard"))
+	drive(t, d,
+		ghEvent(t, api.RunStarted, 1, "", `{"pipeline":"p"}`),
+		ghEvent(t, api.RunFinished, 2, "", `{"status":"succeeded"}`),
+	)
+	for i, r := range gh.seen() {
+		if r.body["details_url"] != "https://ci.example/dashboard" {
+			t.Errorf("request %d details_url = %v", i, r.body["details_url"])
+		}
+	}
+}
+
+// An adopted check is moved to in_progress once: a second run.started (a
+// replayed or duplicated event) sends nothing.
+func TestADuplicateAdoptedRunStartedSendsNothing(t *testing.T) {
+	gh := newGHStub(t)
+	d := notify.GitHubChecks("acme", "web", "deadbeef", "tok", "",
+		notify.GitHubChecksAPI(gh.srv.URL), notify.ExistingCheckRun(42))
+	drive(t, d,
+		ghEvent(t, api.RunStarted, 1, "", `{"pipeline":"p"}`),
+		ghEvent(t, api.RunStarted, 2, "", `{"pipeline":"p"}`),
+	)
+	if reqs := gh.seen(); len(reqs) != 1 {
+		t.Fatalf("made %d requests, want 1: %+v", len(reqs), reqs)
+	}
+}
+
+func TestGitHubChecksFromEnvRejectsARepoWithoutASlash(t *testing.T) {
+	setGHEnv(t, "http://127.0.0.1:0")
+	for _, repo := range []string{"acme", "acme/", "/web", ""} {
+		t.Setenv(notify.EnvGitHubRepo, repo)
+		if d, ok := notify.GitHubChecksFromEnv(); ok || d != nil {
+			t.Errorf("repo %q: ok = %v, d = %v, want false, nil", repo, ok, d)
+		}
+	}
+}

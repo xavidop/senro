@@ -92,7 +92,8 @@ func ExistingCheckRun(id int64) DestinationOption {
 }
 
 // DetailsURL sets the check's details_url on every request. {run} in the
-// template is replaced by the run id.
+// template is replaced by the run id, path-escaped; a template without {run}
+// is sent as given.
 func DetailsURL(template string) DestinationOption {
 	return func(d *Destination) {
 		if g, ok := d.requester.(*GitHubChecksRequester); ok {
@@ -314,7 +315,7 @@ func (g *GitHubChecksRequester) detailsURL(run string) string {
 	if g.details == "" {
 		return ""
 	}
-	return strings.ReplaceAll(g.details, "{run}", run)
+	return strings.ReplaceAll(g.details, "{run}", url.PathEscape(run))
 }
 
 func (g *GitHubChecksRequester) complete(e api.Event) (*Request, error) {
