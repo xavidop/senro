@@ -489,7 +489,9 @@ func TestAContainerServiceIsReachableFromAContainerConsumer(t *testing.T) {
 	store, spec, ex := containerService(t)
 	p := &plan.Plan{Version: 1, Nodes: []plan.Node{
 		{ID: "web", Kind: "exec", Executor: &spec, Cmd: []string{"sh", "-c",
-			"mkdir -p /www && echo hello > /www/index.html && exec httpd -f -p 8080 -h /www"},
+			// Under /tmp: the container runs as the coordinator's uid, which
+			// cannot create /www in the image's root on a CI runner.
+			"mkdir -p /tmp/www && echo hello > /tmp/www/index.html && exec httpd -f -p 8080 -h /tmp/www"},
 			Service: &plan.ServiceSpec{
 				Ports: []int{8080}, Probe: plan.ProbeSpec{Kind: plan.ServiceProbeTCP, Port: 8080},
 				ReadyTimeoutMS: 30000, StopGraceMS: 1000,
@@ -504,8 +506,11 @@ func TestAContainerServiceIsReachableFromAContainerConsumer(t *testing.T) {
 		Executors: map[string]executor.Executor{spec.Key(): ex},
 	})
 	if err != nil || status != api.RunSucceeded {
-		_, fin := lastStepFinished(t, readLedger(t, dir), "use")
-		t.Fatalf("Run = %s, %v; want succeeded (use: %s %q)", status, err, fin.State, fin.Error)
+		events := readLedger(t, dir)
+		_, web := lastStepFinished(t, events, "web")
+		_, use := lastStepFinished(t, events, "use")
+		t.Fatalf("Run = %s, %v; want succeeded (web: %s exit %d %q; use: %s %q)",
+			status, err, web.State, web.ExitCode, web.Error, use.State, use.Error)
 	}
 }
 
