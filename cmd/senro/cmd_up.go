@@ -154,7 +154,10 @@ func (t *upTap) State(ctx context.Context) (*api.RunState, error) {
 			t.final[id] = ""
 		}
 		t.mu.Unlock()
-		if s.Service != nil {
+		// Ready only: a service that has already stopped keeps its fold's
+		// endpoints, and printing those would offer an address nothing
+		// answers on as though it were live.
+		if s.Ready() {
 			t.printEndpoints(id, s.Service.Endpoints)
 		}
 	}

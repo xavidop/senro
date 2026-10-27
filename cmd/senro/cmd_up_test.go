@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net"
 	"reflect"
 	"strconv"
@@ -153,4 +154,31 @@ func freeLoopbackPort(t *testing.T) string {
 	}
 	defer func() { _ = ln.Close() }()
 	return strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+}
+
+// The snapshot `up` attaches to prints only services that are ready now: a
+// stopped one keeps its endpoints in the fold, and printing them would offer
+// an address nothing answers on.
+func TestUpTapPrintsOnlyReadyServicesFromTheSnapshot(t *testing.T) {
+	st := api.NewRunState()
+	ts := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
+	for _, s := range []struct {
+		id    string
+		state api.State
+	}{{"live", ""}, {"gone", api.StateSucceeded}} {
+		st.Order = append(st.Order, s.id)
+		st.Steps[s.id] = &api.StepState{
+			IsService: true, State: s.state,
+			Service: &api.ServiceState{Ready: ts, Endpoints: []api.Endpoint{{Port: 5432, Address: "127.0.0.1:1" + s.id}}},
+		}
+	}
+	var out strings.Builder
+	tap := &upTap{Source: &fakeWatchSource{state: st}, out: &out,
+		isService: map[string]bool{}, final: map[string]api.State{}}
+	if _, err := tap.State(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "live  127.0.0.1:1live") || strings.Contains(got, "gone") {
+		t.Errorf("printed %q, want only the ready service", got)
+	}
 }
