@@ -213,6 +213,32 @@ func (w *WorkflowBuilder) Step(id string, a Action) *StepBuilder {
 	return sb
 }
 
+// Add adopts a builder made with NewStep as a step of this workflow under id,
+// and returns it so the caller can keep configuring it. It is how a preset
+// step (a kit) joins a workflow.
+//
+// A builder is adopted once: adding the same one again, here or in another
+// workflow, makes Build fail naming both ids. A handler (senro.Handler) and a
+// nil builder are refused the same way, at Build.
+func (w *WorkflowBuilder) Add(id string, sb *StepBuilder) *StepBuilder {
+	switch {
+	case sb == nil:
+		sb = &StepBuilder{id: id}
+		sb.errs = append(sb.errs, fmt.Errorf("senro: Add %q: nil step", id))
+	case sb.handler:
+		sb.errs = append(sb.errs, fmt.Errorf("senro: Add %q: a handler (senro.Handler) cannot be a workflow step", id))
+	case sb.id != "":
+		// Already a step elsewhere, which Build reports through that
+		// earlier entry; adding it again would only duplicate the id.
+		sb.errs = append(sb.errs, fmt.Errorf("senro: step %q was already added as %q", id, sb.id))
+		return sb
+	default:
+		sb.id = id
+	}
+	w.steps = append(w.steps, sb)
+	return sb
+}
+
 // Service adds a step that is a long-running service: a process that stays
 // up while other steps use it, such as a database, instead of a command that
 // runs to completion. The options declare the ports it listens on and how to

@@ -2743,3 +2743,47 @@ func TestServiceCopiesItsPorts(t *testing.T) {
 		t.Fatalf("plan ports = %v, the caller's slice was aliased", n.Service.Ports)
 	}
 }
+
+func TestAddAdoptsABuilderUnderAnID(t *testing.T) {
+	p := senro.New("p")
+	w := p.Workflow("w")
+	sb := senro.NewStep(exec.Command("go", "test", "-json", "./...")).Tests(testreport.GoTestJSON())
+	got := w.Add("test", sb)
+	if got != sb {
+		t.Fatal("Add must return the builder it was given")
+	}
+	pl, err := p.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, ok := pl.Node("test")
+	if !ok || n.Tests == nil || n.Tests.Format != "gotest" {
+		t.Fatalf("node = %+v", n)
+	}
+}
+
+func TestAddRefusesABuilderAddedTwice(t *testing.T) {
+	p := senro.New("p")
+	w1, w2 := p.Workflow("a"), p.Workflow("b")
+	sb := senro.NewStep(exec.Command("true"))
+	w1.Add("one", sb)
+	w2.Add("two", sb)
+	_, err := p.Build()
+	if err == nil || !strings.Contains(err.Error(), `"one"`) || !strings.Contains(err.Error(), `"two"`) {
+		t.Fatalf("err = %v, want both ids named", err)
+	}
+}
+
+func TestAddRefusesAHandlerAndNil(t *testing.T) {
+	p := senro.New("p")
+	w := p.Workflow("w")
+	w.Add("h", senro.Handler("x", exec.Command("true")))
+	if _, err := p.Build(); err == nil || !strings.Contains(err.Error(), "handler") {
+		t.Fatalf("handler: %v", err)
+	}
+	p2 := senro.New("p")
+	p2.Workflow("w").Add("n", nil)
+	if _, err := p2.Build(); err == nil || !strings.Contains(err.Error(), `"n"`) {
+		t.Fatalf("nil: %v", err)
+	}
+}
