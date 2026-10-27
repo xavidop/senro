@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +85,64 @@ func TestAServiceDoesNotHoldItsWorkspaceAgainstASiblingsRestore(t *testing.T) {
 	_ = run("r1")
 	if hits := countType(run("r2"), api.CacheHit); hits != 1 {
 		t.Fatalf("the warm run had %d cache hits, want 1: the restore was not exercised", hits)
+	}
+}
+
+// A file in the workspace the coordinator cannot read does not keep a
+// service from starting: the copy skips it and says so in the service's own
+// stderr log. The file sits under node_modules, a default snapshot exclude,
+// so the seeding step's own snapshot never tries to read it.
+func TestAServiceStartsDespiteAnUnreadableWorkspaceFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 file regardless of its mode")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := freePort(t)
+	ws := senro.Workspace("src", senro.Scope(senro.ScopeRun))
+	pipe := senro.New("ci")
+	l := pipe.Workflow("main")
+	l.Step("seed", exec.Command("sh", "-c",
+		"mkdir -p node_modules && printf x > node_modules/locked.bin && chmod 000 node_modules/locked.bin")).
+		WorkDir("/src").Mount(ws.At("/src", senro.RW))
+	l.Service("db", exec.Command(self, "-test.run=^TestHelperServe$"), service.Ports(port)).
+		Env("SENRO_TEST_SERVE_PORT", strconv.Itoa(port)).
+		Env("GORACE", "atexit_sleep_ms=0").
+		Needs("seed").WorkDir("/src").Mount(ws.At("/src", senro.RO))
+	l.Step("use", exec.Command("true")).Needs("db")
+	p, err := pipe.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	dir := t.TempDir()
+	store := openStore(t, dir)
+	// The shared workspace directory holds the 0000 file; give the test's
+	// own cleanup a way to remove it.
+	t.Cleanup(func() {
+		_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+			if err == nil && !d.IsDir() {
+				_ = os.Chmod(p, 0o600)
+			}
+			return nil
+		})
+	})
+	status, err := engine.Run(context.Background(), p, engine.Options{
+		Dir: dir, Executor: localexec.New(dir, store.Snapshotter),
+		Sink: sink.Nop(), Storage: store, RunID: "01UNREADABLE", MaxParallel: 4,
+	})
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if status != api.RunSucceeded {
+		_, fin := lastStepFinished(t, readLedger(t, dir), "db")
+		t.Fatalf("Run = %s, want succeeded (db: %s %q)", status, fin.State, fin.Error)
+	}
+	want := "senro: skipped 1 unreadable path(s) copying this service's workspaces: src/node_modules/locked.bin\n"
+	if got := stepLog(t, dir, "db", api.StreamStderr); !strings.Contains(got, want) {
+		t.Errorf("db's stderr = %q, want it to contain %q", got, want)
 	}
 }
 

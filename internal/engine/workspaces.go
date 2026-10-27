@@ -527,13 +527,16 @@ func (m *wsManager) handlerMounts(parent *plan.Node) ([]executor.Mount, error) {
 // a service such as `node server.js` needs exactly those. A step standing in
 // the shared directory sees it whole, and so must a service.
 //
+// skipped is every path copyTree could not read, as "<workspace>/<path>",
+// for the caller to report in the service's own log.
+//
 // The caller must hold lockMounts for n's workspaces until this returns.
 func (m *wsManager) serviceMounts(ctx context.Context, n *plan.Node, attempt int) (
-	mounts []executor.Mount, cleanup func(), err error,
+	mounts []executor.Mount, skipped []string, cleanup func(), err error,
 ) {
 	mounts, err = m.handlerMounts(n)
 	if err != nil || len(mounts) == 0 {
-		return mounts, func() {}, err
+		return mounts, nil, func() {}, err
 	}
 	base := filepath.Join(m.runDir, "service-mounts", stepDirName(n.ID), "attempt-"+strconv.Itoa(attempt))
 	cleanup = func() { _ = os.RemoveAll(base) }
@@ -553,15 +556,19 @@ func (m *wsManager) serviceMounts(ctx context.Context, n *plan.Node, attempt int
 		}
 		dest := filepath.Join(base, stepDirName(mt.Name))
 		if err := ctx.Err(); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		if err := copyTree(mt.Path, dest); err != nil {
-			return nil, nil, fmt.Errorf("engine: copy workspace %q for service %q: %w", mt.Name, n.ID, err)
+		unread, err := copyTree(mt.Path, dest)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("engine: copy workspace %q for service %q: %w", mt.Name, n.ID, err)
+		}
+		for _, rel := range unread {
+			skipped = append(skipped, mt.Name+"/"+filepath.ToSlash(rel))
 		}
 		copies[mt.Name] = dest
 		mt.Path = dest
 	}
-	return mounts, cleanup, nil
+	return mounts, skipped, cleanup, nil
 }
 
 // copyTree copies the directory src to dest, which must not exist:
@@ -575,13 +582,27 @@ func (m *wsManager) serviceMounts(ctx context.Context, n *plan.Node, attempt int
 // Written here rather than reused: the repo's other ways of moving a
 // workspace (workspace.Snapshotter, mountxfer's tar streams) all apply the
 // snapshot excludes, which is exactly what a service's copy must not do.
-func copyTree(src, dest string) error {
-	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+//
+// A file or directory the coordinator may not read (a root-owned file a
+// container step left behind, a 0000 mode) is skipped rather than failing
+// the copy: the service most likely never reads it, and refusing to start
+// over it would fail a service for a file nobody asked about. skipped names
+// each one, relative to src, so the caller can say so where the service's
+// author will look.
+func copyTree(src, dest string) (skipped []string, err error) {
+	err = filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		rel, rerr := filepath.Rel(src, p)
+		if rerr != nil {
+			return rerr
 		}
-		rel, err := filepath.Rel(src, p)
 		if err != nil {
+			// The root itself is not optional; below it, an unreadable
+			// directory is skipped whole (WalkDir reports it after the
+			// directory was created, so the copy has it, empty).
+			if p != src && errors.Is(err, fs.ErrPermission) {
+				skipped = append(skipped, rel)
+				return nil
+			}
 			return err
 		}
 		target := filepath.Join(dest, rel)
@@ -599,11 +620,17 @@ func copyTree(src, dest string) error {
 			}
 			return os.Symlink(link, target)
 		case info.Mode().IsRegular():
-			return copyFile(p, target, info.Mode().Perm())
+			err := copyFile(p, target, info.Mode().Perm())
+			if errors.Is(err, fs.ErrPermission) {
+				skipped = append(skipped, rel)
+				return nil
+			}
+			return err
 		default:
 			return nil
 		}
 	})
+	return skipped, err
 }
 
 func copyFile(src, dest string, perm fs.FileMode) error {

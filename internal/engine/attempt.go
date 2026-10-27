@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -538,10 +539,11 @@ func (rc *runCore) prepareAttempt(
 	// post-run snapshot, so nothing it wrote would reach the ledger or a
 	// cache key, and with its own copy a sibling's restore can swap the
 	// shared directory without the running service seeing it.
+	var unreadable []string
 	if rc.ws != nil {
 		if n.IsService() {
 			var cleanup func()
-			s.mounts, cleanup, err = rc.ws.serviceMounts(attemptCtx, n, attempt)
+			s.mounts, unreadable, cleanup, err = rc.ws.serviceMounts(attemptCtx, n, attempt)
 			if err == nil {
 				releases = append(releases, cleanup)
 				unlock()
@@ -724,7 +726,23 @@ func (rc *runCore) prepareAttempt(
 	s.stdout = rc.redact.Writer(io.MultiWriter(stdoutSinks...))
 	s.stderr = rc.redact.Writer(io.MultiWriter(
 		&logMarker{rc: rc, w: stderrW, step: n.ID, attempt: attempt, stream: api.StreamStderr}, s.tail))
+	// Here, the first moment the attempt's own stderr exists: the service's
+	// log is where its author looks when it cannot find a file, and senro's
+	// own stderr is not theirs to read.
+	if len(unreadable) > 0 {
+		_, _ = fmt.Fprintf(s.stderr, "senro: skipped %d unreadable path(s) copying this service's workspaces: %s\n",
+			len(unreadable), summarizePaths(unreadable, 5))
+	}
 	return s, nil
+}
+
+// summarizePaths is paths joined by ", ", the first max of them, then how
+// many more: one log line, however many files a step left unreadable.
+func summarizePaths(paths []string, limit int) string {
+	if len(paths) <= limit {
+		return strings.Join(paths, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(paths[:limit], ", "), len(paths)-limit)
 }
 
 // flushAttempt drains one attempt's output once its process has ended, and
