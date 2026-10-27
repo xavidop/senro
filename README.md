@@ -115,6 +115,10 @@ debugger.
 - **Generated files that stay current.** `CheckGenerated` fails a step that regenerates files and
   leaves its workspace different from what it was given, and keeps the result for `senro ws pull`.
   See [Generated files](site/src/pages/docs/steps/check-generated.md).
+- **Resource usage per step.** Local and container steps report CPU time and peak memory on
+  `step.finished`; the UIs show `cpu 1.2s  rss 48 MB`, the history file records CPU, and the
+  OpenTelemetry example adds span attributes. See
+  [The event stream](site/src/pages/docs/run/event-stream.md).
 - **A GitHub App dispatcher.** `contrib/dispatcher` with an App id and key creates a queued check run
   before the pipeline starts, hands it to the pipeline's notifier and closes it when the pipeline
   can't. See [GitHub App](site/src/pages/docs/triggers/github-app.md).

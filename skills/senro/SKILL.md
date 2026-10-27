@@ -153,6 +153,17 @@ step using one rather than silently retrying on every failure. Use
 `retry.RegisterPredicate` + `retry.Named` for the same Go code with a name a
 plan can record; `retry.Func` remains for a `retry.Policy` applied directly.
 
+## Step usage
+
+`step.finished` carries an optional `usage` object: `cpu_user_ns`, `cpu_system_ns` and
+`max_rss_bytes` for the attempt that concluded. Local steps report it from rusage, container steps
+from the daemon's stats stream (a container that exits before the first one-second sample may report
+nothing); Kubernetes and SSH report nothing and the field is absent. The run state folds it into
+`StepState.Usage` and `step.retried` clears it. Renderers show `cpu 1.2s  rss 48 MB` (rss only when
+measured). `duration.Record` also keeps a `cpu` map in the history file, but `Partition` still
+balances wall time. The otelspan example adds `senro.cpu_user_ns`, `senro.cpu_system_ns` and
+`senro.max_rss_bytes` to the step span.
+
 ## Test results: `Tests`
 
 A step that runs tests declares how they are reported, so the run records one
@@ -314,7 +325,9 @@ verify.Step("generated", exec.Command("go", "generate", "./...")).
   Give the checking step its own workspace or order it with `Needs`.
 - `Build` refuses it on a service, together with `NoSnapshot`, and on a step
   with no read-write workspace mount.
-<!-- TODO(usage pass): Retry rule and check_generated cache key component, once the Task 5 fix round lands. -->
+- `Retry` together with `CheckGenerated` is refused at `Build`: a retry would compare against the
+  drifted tree. A step whose only read-write mounts are step-scoped or claim-backed is refused too.
+- `CheckGenerated` is part of the cache key (`step_shape`).
 
 ## Kits: `Add` and `kit/*`
 

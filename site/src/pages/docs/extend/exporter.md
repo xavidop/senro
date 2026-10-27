@@ -188,6 +188,9 @@ that reads it becomes a child of the step it ran in. Your exporter does nothing 
 handles all four closing events and imports `github.com/xavidop/senro/api` and the standard library
 and nothing else from senro, which the test suite checks mechanically.
 
+When a `step.finished` carries [usage](/docs/run/event-stream/#resource-usage), the step span also
+gets the attributes `senro.cpu_user_ns`, `senro.cpu_system_ns` and `senro.max_rss_bytes`.
+
 Run it against a real pipeline with `go run ./examples/otelexport`, whose pipeline is deliberately
 awkward: `lint` and `test` in
 parallel off `fetch`, `test` failing once and recovering, `audit` skipped by a false condition,

@@ -61,6 +61,15 @@ file like a lockfile**.
 - **Only steps that ran to completion are recorded.** A cached step finishes in milliseconds, and
   recording that time would make the slowest module look free.
 
+### CPU is recorded too
+
+The history file gains a sibling `cpu` map: expansion, then unit, then user plus system CPU
+nanoseconds, for steps that reported [usage](/docs/run/event-stream/#resource-usage). There is no
+version bump: `duration.FromFile` and `Durations` ignore the map, and an older file without it still
+loads. `Partition` keeps balancing **wall time**, because shards run in parallel and what you wait
+for is the slowest shard's clock. The CPU figures are recorded for the reader, for finding units
+that are heavy but waiting, not as a second input to the plan.
+
 ## The first run, and unmeasured units
 
 - **No history** (first run, or a missing file) is fine. Every unit weighs the same, and the split

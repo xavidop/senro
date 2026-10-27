@@ -23,7 +23,7 @@ and how to read a miss.
 | `input_digests` | The sorted paths and digests of the step's declared inputs |
 | `workspace_digests` | The sorted names and digests of the workspaces the step mounts |
 | `mount_shape` | The same mounts' name, mode and path, without their content |
-| `step_shape` | `NoSnapshot` and the declared `Outputs`, which decide what a saved result contains |
+| `step_shape` | `NoSnapshot`, the declared `Outputs` and `CheckGenerated` (`check_generated`), which decide what a saved result contains |
 | `func_identity` | A `Func` step's binary digest, registered name and parameter digest |
 | `tool_versions` | The declared toolchain fingerprint |
 | `version` | The key format's own version |

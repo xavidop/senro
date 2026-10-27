@@ -62,13 +62,22 @@ of its own, or order it with `Needs` so nothing else writes meanwhile.
 **Only read-write workspace mounts are compared.** A read-only mount is already protected from
 writes, and a [scratch cache](/docs/data/scratch/) is never snapshotted.
 
-<!-- TODO(usage pass): document the Retry rule (Retry refused together with CheckGenerated) and the check_generated cache key component once the Task 5 fix round lands. -->
+**`Retry` and `CheckGenerated` do not mix.** A retry would compare against the tree the first
+attempt already drifted, not the tree the step was given, so `Build` refuses the combination. Rerun
+the pipeline instead.
+
+**The check is part of the cache key.** `CheckGenerated` enters the `step_shape` component of the
+[cache key](/docs/data/cache-keys/), so a result cached without the check is never served to a step
+that has it.
 
 ## What `Build` refuses
 
 - **A service.** A service is stopped, not finished, so there is no completed run to compare.
 - **`NoSnapshot`.** The check compares snapshots, and `NoSnapshot` takes none.
 - **No read-write workspace mount.** A step with nothing it can write to has nothing to compare.
+- **`Retry`.** See above.
+- **Only step-scoped or claim-backed read-write mounts.** Neither outlives the step as a workspace
+  the check can compare, so a step whose only read-write mounts are of those kinds is refused.
 
 ## Where to go next
 

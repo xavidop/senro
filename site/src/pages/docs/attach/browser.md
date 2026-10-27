@@ -23,7 +23,8 @@ elapsed time, and dependencies. Steps expanded from a fold are indented under th
 shows the group's summary.
 
 Selecting a step shows its detail (kind, attempt, exit code, error, any handlers that ran and how
-they ended) and tails its output.
+they ended) and tails its output. When the step reported usage, the detail also shows `cpu` and
+`memory` fields, formatted as in [the TUI](/docs/attach/tui/#resource-usage).
 
 ## Controls
 

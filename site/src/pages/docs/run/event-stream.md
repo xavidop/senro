@@ -61,6 +61,21 @@ The same trace context is also passed into every step's command as environment v
 traced tool running inside a step joins the run's trace. See
 [Writing a trace exporter](/docs/extend/exporter/) for how this turns into spans.
 
+## Resource usage
+
+`step.finished` may carry a `usage` object for the attempt that concluded:
+
+```json
+{"seq":9,"type":"step.finished","step":"test","payload":{"state":"succeeded","exit_code":0,"usage":{"cpu_user_ns":812000000,"cpu_system_ns":96000000,"max_rss_bytes":52428800}}}
+```
+
+`cpu_user_ns` and `cpu_system_ns` are CPU time in nanoseconds; `max_rss_bytes` is peak resident
+memory. The local executor reports them from rusage and the container executor from the daemon's
+stats stream, so a container that exits before the daemon's first one-second sample may report
+nothing. Kubernetes and SSH report nothing, and then `usage` is absent. A client folding the stream
+sets `StepState.Usage` on `step.finished` and clears it on `step.retried`, so it always describes the
+attempt that concluded.
+
 ## Types sent today
 
 All thirty-seven, from `api.DeclaredTypes()`:
