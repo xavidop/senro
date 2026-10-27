@@ -175,7 +175,19 @@ func (a *githubApp) call(ctx context.Context, bearer, method, path string, in, o
 	return nil
 }
 
-func (a *githubApp) installationToken(ctx context.Context, installationID int64) (string, error) {
+// tokenScope is the body of the installation token request.
+type tokenScope struct {
+	Repositories []string `json:"repositories"`
+	Permissions  struct {
+		Checks   string `json:"checks"`
+		Metadata string `json:"metadata"`
+	} `json:"permissions"`
+}
+
+// installationToken mints a token for d's installation, scoped to d's
+// repository with checks:write and metadata:read. The refresh in finish
+// mints with the same scope.
+func (a *githubApp) installationToken(ctx context.Context, d delivery) (string, error) {
 	jwt, err := a.jwt(time.Now())
 	if err != nil {
 		return "", err
@@ -183,8 +195,15 @@ func (a *githubApp) installationToken(ctx context.Context, installationID int64)
 	var out struct {
 		Token string `json:"token"`
 	}
-	path := fmt.Sprintf("/app/installations/%d/access_tokens", installationID)
-	if err := a.call(ctx, jwt, http.MethodPost, path, nil, &out); err != nil {
+	// Scoped to the one repository the delivery came from and the two
+	// permissions the check needs, rather than the whole installation: the
+	// pipeline is handed this token. GitHub takes the repository by name,
+	// without the owner, since the installation already fixes the owner.
+	_, name, _ := strings.Cut(d.repo, "/")
+	scope := tokenScope{Repositories: []string{name}}
+	scope.Permissions.Checks, scope.Permissions.Metadata = "write", "read"
+	path := fmt.Sprintf("/app/installations/%d/access_tokens", d.installation)
+	if err := a.call(ctx, jwt, http.MethodPost, path, scope, &out); err != nil {
 		return "", err
 	}
 	if out.Token == "" {
@@ -316,7 +335,7 @@ func (d *dispatcher) startCheck(provider, event string, body []byte) *appCheck {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), startCallTimeout)
-	token, err := d.app.installationToken(ctx, dl.installation)
+	token, err := d.app.installationToken(ctx, dl)
 	cancel()
 	if err != nil {
 		log.Printf("dispatcher: minting an installation token for %s failed, running without a check: %v", dl.repo, err)
@@ -415,7 +434,7 @@ func (c *appCheck) refreshToken() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), githubCallTimeout)
 	defer cancel()
-	token, err := c.app.installationToken(ctx, c.d.installation)
+	token, err := c.app.installationToken(ctx, c.d)
 	if err != nil {
 		log.Printf("dispatcher: refreshing the installation token for %s: %v", c.d.repo, err)
 		return

@@ -30,6 +30,10 @@ const (
 	prBody   = `{"action":"opened","pull_request":{"head":{"sha":"def456"}},"repository":{"full_name":"acme/web"},"installation":{"id":7}}`
 )
 
+// scopedTokenBody is the installation token request: one repository, two
+// permissions.
+const scopedTokenBody = `{"repositories":["web"],"permissions":{"checks":"write","metadata":"read"}}`
+
 // testKey is generated once: 2048-bit generation is slow enough to notice
 // when every test pays for it.
 var testKey = sync.OnceValue(func() *rsa.PrivateKey {
@@ -210,7 +214,7 @@ func TestLoadGitHubAppReadsPKCS1AndPKCS8(t *testing.T) {
 func TestInstallationTokenIsExchanged(t *testing.T) {
 	f, srv := newFakeGitHub(t)
 	a := testApp(srv.URL)
-	tok, err := a.installationToken(context.Background(), 7)
+	tok, err := a.installationToken(context.Background(), delivery{installation: 7, repo: "acme/web", sha: "abc123"})
 	if err != nil {
 		t.Fatalf("installationToken: %v", err)
 	}
@@ -220,6 +224,11 @@ func TestInstallationTokenIsExchanged(t *testing.T) {
 	const key = "POST /app/installations/7/access_tokens"
 	if f.count(key) != 1 {
 		t.Fatalf("calls = %v, want one %s", f.calls, key)
+	}
+	// Scoped to the delivery's repository, by name without the owner as
+	// GitHub's API takes it, and to the two permissions the check needs.
+	if got := f.saw(key)[0]; got != scopedTokenBody {
+		t.Errorf("token request body = %s, want %s", got, scopedTokenBody)
 	}
 	auth, ok := strings.CutPrefix(f.auth[key], "Bearer ")
 	if !ok || strings.Count(auth, ".") != 2 {
@@ -399,6 +408,31 @@ func TestTokenFailureStillRuns(t *testing.T) {
 	}
 }
 
+// A successful App delivery logs neither the installation token nor any
+// Authorization header value.
+func TestASuccessfulDeliveryLogsNoCredential(t *testing.T) {
+	d, f := appDispatcher(t, "exit 0")
+	f.checkStatus = "in_progress"
+
+	var buf lockedBuffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	if got := deliverEvent(t, d, "push", pushBody).Code; got != http.StatusAccepted {
+		t.Fatalf("delivery got %d, want 202", got)
+	}
+	waitFree(t, d)
+	if n := f.count("PATCH /repos/acme/web/check-runs/42"); n != 1 {
+		t.Fatalf("PATCHes = %d, want 1: the delivery did not complete its check", n)
+	}
+	logged := buf.String()
+	for _, bad := range []string{"ghs_x", "Bearer"} {
+		if strings.Contains(logged, bad) {
+			t.Errorf("the log contains %q: %q", bad, logged)
+		}
+	}
+}
+
 // lockedBuffer is a log sink the run goroutine and the test can share.
 type lockedBuffer struct {
 	mu sync.Mutex
@@ -546,7 +580,10 @@ func TestALongRunClosesWithAFreshToken(t *testing.T) {
 	}
 	c.finish(nil, false)
 	if n := f.count("POST /app/installations/7/access_tokens"); n != 1 {
-		t.Errorf("token mints = %d, want 1", n)
+		t.Fatalf("token mints = %d, want 1", n)
+	}
+	if got := f.saw("POST /app/installations/7/access_tokens")[0]; got != scopedTokenBody {
+		t.Errorf("refresh body = %s, want %s: the fresh token is scoped like the first", got, scopedTokenBody)
 	}
 	f.mu.Lock()
 	got := f.auth["PATCH /repos/acme/web/check-runs/42"]
