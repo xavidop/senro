@@ -207,10 +207,25 @@ func validateService(n Node) error {
 				"dependents reach the service through one; declare it with service.Ports", n.ID)
 	}
 	declared := false
+	seen := make(map[int]bool, len(s.Ports))
 	for _, p := range s.Ports {
+		if p <= 0 || p > 65535 {
+			return fmt.Errorf("plan: step %q declares port %d, which is not a TCP port (1 to 65535)", n.ID, p)
+		}
+		if seen[p] {
+			// Each port is one SENRO_SERVICE_<ID>_PORT_<n> variable and one
+			// published binding; a second copy can only be a mistake.
+			return fmt.Errorf("plan: step %q declares port %d twice", n.ID, p)
+		}
+		seen[p] = true
 		if p == s.Probe.Port {
 			declared = true
 		}
+	}
+	if s.ReadyTimeoutMS < 0 || s.StopGraceMS < 0 {
+		return fmt.Errorf(
+			"plan: step %q has a negative ReadyTimeout or StopGrace: a duration a service waits "+
+				"cannot be less than zero", n.ID)
 	}
 	if !declared {
 		return fmt.Errorf(
@@ -219,6 +234,12 @@ func validateService(n Node) error {
 	}
 	switch s.Probe.Kind {
 	case ServiceProbeTCP:
+		if s.Probe.Path != "" {
+			// A TCP probe sends nothing, so a path would be silently
+			// ignored: the author meant an HTTP probe.
+			return fmt.Errorf("plan: step %q has a TCP probe with path %q: only an HTTP probe "+
+				"requests a path; use service.HTTP", n.ID, s.Probe.Path)
+		}
 	case ServiceProbeHTTP:
 		if !strings.HasPrefix(s.Probe.Path, "/") {
 			return fmt.Errorf("plan: step %q has an HTTP probe path %q that does not start with \"/\"",

@@ -63,6 +63,29 @@ func TestValidateRejectsAnHTTPProbePathWithoutASlash(t *testing.T) {
 	}), `"healthz"`, "/")
 }
 
+func TestValidateRejectsAServicePortOutOfRange(t *testing.T) {
+	for _, p := range []int{0, -1, 65536} {
+		wantServiceErr(t, serviceNode(func(n *plan.Node) {
+			n.Service.Ports = []int{5432, p}
+		}), `step "db"`, "not a TCP port")
+	}
+}
+
+func TestValidateRejectsADuplicateServicePort(t *testing.T) {
+	wantServiceErr(t, serviceNode(func(n *plan.Node) { n.Service.Ports = []int{5432, 5432} }),
+		`step "db"`, "port 5432 twice")
+}
+
+func TestValidateRejectsNegativeServiceDurations(t *testing.T) {
+	wantServiceErr(t, serviceNode(func(n *plan.Node) { n.Service.ReadyTimeoutMS = -1 }), "negative")
+	wantServiceErr(t, serviceNode(func(n *plan.Node) { n.Service.StopGraceMS = -1 }), "negative")
+}
+
+func TestValidateRejectsATCPProbeWithAPath(t *testing.T) {
+	wantServiceErr(t, serviceNode(func(n *plan.Node) { n.Service.Probe.Path = "/healthz" }),
+		"TCP probe", `"/healthz"`)
+}
+
 func TestValidateRejectsAServiceWithAnUnknownProbeKind(t *testing.T) {
 	wantServiceErr(t, serviceNode(func(n *plan.Node) { n.Service.Probe.Kind = "udp" }), `"udp"`)
 }
