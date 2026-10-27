@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,20 +31,39 @@ import (
 	"github.com/xavidop/senro/internal/storage"
 )
 
-// freePort asks the kernel for a port nothing is listening on, then gives it
-// back for the service to bind. Racy in principle, and the race is the
-// kernel's to lose: it does not hand the same ephemeral port out twice in
-// quick succession.
+// freePort hands out a port for a service to bind, from a range BELOW every
+// platform's ephemeral range (Linux starts at 32768, macOS at 49152), so no
+// other test package running beside this one, and no outbound connection,
+// is ever handed the same number by the kernel. Asking the kernel for :0 and
+// giving the port back was racy under CI load: the test packages `go test
+// ./...` runs in parallel took the port in the gap, and the service was
+// refused with "already in use".
+//
+// Each test binary walks its own hundred-port window chosen by pid, and a
+// port something else happens to hold is skipped.
 func freePort(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("picking a free port: %v", err)
+	for range 100 {
+		port := int(nextTestPort.Add(1))
+		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			continue
+		}
+		_ = ln.Close()
+		return port
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-	return port
+	t.Fatal("no free port in this test binary's window")
+	return 0
 }
+
+// nextTestPort is the last port freePort handed out. Windows of a hundred
+// ports from 10000 upward, one per test binary, keep two binaries on one
+// machine apart.
+var nextTestPort = func() *atomic.Int64 {
+	var p atomic.Int64
+	p.Store(int64(10000 + (os.Getpid()%200)*100))
+	return &p
+}()
 
 // serveNode is a service step that runs this test binary as TestHelperServe
 // on port, probed over TCP, or over HTTP on /healthz when overHTTP.

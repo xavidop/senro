@@ -2,8 +2,10 @@ package containerexec
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,13 +88,18 @@ func TestRunDoesNotWaitOutTheDrainGraceForTheStatsStream(t *testing.T) {
 	defer func() { _ = sb.Close(context.Background(), false) }()
 
 	start := time.Now()
+	var phases []string
+	runPhase = func(phase string) {
+		phases = append(phases, fmt.Sprintf("%s at %s", phase, time.Since(start).Round(time.Millisecond)))
+	}
+	defer func() { runPhase = nil }()
 	code, err := sb.Run(ctx, senroexec.Cmd{Args: []string{"sh", "-c", "sleep 1"}}, io.Discard, io.Discard)
 	elapsed := time.Since(start)
 	if err != nil || code != 0 {
 		t.Fatalf("Run = %d, %v", code, err)
 	}
 	if limit := logDrainGrace - time.Second; elapsed >= limit {
-		t.Errorf("Run of a one-second command took %s (limit %s): the stats stream was waited out, not cut",
-			elapsed, limit)
+		t.Errorf("Run of a one-second command took %s (limit %s); phases: %s",
+			elapsed, limit, strings.Join(phases, ", "))
 	}
 }
