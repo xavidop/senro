@@ -2,6 +2,13 @@
 
 All notable changes to senro are documented here. This file is generated from Conventional Commits by semantic-release.
 
+## [1.5.2](https://github.com/xavidop/senro/compare/v1.5.1...v1.5.2) (2026-10-27)
+
+
+### Bug Fixes
+
+* **engine:** emit control.applied before a held step is let go ([8b47b5f](https://github.com/xavidop/senro/commit/8b47b5f9972500b23793559c4308d88dd5754cf7))
+
 ## [1.5.1](https://github.com/xavidop/senro/compare/v1.5.0...v1.5.1) (2026-10-27)
 
 
