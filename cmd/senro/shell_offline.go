@@ -84,12 +84,13 @@ func cmdShellOffline(runFlag, step, cacheDir string, keep, fellBack bool, cmd []
 	}
 	defer func() { _ = store.Close() }()
 
-	// SIGTERM ends the shell and still cleans up behind it. SIGINT is
+	// SIGTERM, and SIGHUP from a closed terminal, end the shell and still
+	// clean up behind it. SIGINT is
 	// swallowed rather than acted on: an interactive ^C reaches the shell
 	// through the terminal's own process group, and a CLI that died on it
 	// would orphan the shell and leave the directory behind. Notify rather
 	// than Ignore, because an ignored signal stays ignored in the child.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 	intCh := make(chan os.Signal, 1)
 	signal.Notify(intCh, os.Interrupt)
@@ -130,14 +131,51 @@ func cmdShellOffline(runFlag, step, cacheDir string, keep, fellBack bool, cmd []
 // PATH for its image does not leave this shell unable to find ls; the
 // environment is otherwise not inherited, so nothing of the caller's own
 // leaks in under a step's name.
+//
+// The step's variables are also filtered by shellEnvDenied: they were
+// recorded for a sandbox, and are applied here to the operator's own shell
+// on the operator's own machine.
 func offlineShellEnv(n *plan.Node, runID, step string) []string {
-	env := plan.ShellEnv(n)
+	var env []string
+	for _, kv := range plan.ShellEnv(n) {
+		name, _, _ := strings.Cut(kv, "=")
+		if !shellEnvDenied(name) {
+			env = append(env, kv)
+		}
+	}
 	for _, k := range []string{"PATH", "HOME", "TERM"} {
 		if v, ok := os.LookupEnv(k); ok {
 			env = append(env, k+"="+v)
 		}
 	}
 	return append(env, "SENRO_SHELL_RUN="+runID, "SENRO_SHELL_STEP="+step)
+}
+
+// shellEnvDenied reports whether a recorded step variable is kept out of
+// the offline shell. Each one makes the shell, or every program it starts,
+// run code or change parsing before the operator types anything:
+//
+//   - LD_* and DYLD_*: the dynamic loader's preload and search paths
+//     (LD_PRELOAD, DYLD_INSERT_LIBRARIES), code injected into every
+//     process;
+//   - BASH_ENV, ENV, ZDOTDIR: a startup file the shell sources;
+//   - PROMPT_COMMAND, PS4: a command run at every prompt or trace line;
+//   - SHELLOPTS, BASHOPTS: shell options set before any rc file;
+//   - IFS: how every unquoted expansion splits.
+//
+// A step's environment is the pipeline's data, written for a sandbox that
+// may not even be this machine; a recorded run directory can come from
+// anywhere (a CI artifact, a colleague). Standing in it must not mean
+// running whatever it says.
+func shellEnvDenied(name string) bool {
+	if strings.HasPrefix(name, "LD_") || strings.HasPrefix(name, "DYLD_") {
+		return true
+	}
+	switch name {
+	case "BASH_ENV", "ENV", "ZDOTDIR", "PROMPT_COMMAND", "SHELLOPTS", "BASHOPTS", "IFS", "PS4":
+		return true
+	}
+	return false
 }
 
 // stepSnapshots is the latest ws.snapshot per workspace name among the
@@ -240,10 +278,60 @@ func restoreStepWorkspaces(ctx context.Context, store *storage.Storage, p *plan.
 	for _, t := range targets {
 		if t.ms.At == n.WorkDir {
 			workDir = t.path
-			break
+			return root, workDir, nil
 		}
 	}
+	restored := make([]restoredMount, len(targets))
+	for i, t := range targets {
+		restored[i] = restoredMount{at: t.ms.At, path: t.path}
+	}
+	if d, ok := workDirInside(n.WorkDir, root, restored); ok {
+		workDir = d
+	}
 	return root, workDir, nil
+}
+
+// restoredMount is one mount's declared path and where it was restored.
+type restoredMount struct{ at, path string }
+
+// workDirInside resolves a WorkDir that lies INSIDE a restored mount
+// ("/src/app" under a mount at "/src") to that path under the mount's
+// restored directory. The deepest enclosing mount wins, as it would in the
+// sandbox, where an inner mount shadows the outer one's subtree. ok is false
+// when no mount encloses workDir, or when the subdirectory was not restored
+// (the step created it outside any snapshot, say), in which case the
+// enclosing mount itself is the answer.
+//
+// Both sides are rooted and cleaned before comparing, so "../x" cannot climb
+// out of root: Clean("/../x") is "/x".
+func workDirInside(workDir, root string, mounts []restoredMount) (string, bool) {
+	if workDir == "" {
+		return "", false
+	}
+	wd := filepath.Clean("/" + workDir)
+	best, bestAt := "", ""
+	for _, m := range mounts {
+		at := filepath.Clean("/" + m.at)
+		prefix := strings.TrimSuffix(at, "/") + "/"
+		if (wd == at || strings.HasPrefix(wd, prefix)) && len(at) > len(bestAt) {
+			best, bestAt = m.path, at
+		}
+	}
+	if best == "" {
+		return "", false
+	}
+	rel, err := filepath.Rel(bestAt, wd)
+	if err != nil {
+		return best, true
+	}
+	cand := filepath.Join(best, rel)
+	if r, err := filepath.Rel(root, cand); err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+		return best, true
+	}
+	if fi, err := os.Stat(cand); err != nil || !fi.IsDir() {
+		return best, true
+	}
+	return cand, true
 }
 
 // runOfflineShell runs cmd, or $SHELL (else /bin/sh) when cmd is empty, in

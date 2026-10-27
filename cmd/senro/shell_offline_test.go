@@ -5,12 +5,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/xavidop/senro"
 	"github.com/xavidop/senro/exec"
 	"github.com/xavidop/senro/internal/plan"
+	"github.com/xavidop/senro/internal/storage"
 )
 
 // seedOfflineShellRun runs a one-step pipeline whose step mounts a
@@ -175,6 +177,147 @@ func TestOfflineShellExitCodeIsTheShells(t *testing.T) {
 		"--cmd", "sh", "-c", "exit 7"}, &out, &errb, strings.NewReader(""))
 	if code != 7 {
 		t.Errorf("exit = %d, want the command's own 7; stderr: %s", code, errb.String())
+	}
+}
+
+// rewritePlan applies edit to the recorded plan's build step and writes it
+// back, for a case a real run cannot record.
+func rewritePlan(t *testing.T, runDir string, edit func(n *plan.Node)) {
+	t.Helper()
+	p, err := readRunPlan(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, ok := p.Node("build")
+	if !ok {
+		t.Fatal("the seeded plan has no build step")
+	}
+	edit(n)
+	b, err := p.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "plan.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestOfflineShellDropsLoaderAndStartupVariables: a recorded step
+// environment is applied to the operator's own shell, so nothing in it may
+// inject code into it or what it starts.
+func TestOfflineShellDropsLoaderAndStartupVariables(t *testing.T) {
+	runDir, cacheDir := seedOfflineShellRun(t)
+	denied := []string{"LD_PRELOAD=/x.so", "LD_LIBRARY_PATH=/x", "DYLD_INSERT_LIBRARIES=/x.dylib",
+		"BASH_ENV=/x.sh", "ENV=/x.sh", "ZDOTDIR=/x", "PROMPT_COMMAND=touch /x", "SHELLOPTS=xtrace",
+		"BASHOPTS=extglob", "IFS=x", "PS4=$(touch /x)"}
+	rewritePlan(t, runDir, func(n *plan.Node) {
+		n.Env = append(append(n.Env, "ORDINARY=visible"), denied...)
+	})
+
+	env := offlineShellEnv(func() *plan.Node {
+		p, err := readRunPlan(runDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, _ := p.Node("build")
+		return n
+	}(), "r1", "build")
+	for _, kv := range denied {
+		name, _, _ := strings.Cut(kv, "=")
+		for _, got := range env {
+			if strings.HasPrefix(got, name+"=") {
+				t.Errorf("the offline shell's environment carries %s", got)
+			}
+		}
+	}
+	if !slices.Contains(env, "ORDINARY=visible") {
+		t.Errorf("the offline shell lost an ordinary variable: %v", env)
+	}
+
+	// And through the command, so the filter is on the path cmdShell takes.
+	var out, errb bytes.Buffer
+	code := cmdShell([]string{"--run", runDir, "--step", "build", "--offline", "--cache-dir", cacheDir,
+		"--cmd", "env"}, &out, &errb, strings.NewReader(""))
+	if code != exitSuccess {
+		t.Fatalf("exit = %d, stderr: %s", code, errb.String())
+	}
+	if strings.Contains(out.String(), "LD_PRELOAD") || strings.Contains(out.String(), "BASH_ENV") {
+		t.Errorf("env printed a denied variable:\n%s", out.String())
+	}
+}
+
+// TestOfflineShellStartsInAWorkDirInsideAMount: a WorkDir below a mount's
+// path starts the shell at that path under the restored mount.
+func TestOfflineShellStartsInAWorkDirInsideAMount(t *testing.T) {
+	base := t.TempDir()
+	t.Chdir(base)
+	t.Setenv("HOME", filepath.Join(base, "home"))
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(base, "registry"))
+	cacheDir := filepath.Join(base, "cache")
+	ws := senro.Workspace("src", senro.Scope(senro.ScopeRun))
+	pipe := senro.New("ci")
+	pipe.Workflow("main").
+		Step("build", exec.Command("sh", "-c", "mkdir -p app && printf deep > app/f.txt")).
+		WorkDir("/src").Mount(ws.At("/src", senro.RW))
+	runDir := filepath.Join(base, "runs", "r1")
+	if err := senro.Run(context.Background(), pipe,
+		senro.WithDir(runDir), senro.WithRunID("r1"), senro.WithCacheDir(cacheDir)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	rewritePlan(t, runDir, func(n *plan.Node) { n.WorkDir = "/src/app" })
+
+	var out, errb bytes.Buffer
+	code := cmdShell([]string{"--run", runDir, "--step", "build", "--offline", "--cache-dir", cacheDir,
+		"--cmd", "cat", "f.txt"}, &out, &errb, strings.NewReader(""))
+	if code != exitSuccess {
+		t.Fatalf("exit = %d, stderr: %s", code, errb.String())
+	}
+	if out.String() != "deep" {
+		t.Errorf("stdout = %q, want f.txt from root/src/app", out.String())
+	}
+}
+
+// TestOfflineShellKeepsHostileMountPathsInsideRoot: an At that climbs, and
+// an empty one, both restore inside the temporary root.
+func TestOfflineShellKeepsHostileMountPathsInsideRoot(t *testing.T) {
+	runDir, cacheDir := seedOfflineShellRun(t)
+	store, err := storage.Open(cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	snaps, err := stepSnapshots(runDir, "build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, at := range []string{"../x", "../../../etc", ""} {
+		rewritePlan(t, runDir, func(n *plan.Node) {
+			n.Mounts[0].At = at
+			n.WorkDir = at
+		})
+		p, err := readRunPlan(runDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		root, workDir, err := restoreStepWorkspaces(context.Background(), store, p, "r1", "build", snaps)
+		if err != nil {
+			t.Fatalf("At %q: %v", at, err)
+		}
+		inside := func(path string) bool {
+			rel, err := filepath.Rel(root, path)
+			return err == nil && rel != ".." && !strings.HasPrefix(rel, "../")
+		}
+		if !inside(workDir) {
+			t.Errorf("At %q: workDir %q is outside root %q", at, workDir, root)
+		}
+		if _, err := os.Stat(filepath.Join(workDir, "marker.txt")); err != nil {
+			t.Errorf("At %q: the workspace was not restored at the shell's directory: %v", at, err)
+		}
+		_ = os.RemoveAll(root)
+	}
+	// Belt: nothing landed beside the temporary root.
+	if _, err := os.Stat(filepath.Join(os.TempDir(), "x", "marker.txt")); err == nil {
+		t.Error("an At of ../x restored outside the temporary root")
 	}
 }
 
