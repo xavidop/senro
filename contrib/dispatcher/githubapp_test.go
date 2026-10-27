@@ -484,7 +484,28 @@ func TestAKilledRunCompletesCancelled(t *testing.T) {
 	if len(patches) != 1 {
 		t.Fatalf("PATCHes = %d, want 1", len(patches))
 	}
-	for _, want := range []string{`"conclusion":"cancelled"`, `"title":"Pipeline was terminated"`} {
+	for _, want := range []string{`"conclusion":"cancelled"`, `"title":"Pipeline was terminated"`, "The dispatcher stopped"} {
+		if !strings.Contains(patches[0], want) {
+			t.Errorf("the PATCH lacks %s: %s", want, patches[0])
+		}
+	}
+}
+
+// A pipeline killed by a signal the dispatcher did not send (an OOM killer,
+// an operator's kill) failed: nobody cancelled it. The fake pipeline sends
+// SIGTERM to itself, so the run ends on a signal with its context alive.
+func TestASignalTheDispatcherDidNotSendCompletesFailure(t *testing.T) {
+	d, f := appDispatcher(t, "kill -TERM $$")
+	f.checkStatus = "in_progress"
+	if got := deliverEvent(t, d, "push", pushBody).Code; got != http.StatusAccepted {
+		t.Fatalf("delivery got %d", got)
+	}
+	waitFree(t, d)
+	patches := f.saw("PATCH /repos/acme/web/check-runs/42")
+	if len(patches) != 1 {
+		t.Fatalf("PATCHes = %d, want 1", len(patches))
+	}
+	for _, want := range []string{`"conclusion":"failure"`, `"title":"Pipeline was terminated"`, "killed by a signal"} {
 		if !strings.Contains(patches[0], want) {
 			t.Errorf("the PATCH lacks %s: %s", want, patches[0])
 		}
@@ -523,7 +544,7 @@ func TestALongRunClosesWithAFreshToken(t *testing.T) {
 		id:      42,
 		started: time.Now().Add(-51 * time.Minute),
 	}
-	c.finish(nil)
+	c.finish(nil, false)
 	if n := f.count("POST /app/installations/7/access_tokens"); n != 1 {
 		t.Errorf("token mints = %d, want 1", n)
 	}
@@ -538,7 +559,7 @@ func TestALongRunClosesWithAFreshToken(t *testing.T) {
 	f2, srv2 := newFakeGitHub(t)
 	f2.checkStatus = "in_progress"
 	c2 := &appCheck{app: testApp(srv2.URL), token: "ghs_old", d: c.d, id: 42, started: time.Now()}
-	c2.finish(nil)
+	c2.finish(nil, false)
 	if n := f2.count("POST /app/installations/7/access_tokens"); n != 0 {
 		t.Errorf("a short run minted %d tokens", n)
 	}

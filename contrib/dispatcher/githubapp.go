@@ -349,10 +349,11 @@ func (c *appCheck) notRun(group string, err error) {
 	c.complete("failure", "Not run", "the dispatcher could not take its concurrency group "+group)
 }
 
-// finish is spec step 5, given what cmd.Run returned. Any error that is not
-// an *exec.ExitError (a start failure, or staging the delivery failing before
-// the exec) means the pipeline never ran.
-func (c *appCheck) finish(runErr error) {
+// finish is spec step 5, given what cmd.Run returned and whether the run's
+// context was cancelled (-timeout or -cancel-in-progress). Any error that is
+// not an *exec.ExitError (a start failure, or staging the delivery failing
+// before the exec) means the pipeline never ran.
+func (c *appCheck) finish(runErr error, cancelled bool) {
 	if c == nil || c.id == 0 {
 		return
 	}
@@ -391,8 +392,16 @@ func (c *appCheck) finish(runErr error) {
 	case 0:
 		c.complete("success", "Pipeline exited 0", unreported)
 	case -1:
-		// Killed by a signal: -timeout or -cancel-in-progress.
-		c.complete("cancelled", "Pipeline was terminated", "The pipeline was stopped before it finished. "+unreported)
+		// Killed by a signal. Only one the dispatcher sent itself, by
+		// cancelling the run's context, is a cancellation; any other (an
+		// OOM killer, an operator's kill) ended a run nobody cancelled.
+		if cancelled {
+			c.complete("cancelled", "Pipeline was terminated",
+				"The dispatcher stopped the pipeline before it finished (-timeout or -cancel-in-progress). "+unreported)
+			return
+		}
+		c.complete("failure", "Pipeline was terminated",
+			"The pipeline was killed by a signal the dispatcher did not send. "+unreported)
 	default:
 		c.complete("failure", fmt.Sprintf("Pipeline exited %d", code), unreported)
 	}

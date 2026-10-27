@@ -306,14 +306,14 @@ func (d *dispatcher) run(body []byte, release persist.Unlocker, check *appCheck)
 	f, err := os.CreateTemp("", "senro-delivery-*.json")
 	if err != nil {
 		log.Printf("dispatcher: staging the delivery: %v", err)
-		check.finish(fmt.Errorf("staging the delivery: %w", err))
+		check.finish(fmt.Errorf("staging the delivery: %w", err), false)
 		return
 	}
 	defer func() { _ = os.Remove(f.Name()) }()
 	if _, err := f.Write(body); err != nil {
 		_ = f.Close()
 		log.Printf("dispatcher: staging the delivery: %v", err)
-		check.finish(fmt.Errorf("staging the delivery: %w", err))
+		check.finish(fmt.Errorf("staging the delivery: %w", err), false)
 		return
 	}
 	_ = f.Close()
@@ -335,7 +335,7 @@ func (d *dispatcher) run(body []byte, release persist.Unlocker, check *appCheck)
 		cmd.Env = append(os.Environ(), env...)
 	}
 	err = cmd.Run()
-	check.finish(err)
+	check.finish(err, ctx.Err() != nil)
 
 	// Exit 78 is "no trigger matched", which is an ordinary answer and not a
 	// failure: most deliveries are not for this pipeline.
