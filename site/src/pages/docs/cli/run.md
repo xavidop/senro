@@ -193,8 +193,9 @@ See [The shell](/docs/attach/shell/) for the full picture. Here are the essentia
   a command prompt.
 
 Everything after `--` (or after `--cmd`, which takes the rest of the arguments) runs instead of
-the default shell, and the session's exit code is that command's exit code. That makes `senro shell --step build -- test -f out/app` usable in a script,
-just like running the command directly.
+the default shell, and the session's exit code is that command's exit code. That makes
+`senro shell --step build -- test -f out/app` usable in a script, just like running the command
+directly.
 
 Refusals print a short reason and exit `1`, using the same vocabulary as
 [control operations](/docs/attach/control-ops/): `unknown_step`, `run_not_active`,

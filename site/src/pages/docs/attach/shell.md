@@ -213,7 +213,9 @@ senro shell: offline, workspaces restored to /tmp/senro-shell-20260812T151058-54
 - **What is restored.** The latest snapshot the step itself recorded for each workspace, at the
   step's own mount paths under the temporary directory. The shell starts at the step's `WorkDir`:
   the mount there, or the same path inside the mount that contains it (`/src/app` under a mount at
-  `/src`), else the first mount. A step that recorded no snapshot is refused, naming it.
+  `/src`), else the first mount. A step that recorded no snapshot is refused, naming it. A
+  workspace the step mounts but never snapshotted is an empty directory, and the banner names
+  each one: `senro shell: not restored (no snapshot by this step): deps, tools`.
 - **What it runs.** This machine's own `$SHELL` (`/bin/sh` when unset), or the command after
   `--cmd` or `--`. **It is the coordinator's shell over restored files, not the step's image**: a
   tool the step's container had and this machine lacks is missing.
@@ -221,7 +223,8 @@ senro shell: offline, workspaces restored to /tmp/senro-shell-20260812T151058-54
   `PATH`, `HOME` and `TERM`, `SENRO_SHELL=1`, and `SENRO_SHELL_RUN` and `SENRO_SHELL_STEP` naming
   where you stand. No secrets, by the same rule a live session follows. Variables that would run
   code in your own shell are dropped too: `LD_*`, `DYLD_*`, `BASH_ENV`, `ENV`, `ZDOTDIR`,
-  `PROMPT_COMMAND`, `SHELLOPTS`, `BASHOPTS`, `IFS` and `PS4`.
+  exported bash functions (`BASH_FUNC_*`), `PROMPT_COMMAND`, `SHELLOPTS`, `BASHOPTS`, `IFS` and
+  `PS4`.
 - **The directory is yours.** Edit anything; nothing is written back. It is removed when the shell
   exits, unless you pass `--keep`. `--cache-dir` names the content store to restore from, as for
   `senro ws`.

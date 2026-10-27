@@ -84,8 +84,9 @@ probe that ran inside the service's container would pass for a port the host can
 local service that address is `127.0.0.1` on the declared port, IPv4: a server bound only to `::1`
 never becomes ready. Bind `127.0.0.1` or every interface.
 
-A local service whose declared port something on the coordinator already holds is not started:
-it fails with `localexec: port 5432 is already in use`. Otherwise the probe would pass against
+A local service whose declared port something on the coordinator already holds, on `127.0.0.1`
+or on every interface, is not started: it fails with `localexec: port 5432 is already in use`.
+Otherwise the probe would pass against
 whatever owns the port, your own database or a previous run's leftover, and hand that to the
 consumers as this service.
 
@@ -160,13 +161,17 @@ flowchart LR
    ready when nothing needs it. senro asks it to stop (`SIGTERM` to its process group locally,
    `docker stop` in a container), waits up to `StopGrace`, then kills it. A container service runs
    under an init (`docker run --init`), so a server that installs no `SIGTERM` handler of its own
-   still stops on the signal rather than at the kill. Locally, a wrapper that already exited on its
-   own has its process group killed anyway, so a child it left behind doesn't keep the port.
+   still stops on the signal rather than at the kill. Locally, a wrapper that exits on its own
+   takes its process group with it the moment it exits, so a child it left behind doesn't keep
+   the port.
 
-A consumer that runs again after its service stopped, through `step.retry`, `run.rerun_from` or an
-accepted analysis, restarts the service first: the service gets a new attempt, a new probe and new
-endpoints, and the consumer starts once that `service.ready` is in the ledger. A service that
-fails to come back leaves the consumer `skipped_upstream_failed`.
+A consumer that runs again after its service stopped, or while it is still inside its
+`StopGrace`, through `step.retry`, `run.rerun_from` or an accepted analysis, restarts the service
+first (a stopping one once it has stopped): the service gets a new attempt, a new probe and new
+endpoints, and the consumer starts once that `service.ready` is in the ledger. A retried consumer
+waits like that for every service it needs that isn't ready at that moment, including one a
+sibling's retry has just restarted. A service that fails to come back leaves the consumer
+`skipped_upstream_failed`.
 
 A ready service is waiting, not working, so it gives back its parallel slot the moment it is ready.
 Holding it for its whole life would starve its own consumers under a small limit, and deadlock them
@@ -246,9 +251,9 @@ Each of these assumes a step that finishes, or a place senro can't reach:
 `duration_ns` is how long the service took to become ready. `step.created` carries
 `"service":true` for a service, so a client can show it as starting before its probe has passed.
 `Apply` folds these into `StepState.IsService` (`is_service`) and `StepState.Service` (`service`:
-when it became ready, and its endpoints). The endpoints stay after the service stops, so a failure it caused can still say
-where it listened, while `Ready()` is true only while it is up. See
-[The event stream](/docs/run/event-stream/).
+when it became ready, and its endpoints). The endpoints stay after the service stops, so a
+failure it caused can still say where it listened, while `Ready()` is true only while it is up.
+See [The event stream](/docs/run/event-stream/).
 
 The terminal UI labels a running service `ready` once its probe has passed, and the focused
 service's log header says `ready at 127.0.0.1:54321 (port 5432)`, or `ran at` once it has stopped.
@@ -270,7 +275,10 @@ The plain renderer prints `db ready at 127.0.0.1:54321 (port 5432)`, and the bro
   workspace only while it makes the copy, so a long-lived service never blocks a sibling's cache
   restore, and that restore can't change what the running service sees. A write under a mount
   fails, and a service takes no snapshot when it stops, so nothing it writes reaches the ledger, a
-  cache key or its consumers. Write scratch data to a temporary directory instead.
+  cache key or its consumers. Write scratch data to a temporary directory instead. A file the
+  coordinator can't read (a `0000` mode, a root-owned leftover) is left out of the copy rather
+  than failing the start, and the service's own stderr log says which:
+  `senro: skipped 1 unreadable path(s) copying this service's workspaces: src/secret.key`.
 - **No retries, `Pure`, `Generates` or handlers on a service.** See above.
 
 ## Where to go next
