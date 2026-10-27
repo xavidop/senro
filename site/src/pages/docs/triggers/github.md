@@ -47,6 +47,9 @@ From a webhook receiver, `$e` is the `X-GitHub-Event` header and the payload is 
 | `push` | `Push`, or `Tag` when the ref is `refs/tags/...` | Carries a changed-file list |
 | `pull_request` | `PullRequest` | No changed-file list |
 
+Dispatching deliveries as a GitHub App, with a check run on the commit from the start, is on
+[GitHub App](/docs/triggers/github-app/).
+
 ## Worth knowing
 
 **There is no separate GitHub event for a tag.** A pushed tag arrives as a `push` whose `ref` is

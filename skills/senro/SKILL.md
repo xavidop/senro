@@ -1,6 +1,6 @@
 ---
 name: senro
-description: Use when defining, running, retrying, or attaching to a pipeline built with senro (github.com/xavidop/senro): writing a Pipeline of Workflows and Steps, wiring exec.Command actions or senro.Func Go functions, targeting a workflow at the local, container.Image, k8s.Pod or ssh.Host executor, Expand fan-out over a unit graph (glob, gowork, cargo, jswork, maven, gradle, pyproject, bazel, MaxParallel, MaxNodes), NeedsEach per-unit edges and Partition/TemplateShard duration-balanced shards, Affected monorepo fan-out with a change source, When/Branch/ParamIs/EnvIs conditions, retry.OnInfra policies, Service steps with service.Ports/TCP/HTTP readiness and SENRO_SERVICE_* addresses, kit presets (kit/gotest, kit/pytest, kit/eslint, kit/playwright) added with WorkflowBuilder.Add, Timeout, OnFailure/Always handlers, workspaces and scratch caches, Pure() action caching with Inputs/Outputs/CacheEnv, senro.WithSecrets credentials with SecretEnv, trigger gating with senro.WithTrigger, notifications through senro.WithSink and the notify package, failure analysis through senro.WithAnalyzer and contrib/genkitanalyzer, the shared cache over an S3 bucket or an OCI registry, attach.Listen live attach, or the senro CLI (run, run --break-on-failure, up, init, attach, shell including the offline form, verify, cache gc, cache explain, ws ls/pull/diff, logs fetch, func check). CI/CD is the familiar case, not the only one senro covers.
+description: Use when defining, running, retrying, or attaching to a pipeline built with senro (github.com/xavidop/senro): writing a Pipeline of Workflows and Steps, wiring exec.Command actions or senro.Func Go functions, targeting a workflow at the local, container.Image, k8s.Pod or ssh.Host executor, Expand fan-out over a unit graph (glob, gowork, cargo, jswork, maven, gradle, pyproject, bazel, MaxParallel, MaxNodes), NeedsEach per-unit edges and Partition/TemplateShard duration-balanced shards, Affected monorepo fan-out with a change source, When/Branch/ParamIs/EnvIs conditions, retry.OnInfra policies, Service steps with service.Ports/TCP/HTTP readiness and SENRO_SERVICE_* addresses, kit presets (kit/gotest, kit/pytest, kit/eslint, kit/playwright) added with WorkflowBuilder.Add, Timeout, OnFailure/Always handlers, workspaces and scratch caches, Pure() action caching with Inputs/Outputs/CacheEnv, senro.WithSecrets credentials with SecretEnv, trigger gating with senro.WithTrigger, notifications through senro.WithSink and the notify package (GitHub Checks, including adopting a dispatcher-created check run with notify.GitHubChecksFromEnv), CheckGenerated for checked-in generated files, senro lock and senro.WithLock image digest pinning, the contrib/dispatcher GitHub App mode (-github-app-id, SENRO_GITHUB_* environment), failure analysis through senro.WithAnalyzer and contrib/genkitanalyzer, the shared cache over an S3 bucket or an OCI registry, attach.Listen live attach, or the senro CLI (run, run --break-on-failure, up, init, lock, attach, shell including the offline form, verify, cache gc, cache explain, ws ls/pull/diff, logs fetch, func check). CI/CD is the familiar case, not the only one senro covers.
 ---
 
 # senro: a pipeline engine defined in Go
@@ -288,6 +288,33 @@ verify.Step("integration", exec.Command("go", "test", "./store/...")).Needs("db"
   Exit 0 if every service settled `succeeded`, 1 otherwise, 2 for no services.
 - Not supported: services on Kubernetes or SSH, command probes, a per-run
   Docker network, retries/Pure/handlers on a service.
+
+## Generated files: `CheckGenerated`
+
+`(*StepBuilder).CheckGenerated()` fails a step that exits `0` but leaves any
+read-write workspace it mounts different from what it was given: for a step
+that regenerates checked-in files (codegen, formatting, lock files).
+
+```go
+src := senro.Workspace("src", senro.Scope(senro.ScopeRun))
+verify.Step("generated", exec.Command("go", "generate", "./...")).
+	WorkDir("/src").
+	Mount(src.At("/src", senro.RW)).
+	CheckGenerated()
+```
+
+- The step settles `failed` with exit code `0` and the error
+  `generated files are out of date in workspace src: N changed: a, b, ...`
+  (up to ten paths, then `and N more`). Added, removed, modified, mode and
+  kind changes all count.
+- A non-zero exit is the generator's own failure; the check does not run.
+- The drifted snapshot is kept: `senro ws diff` and `senro ws pull` show what
+  the generator produced.
+- A sibling step that writes the same run-scoped workspace shows as drift.
+  Give the checking step its own workspace or order it with `Needs`.
+- `Build` refuses it on a service, together with `NoSnapshot`, and on a step
+  with no read-write workspace mount.
+<!-- TODO(usage pass): Retry rule and check_generated cache key component, once the Task 5 fix round lands. -->
 
 ## Kits: `Add` and `kit/*`
 
@@ -939,6 +966,55 @@ A refusal is a first-class answer: `ok:false` with a stable code (`unknown_op`,
 `no_remedy`, `no_workspace`, `snapshot_failed`). An operation applies completely
 or is refused.
 
+## Locking images: `senro lock`
+
+A tag moves; `senro lock <pkg>` writes `<pkg>/senro.lock`, pinning every
+container image the pipeline names by tag to its current digest. `senro run`
+and `senro up` apply that file when it exists (`SENRO_LOCK`); from Go it is
+`senro.WithLock(path)`, which wins over the variable.
+
+- Strict: a locked run refuses an image the file does not list, before a run
+  directory exists (`senro: image "golang:1.26" is not in ci/senro.lock; run
+  senro lock`). A reference that already names a digest needs no entry.
+- `senro lock <pkg> --check` writes nothing, prints
+  `<ref>  <locked>  ->  <current>` per difference and the stderr line
+  `senro: drift detected`, and exits `1`. Go: `errors.Is(err, lock.ErrDrift)`.
+- The lock modes (`SENRO_LOCK_WRITE`, `SENRO_LOCK_CHECK`) run before the
+  trigger gate, so they never exit `78`.
+- Container images only. Kubernetes steps already require a digest at `Build`
+  and need no entry. Steps a `Generates` fragment adds are not pinned. HTTPS
+  registries only.
+- A container's `executor_class` cache key component carries the image digest,
+  so re-locking misses exactly the steps that run in the changed image.
+
+## GitHub App dispatcher
+
+`contrib/dispatcher` with `-github-app-id` and `-github-private-key-file`
+(together; also `-github-api`, `-check-name` default `senro`, `-details-url`
+with `{run}`) creates a queued check run per `push` or `pull_request`
+delivery before the `202`, and closes it itself when the pipeline does not:
+exit 78 `neutral`, exit 0 `success`, non-zero `failure`, killed by the
+dispatcher's `-timeout` or `-cancel-in-progress` `cancelled`, a start or
+staging failure `failure`, a busy group `neutral`. A check the pipeline already
+completed is left alone. The App needs `checks: write` and `metadata: read` and
+the `push` and `pull_request` events. The installation token lives one hour
+(refreshed at 50 minutes for the close), hence `-timeout` defaults to one hour.
+
+The pipeline gets `SENRO_GITHUB_TOKEN`, `_API`, `_REPO`, `_SHA`, `_CHECK_RUN`,
+`_CHECK_NAME` and `_DETAILS_URL`, read by `notify.GitHubChecksFromEnv()`:
+
+```go
+if dest, ok := notify.GitHubChecksFromEnv(); ok {
+	n := notify.New(dest)
+	defer func() { _ = n.Close() }()
+	opts = append(opts, senro.WithSink(n))
+}
+```
+
+`notify.ExistingCheckRun(id)` adopts a created check (`run.started` PATCHes it
+to in progress) and `notify.DetailsURL(tmpl)` sets the link, `{run}` being the
+path-escaped run id.
+
 ## The CLI
 
 ```
@@ -946,6 +1022,7 @@ senro run <pkg> [--ui=auto|tui|plain|none] [--trigger-event PATH] [--break-on-fa
     [-- pipeline-args...]
 senro up <pkg> [--ui=auto|tui|plain|none] [-- pipeline-args...]
 senro init [DIR] [--out ci] [--force] [--dry-run] [--no-tidy]
+senro lock <pkg> [--check] [--file PATH] [-- pipeline-args...]
 senro attach [--pid <pid> | --run <id> | --addr <host:port>] [--follow] [--tls]
     [--ui=auto|tui|plain|none]
 senro shell [--pid <pid> | --run <id> | --addr <host:port>] [--tls] [--tty]

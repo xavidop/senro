@@ -18,7 +18,7 @@ and how to read a miss.
 | `command` | The step's kind, argument vector and working directory |
 | `env` | The allowlisted environment, as name plus value digest pairs, never a value |
 | `secrets` | The declared secrets' identity: name, source, version and a salted digest, never a value |
-| `executor_class` | The executor's cache equivalence class, deliberately not host identity |
+| `executor_class` | The executor's cache equivalence class, deliberately not host identity. For a container, it carries the image's digest |
 | `platform` | The declared platform |
 | `input_digests` | The sorted paths and digests of the step's declared inputs |
 | `workspace_digests` | The sorted names and digests of the workspaces the step mounts |
@@ -64,6 +64,10 @@ flowchart LR
 - **How you grouped your steps.** Moving steps between workflows does not change the plan's digest.
   Adding a workflow-level `Needs` does, because that adds real edges. See
   [Ordering](/docs/steps/ordering/).
+
+A container's class names the image by digest, not by tag, so a tag that moves invalidates the
+steps that run in it. With a [lock file](/docs/cli/lock/) the digest is the locked one: re-locking
+onto a newer image misses exactly those steps, and an unchanged lock keeps hitting.
 
 Two details about `executor_class` are worth knowing. A declared
 [`container.User`](/docs/executors/containers/) enters the class, but the default doesn't, since the

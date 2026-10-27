@@ -109,6 +109,15 @@ debugger.
   results wired in, added with `Add`; `senro init` finds which apply to a repository and writes the
   pipeline. See [Kits](site/src/pages/docs/steps/kits.md) and
   [senro init](site/src/pages/docs/cli/init.md).
+- **Locked images.** `senro lock` pins every container image a pipeline names by tag to a digest in a
+  committed `senro.lock`; `senro run` applies it, `--check` reports drift, and the digest enters the
+  cache key. See [senro lock](site/src/pages/docs/cli/lock.md).
+- **Generated files that stay current.** `CheckGenerated` fails a step that regenerates files and
+  leaves its workspace different from what it was given, and keeps the result for `senro ws pull`.
+  See [Generated files](site/src/pages/docs/steps/check-generated.md).
+- **A GitHub App dispatcher.** `contrib/dispatcher` with an App id and key creates a queued check run
+  before the pipeline starts, hands it to the pipeline's notifier and closes it when the pipeline
+  can't. See [GitHub App](site/src/pages/docs/triggers/github-app.md).
 - **Embeddable.** senro is a library first: no global state, no `os.Exit`, no reading your argv;
   attach is one opt-in call. The wire contract lives in `github.com/xavidop/senro/api` with no
   dependency beyond the standard library. See [Embedding](site/src/pages/docs/reference/embedding.md).

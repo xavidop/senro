@@ -91,6 +91,29 @@ detection or write failed, `2` usage error (unknown flag, DIR not a directory,
 nothing detected, `--out` exists and is not a directory, main.go exists
 without `--force`).
 
+## `senro lock`
+
+```
+senro lock <pkg> [--check] [--file PATH] [-- pipeline-args...]
+```
+
+Builds and launches the pipeline as `senro run` does, with `SENRO_LOCK_WRITE`
+(or, under `--check`, `SENRO_LOCK_CHECK`) set to the file, so the pipeline
+resolves every container image it names by tag and runs nothing. No run
+directory, and no trigger gate: it never exits `78`. The file is
+`<pkg>/senro.lock` unless `--file`. Stdout is one `<reference>  <digest>` line
+per image; under `--check`, one `<reference>  <locked>  ->  <current>` line per
+difference (`missing` for an absent side) and nothing is written.
+
+`senro run` and `senro up` set `SENRO_LOCK` to `<pkg>/senro.lock` when it
+exists; a locked run refuses an image the file does not list. Container images
+only (Kubernetes steps already require a digest), HTTPS registries only.
+
+Exit `0` written or current, `1` drift under `--check` (recognised by the
+`senro: drift detected` stderr line, whatever the pipeline's `main` exits),
+`2` a usage error or a pipeline that would not build, `130` cancelled, any
+other code the pipeline's own for a lock that could not be written or checked.
+
 ## `senro attach`
 
 ```
