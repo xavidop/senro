@@ -56,6 +56,22 @@ func freePort(t *testing.T) int {
 	return 0
 }
 
+// dbVerdict renders the service step db's last step.finished, for a failure
+// message: when a service never came up, every assertion downstream of it
+// fails for a reason only this line can explain.
+func dbVerdict(events []api.Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		if e.Type != api.StepFinished || e.Step != "db" {
+			continue
+		}
+		var b api.StepFinishedBody
+		_ = json.Unmarshal(e.Payload, &b)
+		return fmt.Sprintf("attempt %d %s exit %d %q", e.Attempt, b.State, b.ExitCode, b.Error)
+	}
+	return "no step.finished yet"
+}
+
 // nextTestPort is the last port freePort handed out. Windows of a hundred
 // ports from 10000 upward, one per test binary, keep two binaries on one
 // machine apart.
@@ -86,8 +102,12 @@ func serveNode(t *testing.T, id string, port int, overHTTP bool) plan.Node {
 	}
 	return plan.Node{
 		ID: id, Kind: "exec", Cmd: []string{self, "-test.run=^TestHelperServe$"}, Env: env,
+		// ReadyTimeout only bounds a failure, and a race-instrumented test
+		// binary re-executed as the server can take several seconds to
+		// start on a loaded CI runner; 5s turned those into "not ready"
+		// failures that every downstream assertion then misread.
 		Service: &plan.ServiceSpec{
-			Ports: []int{port}, Probe: probe, ReadyTimeoutMS: 5000, StopGraceMS: 2000,
+			Ports: []int{port}, Probe: probe, ReadyTimeoutMS: 30000, StopGraceMS: 2000,
 		},
 	}
 }
@@ -566,7 +586,7 @@ func TestARetriedServiceRunsAsAService(t *testing.T) {
 		ID: "r1", Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": "db"},
 	})
 	if !resp.OK {
-		t.Fatalf("step.retry response = %+v, want OK", resp)
+		t.Fatalf("step.retry response = %+v, want OK (db: %s)", resp, dbVerdict(csink.Events()))
 	}
 	select {
 	case res := <-out:
@@ -585,7 +605,7 @@ func TestARetriedServiceRunsAsAService(t *testing.T) {
 		}
 	}
 	if ready < 0 {
-		t.Fatal("no service.ready for db attempt 2: the retry did not run it as a service")
+		t.Fatalf("no service.ready for db attempt 2: the retry did not run it as a service (db: %s)", dbVerdict(events))
 	}
 	if started := indexOf(events, api.StepStarted, "use"); started < ready {
 		t.Errorf("use started at %d, before db's service.ready at %d", started, ready)
@@ -635,7 +655,7 @@ func TestRetryingAConsumerRestartsItsStoppedService(t *testing.T) {
 		ID: "r1", Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": "use"},
 	})
 	if !resp.OK {
-		t.Fatalf("step.retry response = %+v, want OK", resp)
+		t.Fatalf("step.retry response = %+v, want OK (db: %s)", resp, dbVerdict(csink.Events()))
 	}
 	select {
 	case res := <-out:
