@@ -737,8 +737,9 @@ func (rc *runCore) handleRerunFrom(h schedHandle, req sink.ControlRequest) {
 // A clear also releases a failure hold (see holds), so --break-on-failure
 // needs no op or key of its own. A step both armed and held (armed while
 // it ran, then failed) takes one clear for each, the armed breakpoint
-// first. release does not block: it closes a channel the held step is
-// waiting on, and the step goroutine does the rest.
+// first. Letting a held step go does not block: it closes a channel the
+// held step is waiting on, after control.applied is emitted, and the step
+// goroutine does the rest.
 func (rc *runCore) handleBreakpoint(h schedHandle, req sink.ControlRequest) {
 	n, ok := rc.resolveStep(h, req)
 	if !ok {
@@ -749,6 +750,11 @@ func (rc *runCore) handleBreakpoint(h schedHandle, req sink.ControlRequest) {
 	// so a client folding the ledger knows whether the step is still held
 	// (api.RunState.Apply clears Held only on "hold").
 	released := ""
+	// letGo resumes a held step, and runs only AFTER control.applied is in
+	// the ledger: the step's goroutine emits step.finished the moment it is
+	// let go, and a reader must never see that settle ahead of the release
+	// that caused it. holds.take splits the release in two for exactly this.
+	var letGo func()
 	switch {
 	case req.Op == api.OpBreakpointSet && armed:
 		refuse(req, reasonBreakpointExists)
@@ -761,11 +767,14 @@ func (rc *runCore) handleBreakpoint(h schedHandle, req sink.ControlRequest) {
 	case armed:
 		delete(h.breakpoints, n.ID)
 		released = api.ReleasedBreakpoint
-	case !rc.holds.release(n.ID):
-		// Neither armed nor held after a failure: nothing to clear.
-		refuse(req, reasonNoBreakpoint)
-		return
 	default:
+		fn, held := rc.holds.take(n.ID)
+		if !held {
+			// Neither armed nor held after a failure: nothing to clear.
+			refuse(req, reasonNoBreakpoint)
+			return
+		}
+		letGo = fn
 		released = api.ReleasedHold
 	}
 	args := map[string]string{"step": n.ID}
@@ -773,6 +782,9 @@ func (rc *runCore) handleBreakpoint(h schedHandle, req sink.ControlRequest) {
 		args["released"] = released
 	}
 	rc.emitControlApplied(req, args)
+	if letGo != nil {
+		letGo()
+	}
 	req.Reply <- sink.ControlResponse{ID: req.ID, OK: true}
 }
 

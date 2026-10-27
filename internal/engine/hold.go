@@ -52,17 +52,22 @@ func (h *holds) hold(ctx context.Context, step string, announce func()) (release
 	}
 }
 
-// release lets step's hold return, reporting whether there was one.
-func (h *holds) release(step string) bool {
+// take removes step's hold from the registry and returns the function that
+// lets the held step go, or false when there was none. Two steps rather
+// than one so the caller can put its own event in the ledger BEFORE the
+// step resumes: handleBreakpoint emits control.applied between them, so no
+// reader ever sees the step settle ahead of the release that let it. From
+// the take onward the step reads as not held, which is what it is about to
+// be.
+func (h *holds) take(step string) (letGo func(), ok bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	ch, ok := h.wait[step]
 	if !ok {
-		return false
+		return nil, false
 	}
 	delete(h.wait, step)
-	close(ch)
-	return true
+	return func() { close(ch) }, true
 }
 
 // token identifies step's current hold, if it has one, so a caller can
