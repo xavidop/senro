@@ -40,6 +40,7 @@ package pytest
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -98,13 +99,10 @@ func newConfig(opts []Option) config {
 }
 
 func build(c config) *senro.StepBuilder {
+	dir := kit.UnitDir(c.dir)
 	runner := c.runner
 	if len(runner) == 0 {
-		d := c.dir
-		if d == "" {
-			d = "."
-		}
-		runner = py.Detect(d, ".").Argv
+		runner = py.Detect(cmp.Or(dir, "."), ".").Argv
 	}
 	argv := append([]string(nil), runner...)
 	argv = append(argv, "pytest", "--junitxml="+reportFile)
@@ -112,8 +110,8 @@ func build(c config) *senro.StepBuilder {
 	argv = append(argv, c.paths...)
 	sb := senro.NewStep(exec.Command(argv...)).
 		Tests(testreport.JUnitXML(reportFile).Selecting("-k", testreport.Placeholder).JoinedBy(" or "))
-	if c.dir != "" {
-		sb = sb.WorkDir(c.dir)
+	if dir != "" {
+		sb = sb.WorkDir(dir)
 	}
 	return sb
 }
@@ -131,10 +129,7 @@ func Step(opts ...Option) *senro.StepBuilder {
 func Template(opts ...Option) func(senro.Unit) *senro.StepBuilder {
 	return func(u senro.Unit) *senro.StepBuilder {
 		c := newConfig(opts)
-		c.dir = ""
-		if u.Dir != "" && u.Dir != "." {
-			c.dir = u.Dir
-		}
+		c.dir = kit.UnitDir(u.Dir)
 		return build(c)
 	}
 }
@@ -166,8 +161,8 @@ func detectDir(dir string) (string, error) {
 	if reason, err := fromPyproject(dir); err != nil || reason != "" {
 		return reason, err
 	}
-	if fileExists(filepath.Join(dir, "pytest.ini")) {
-		return "pytest.ini", nil
+	if f, ok := kit.FirstFile(dir, "pytest.ini"); ok {
+		return f, nil
 	}
 	for _, f := range []struct{ file, section string }{
 		{"tox.ini", "[pytest]"},
@@ -230,7 +225,8 @@ func poetryHasPytest(t toml.Table) bool {
 
 func anyPytest(deps []string) bool {
 	for _, d := range deps {
-		if i := strings.IndexAny(d, " [<>=!~;"); i >= 0 {
+		d = strings.TrimSpace(d)
+		if i := strings.IndexAny(d, " \t[<>=!~;"); i >= 0 {
 			d = d[:i]
 		}
 		if strings.EqualFold(d, "pytest") {
@@ -238,11 +234,6 @@ func anyPytest(deps []string) bool {
 		}
 	}
 	return false
-}
-
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
 }
 
 // hasSection reports whether the INI-style file at path has a line that is

@@ -47,6 +47,19 @@ func TestStepRunsESLintWithJUnit(t *testing.T) {
 	}
 }
 
+func TestPathsWithNoArgumentsFallsBackToDot(t *testing.T) {
+	n := node(t, eslint.Step(eslint.Paths()))
+	if n.Cmd[1] != "eslint" || n.Cmd[2] != "." {
+		t.Fatalf("cmd = %v", n.Cmd)
+	}
+}
+
+func TestStepWithDotDirLeavesWorkDirEmpty(t *testing.T) {
+	if n := node(t, eslint.Step(eslint.Dir("."))); n.WorkDir != "" {
+		t.Fatalf("WorkDir = %q, want empty", n.WorkDir)
+	}
+}
+
 func TestTemplateIsFreshPerCall(t *testing.T) {
 	tpl := eslint.Template(eslint.Args("--quiet"))
 	a := tpl(senro.Unit{ID: "a", Dir: "testdata/pnpm"})

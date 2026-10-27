@@ -11,7 +11,9 @@
 package kit
 
 import (
+	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -69,8 +71,16 @@ func skipDir(name string) bool {
 // A directory that cannot be read, such as one without read permission, is
 // still passed to fn but its contents are skipped rather than ending the
 // walk: one locked directory should not hide every other match in the
-// repository. A root that does not exist is still an error.
+// repository. A root that does not exist, or is not a directory, is an error
+// naming it, and fn is not called.
 func Walk(root string, fn func(dir, rel string) error) error {
+	info, err := os.Stat(root)
+	if err != nil {
+		return fmt.Errorf("kit: walk %s: %w", root, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("kit: walk %s: not a directory", root)
+	}
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// WalkDir reports a failed ReadDir by calling again with the
@@ -96,6 +106,29 @@ func Walk(root string, fn func(dir, rel string) error) error {
 		}
 		return fn(path, filepath.ToSlash(rel))
 	})
+}
+
+// FirstFile returns the first of names that exists in dir as a regular file,
+// in the order given, and true. It returns "" and false when none does. The
+// name is returned bare, not joined to dir, so it can go straight into a
+// Match's Reason.
+func FirstFile(dir string, names ...string) (string, bool) {
+	for _, n := range names {
+		if info, err := os.Stat(filepath.Join(dir, n)); err == nil && info.Mode().IsRegular() {
+			return n, true
+		}
+	}
+	return "", false
+}
+
+// UnitDir returns the working directory a step for a unit at dir should
+// declare: "" for "" and ".", which both mean the repository root and need no
+// WorkDir, and dir itself otherwise.
+func UnitDir(dir string) string {
+	if dir == "." {
+		return ""
+	}
+	return dir
 }
 
 // SortMatches orders ms by kit name, then directory, so the same repository

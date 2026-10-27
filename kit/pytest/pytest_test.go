@@ -1,6 +1,8 @@
 package pytest_test
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -86,6 +88,51 @@ func TestDetectRecognisesEveryConfigShape(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: got %+v want %+v", dir, got, want)
 		}
+	}
+}
+
+func TestDetectFindsANestedProject(t *testing.T) {
+	got, err := pytest.Detect("testdata/nested")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []kit.Match{{Kit: "pytest", Dir: "sub", Reason: "pyproject.toml [tool.pytest.ini_options]"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v want %+v", got, want)
+	}
+}
+
+func TestDetectFindsPytestInTheMainPoetryDependencies(t *testing.T) {
+	got, err := pytest.Detect("testdata/poetrymain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []kit.Match{{Kit: "pytest", Dir: ".", Reason: "pyproject.toml [tool.poetry]"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v want %+v", got, want)
+	}
+}
+
+func TestDetectToleratesWhitespaceAroundTheRequirementName(t *testing.T) {
+	for _, req := range []string{" pytest", "pytest\t>=7", "\tpytest ", "PyTest>=7"} {
+		dir := t.TempDir()
+		body := "[project]\nname = \"x\"\ndependencies = [\"" + req + "\"]\n"
+		if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := pytest.Detect(dir)
+		if err != nil {
+			t.Fatalf("%q: %v", req, err)
+		}
+		if len(got) != 1 || got[0].Reason != "pyproject.toml [project] dependencies" {
+			t.Errorf("%q: got %+v", req, got)
+		}
+	}
+}
+
+func TestStepWithDotDirLeavesWorkDirEmpty(t *testing.T) {
+	if n := node(t, pytest.Step(pytest.Dir("."))); n.WorkDir != "" {
+		t.Fatalf("WorkDir = %q, want empty", n.WorkDir)
 	}
 }
 

@@ -32,9 +32,11 @@ var lockfiles = []struct {
 // Detect walks from dir up to root inclusive and returns the runner of the
 // first lockfile it finds, since a workspace keeps one lockfile at the top
 // and the nearest one governs dir. With none it returns plain python. dir and
-// root are filesystem paths, dir at or under root.
+// root are filesystem paths, dir at or under root; both are cleaned first, so
+// a trailing slash on root still stops the search there.
 func Detect(dir, root string) Runner {
-	for d := dir; ; d = filepath.Dir(d) {
+	root = filepath.Clean(root)
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
 		for _, l := range lockfiles {
 			if _, err := os.Stat(filepath.Join(d, l.file)); err == nil {
 				return l.r

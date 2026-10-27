@@ -38,9 +38,11 @@ var lockfiles = []struct {
 // first lockfile it finds. A monorepo keeps one lockfile at the top, so the
 // nearest one is the one that governs dir. With none it returns npm, which is
 // what a bare package.json means. dir and root are filesystem paths, dir at
-// or under root.
+// or under root; both are cleaned first, so a trailing slash on root still
+// stops the search there.
 func Detect(dir, root string) Manager {
-	for d := dir; ; d = filepath.Dir(d) {
+	root = filepath.Clean(root)
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
 		for _, l := range lockfiles {
 			if _, err := os.Stat(filepath.Join(d, l.file)); err == nil {
 				return l.m

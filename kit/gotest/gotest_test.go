@@ -59,6 +59,25 @@ func TestTemplateUsesTheUnitDir(t *testing.T) {
 	}
 }
 
+func TestStepWithDotDirLeavesWorkDirEmpty(t *testing.T) {
+	if n := node(t, gotest.Step(gotest.Dir("."))); n.WorkDir != "" {
+		t.Fatalf("WorkDir = %q, want empty", n.WorkDir)
+	}
+}
+
+func TestTemplateBuildersDoNotShareSlices(t *testing.T) {
+	tmpl := gotest.Template(gotest.Args("-count=1"), gotest.Packages("./a"))
+	a := node(t, tmpl(senro.Unit{ID: "x", Dir: "x"}))
+	b := node(t, tmpl(senro.Unit{ID: "x", Dir: "x"}))
+	for i := range a.Cmd {
+		a.Cmd[i] = "mutated"
+	}
+	want := []string{"go", "test", "-json", "-count=1", "./a"}
+	if !reflect.DeepEqual(b.Cmd, want) {
+		t.Fatalf("second builder's cmd = %v, want %v", b.Cmd, want)
+	}
+}
+
 func TestDetectFindsEveryModuleOutsideSkippedDirs(t *testing.T) {
 	got, err := gotest.Detect("testdata/tree")
 	if err != nil {

@@ -2,7 +2,6 @@ package playwright_test
 
 import (
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -33,7 +32,13 @@ func TestStepRunsPlaywrightWithJUnit(t *testing.T) {
 	if !reflect.DeepEqual(n.Cmd, want) {
 		t.Fatalf("cmd = %v", n.Cmd)
 	}
-	if !slices.Contains(n.Env, "PLAYWRIGHT_JUNIT_OUTPUT_NAME=.senro/playwright.xml") {
+	var outputs []string
+	for _, e := range n.Env {
+		if strings.HasPrefix(e, "PLAYWRIGHT_JUNIT_OUTPUT_NAME=") {
+			outputs = append(outputs, e)
+		}
+	}
+	if !reflect.DeepEqual(outputs, []string{"PLAYWRIGHT_JUNIT_OUTPUT_NAME=.senro/playwright.xml"}) {
 		t.Fatalf("env = %v", n.Env)
 	}
 	tr := n.Tests
@@ -44,6 +49,12 @@ func TestStepRunsPlaywrightWithJUnit(t *testing.T) {
 	y := node(t, playwright.Step(playwright.Dir("testdata/yarn"), playwright.Args("--workers=1")))
 	if strings.Join(y.Cmd, " ") != "yarn playwright test --reporter=list,junit --workers=1" || y.WorkDir != "testdata/yarn" {
 		t.Fatalf("yarn node = %+v", y)
+	}
+}
+
+func TestStepWithDotDirLeavesWorkDirEmpty(t *testing.T) {
+	if n := node(t, playwright.Step(playwright.Dir("."))); n.WorkDir != "" {
+		t.Fatalf("WorkDir = %q, want empty", n.WorkDir)
 	}
 }
 

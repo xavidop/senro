@@ -35,8 +35,7 @@
 package playwright
 
 import (
-	"os"
-	"path/filepath"
+	"cmp"
 
 	"github.com/xavidop/senro"
 	"github.com/xavidop/senro/exec"
@@ -83,18 +82,15 @@ func newConfig(opts []Option) config {
 }
 
 func build(c config) *senro.StepBuilder {
-	d := c.dir
-	if d == "" {
-		d = "."
-	}
-	argv := append([]string(nil), pm.Detect(d, ".").Exec...)
+	dir := kit.UnitDir(c.dir)
+	argv := append([]string(nil), pm.Detect(cmp.Or(dir, "."), ".").Exec...)
 	argv = append(argv, "playwright", "test", "--reporter=list,junit")
 	argv = append(argv, c.args...)
 	sb := senro.NewStep(exec.Command(argv...)).
 		Env("PLAYWRIGHT_JUNIT_OUTPUT_NAME", reportFile).
 		Tests(testreport.JUnitXML(reportFile).Selecting("-g", testreport.Placeholder).JoinedBy("|"))
-	if c.dir != "" {
-		sb = sb.WorkDir(c.dir)
+	if dir != "" {
+		sb = sb.WorkDir(dir)
 	}
 	return sb
 }
@@ -112,10 +108,7 @@ func Step(opts ...Option) *senro.StepBuilder {
 func Template(opts ...Option) func(senro.Unit) *senro.StepBuilder {
 	return func(u senro.Unit) *senro.StepBuilder {
 		c := newConfig(opts)
-		c.dir = ""
-		if u.Dir != "" && u.Dir != "." {
-			c.dir = u.Dir
-		}
+		c.dir = kit.UnitDir(u.Dir)
 		return build(c)
 	}
 }
@@ -125,11 +118,8 @@ func Template(opts ...Option) func(senro.Unit) *senro.StepBuilder {
 func Detect(root string) ([]kit.Match, error) {
 	var ms []kit.Match
 	err := kit.Walk(root, func(dir, rel string) error {
-		for _, f := range configFiles {
-			if info, err := os.Stat(filepath.Join(dir, f)); err == nil && !info.IsDir() {
-				ms = append(ms, kit.Match{Kit: Name, Dir: rel, Reason: f})
-				break
-			}
+		if f, ok := kit.FirstFile(dir, configFiles...); ok {
+			ms = append(ms, kit.Match{Kit: Name, Dir: rel, Reason: f})
 		}
 		return nil
 	})

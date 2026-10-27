@@ -27,8 +27,6 @@
 package gotest
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/xavidop/senro"
@@ -95,8 +93,8 @@ func build(c config) *senro.StepBuilder {
 		argv = append(argv, c.packages...)
 	}
 	sb := senro.NewStep(exec.Command(argv...)).Tests(testreport.GoTestJSON())
-	if c.dir != "" {
-		sb = sb.WorkDir(c.dir)
+	if dir := kit.UnitDir(c.dir); dir != "" {
+		sb = sb.WorkDir(dir)
 	}
 	return sb
 }
@@ -114,10 +112,7 @@ func Step(opts ...Option) *senro.StepBuilder {
 func Template(opts ...Option) func(senro.Unit) *senro.StepBuilder {
 	return func(u senro.Unit) *senro.StepBuilder {
 		c := newConfig(opts)
-		c.dir = ""
-		if u.Dir != "" && u.Dir != "." {
-			c.dir = u.Dir
-		}
+		c.dir = kit.UnitDir(u.Dir)
 		return build(c)
 	}
 }
@@ -127,11 +122,9 @@ func Template(opts ...Option) func(senro.Unit) *senro.StepBuilder {
 func Detect(root string) ([]kit.Match, error) {
 	var ms []kit.Match
 	err := kit.Walk(root, func(dir, rel string) error {
-		info, err := os.Stat(filepath.Join(dir, "go.mod"))
-		if err != nil || info.IsDir() {
-			return nil //nolint:nilerr // a missing go.mod just means no match here
+		if f, ok := kit.FirstFile(dir, "go.mod"); ok {
+			ms = append(ms, kit.Match{Kit: Name, Dir: rel, Reason: f})
 		}
-		ms = append(ms, kit.Match{Kit: Name, Dir: rel, Reason: "go.mod"})
 		return nil
 	})
 	if err != nil {

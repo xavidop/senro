@@ -2787,3 +2787,23 @@ func TestAddRefusesAHandlerAndNil(t *testing.T) {
 		t.Fatalf("nil: %v", err)
 	}
 }
+
+func TestAddRefusesABuilderAddedTwiceInOneWorkflow(t *testing.T) {
+	p := senro.New("p")
+	w := p.Workflow("w")
+	sb := senro.NewStep(exec.Command("true"))
+	w.Add("one", sb)
+	w.Add("two", sb)
+	_, err := p.Build()
+	if err == nil || !strings.Contains(err.Error(), `"one"`) || !strings.Contains(err.Error(), `"two"`) {
+		t.Fatalf("err = %v, want both ids named", err)
+	}
+}
+
+func TestAddRefusesAnEmptyID(t *testing.T) {
+	p := senro.New("p")
+	p.Workflow("w").Add("", senro.NewStep(exec.Command("true")))
+	if _, err := p.Build(); err == nil {
+		t.Fatal("Build accepted a step with an empty id")
+	}
+}

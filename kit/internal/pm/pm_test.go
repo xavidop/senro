@@ -56,3 +56,35 @@ func TestDetectNearestLockfileWins(t *testing.T) {
 		t.Fatalf("got %+v, want yarn", got)
 	}
 }
+
+func TestDetectStopsAtARootWithATrailingSlash(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "repo")
+	dir := filepath.Join(root, "apps", "web")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "pnpm-lock.yaml"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := Detect(dir, root+"/"); got.Name != "npm" {
+		t.Fatalf("got %+v, want npm: the search went past root", got)
+	}
+}
+
+func TestDetectLockfilePrecedence(t *testing.T) {
+	order := []struct{ file, name string }{
+		{"pnpm-lock.yaml", "pnpm"}, {"yarn.lock", "yarn"}, {"bun.lockb", "bun"}, {"package-lock.json", "npm"},
+	}
+	for i := range order {
+		dir := t.TempDir()
+		for _, l := range order[i:] {
+			if err := os.WriteFile(filepath.Join(dir, l.file), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := Detect(dir, dir); got.Name != order[i].name {
+			t.Errorf("with %s and everything after it: got %s, want %s", order[i].file, got.Name, order[i].name)
+		}
+	}
+}

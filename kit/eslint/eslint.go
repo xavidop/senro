@@ -35,6 +35,7 @@
 package eslint
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -92,11 +93,8 @@ func newConfig(opts []Option) config {
 }
 
 func build(c config) *senro.StepBuilder {
-	d := c.dir
-	if d == "" {
-		d = "."
-	}
-	argv := append([]string(nil), pm.Detect(d, ".").Exec...)
+	dir := kit.UnitDir(c.dir)
+	argv := append([]string(nil), pm.Detect(cmp.Or(dir, "."), ".").Exec...)
 	argv = append(argv, "eslint")
 	if len(c.paths) == 0 {
 		argv = append(argv, ".")
@@ -106,8 +104,8 @@ func build(c config) *senro.StepBuilder {
 	argv = append(argv, "--format", "junit", "--output-file", reportFile)
 	argv = append(argv, c.args...)
 	sb := senro.NewStep(exec.Command(argv...)).Tests(testreport.JUnitXML(reportFile))
-	if c.dir != "" {
-		sb = sb.WorkDir(c.dir)
+	if dir != "" {
+		sb = sb.WorkDir(dir)
 	}
 	return sb
 }
@@ -125,10 +123,7 @@ func Step(opts ...Option) *senro.StepBuilder {
 func Template(opts ...Option) func(senro.Unit) *senro.StepBuilder {
 	return func(u senro.Unit) *senro.StepBuilder {
 		c := newConfig(opts)
-		c.dir = ""
-		if u.Dir != "" && u.Dir != "." {
-			c.dir = u.Dir
-		}
+		c.dir = kit.UnitDir(u.Dir)
 		return build(c)
 	}
 }
@@ -169,10 +164,8 @@ func detectDir(dir string) (string, error) {
 	if err := json.Unmarshal(data, &pkg); err != nil {
 		return "", fmt.Errorf("eslint: parse %s: %w", path, err)
 	}
-	for _, f := range configFiles {
-		if info, err := os.Stat(filepath.Join(dir, f)); err == nil && !info.IsDir() {
-			return f, nil
-		}
+	if f, ok := kit.FirstFile(dir, configFiles...); ok {
+		return f, nil
 	}
 	if _, ok := pkg.DevDependencies["eslint"]; ok {
 		return "package.json devDependencies", nil
