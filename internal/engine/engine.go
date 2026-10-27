@@ -1290,8 +1290,26 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 			// settling is not dispatching.
 			ready = nil
 		}
+		// A service's stop channel and generation are made here, in the same
+		// critical section that marks it running, before the goroutine
+		// exists: stopIdleServices can never look for a channel a service
+		// has not been handed yet, a rerun replaces a stale one, and a
+		// control request served before the dispatch loop below (the
+		// non-blocking read) sees a running service that is live, never one
+		// with no stop channel, which reviveServicesLocked would take for a
+		// service on its way down.
+		type serviceRun struct {
+			stop chan struct{}
+			gen  int
+		}
+		serviceRuns := map[string]serviceRun{}
 		for _, n := range ready {
 			running[n.ID] = true
+			if n.IsService() {
+				r := serviceRun{stop: make(chan struct{}), gen: rc.services.begin(n.ID)}
+				serviceStops[n.ID] = r.stop
+				serviceRuns[n.ID] = r
+			}
 		}
 		for id, st := range settled {
 			states[id] = st
@@ -1438,18 +1456,8 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 
 		for _, n := range ready {
 			n := n
-			var stop chan struct{}
-			var gen int
-			if n.IsService() {
-				// Created here, on this loop, before the goroutine exists, so
-				// stopIdleServices can never look for a channel a service has
-				// not been handed yet. A rerun replaces a stale one. The
-				// generation likewise, so a consumer's retry served on this
-				// loop sees this execution counted (see handleStepRetry).
-				stop = make(chan struct{})
-				serviceStops[n.ID] = stop
-				gen = rc.services.begin(n.ID)
-			}
+			// Made when the pass marked it running; zero for a step.
+			stop, gen := serviceRuns[n.ID].stop, serviceRuns[n.ID].gen
 			wg.Add(1)
 			go func() {
 				defer wg.Done()

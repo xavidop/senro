@@ -1179,6 +1179,12 @@ func (rc *runCore) handleStepRetry(h schedHandle, req sink.ControlRequest) bool 
 			case <-h.ctx.Done():
 			}
 			if h.ctx.Err() == nil && !rc.services.readyAt(w.id, w.gen) {
+				// A retried service that never runs still has an outcome
+				// for whoever awaits its generation, as runService's
+				// withdraw would have given it.
+				if n.IsService() {
+					rc.services.withdraw(stepID, gen)
+				}
 				h.mu.Lock()
 				h.states[stepID] = api.StateSkippedUpstreamFailed
 				delete(h.running, stepID)
@@ -1193,7 +1199,11 @@ func (rc *runCore) handleStepRetry(h schedHandle, req sink.ControlRequest) bool 
 			// recorded exactly like a queued-but-never-dispatched step (see
 			// schedule's cancellation short-circuit), cancelled rather than
 			// failed, via emitStepFinished since nothing here opened a
-			// sandbox.
+			// sandbox. A service's generation is withdrawn for the reason
+			// the skip above withdraws it.
+			if n.IsService() {
+				rc.services.withdraw(stepID, gen)
+			}
 			h.mu.Lock()
 			h.states[stepID] = api.StateCancelled
 			delete(h.running, stepID)

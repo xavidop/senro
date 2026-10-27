@@ -28,6 +28,9 @@ const (
 	// helperServeFile, set to "1" with helperServeHTTP, also serves files
 	// under the working directory on /file/<path>.
 	helperServeFile = "SENRO_TEST_SERVE_FILE"
+	// helperServeBoundFile names a file created once the server is
+	// listening, for a wrapper that must not exit before it is.
+	helperServeBoundFile = "SENRO_TEST_SERVE_BOUND_FILE"
 )
 
 // TestHelperServe is not a test: it is the service the engine's service
@@ -55,6 +58,11 @@ func TestHelperServe(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:"+port)
 	if err != nil {
 		os.Exit(3)
+	}
+	if f := os.Getenv(helperServeBoundFile); f != "" {
+		if err := os.WriteFile(f, nil, 0o644); err != nil {
+			os.Exit(5)
+		}
 	}
 	// A server that dies on its own after a while, with status 4: a service
 	// failing after it was ready.

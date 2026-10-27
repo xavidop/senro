@@ -29,18 +29,24 @@ func TestAWrapperThatExitsTakesItsServerWithIt(t *testing.T) {
 	port := freePort(t)
 	db := serveNode(t, "db", port, false)
 	self := db.Cmd[0]
-	// The wrapper waits until its child answers, so the service is ready
-	// and the child provably holds the port, then exits on its own.
+	// The wrapper backgrounds the server, waits for the marker the server
+	// writes once it is listening (so the child provably holds the port),
+	// then exits on its own. Whether the probe passed first is a race the
+	// test does not care about: either way the service fails.
+	bound := filepath.Join(t.TempDir(), "bound")
+	db.Env = append(db.Env, "SENRO_TEST_SERVE_BOUND_FILE="+bound)
 	db.Cmd = []string{"sh", "-c", fmt.Sprintf(
-		`%s '-test.run=^TestHelperServe$' & sleep 1; exit 0`, self)}
+		`%s '-test.run=^TestHelperServe$' & while [ ! -f %s ]; do sleep 0.05; done; exit 0`, self, bound)}
 	p := &plan.Plan{Version: 1, Nodes: []plan.Node{
 		db,
 		{ID: "use", Kind: "exec", Needs: []string{"db"}, Cmd: []string{"sleep", "5"}},
 	}}
 	dir := t.TempDir()
 	rec, _, done := startRun(t, dir, p, nil)
-	awaitEvent(t, rec, api.ServiceReady, "db", 5*time.Second)
 	awaitEvent(t, rec, api.StepFinished, "db", 5*time.Second)
+	if _, err := os.Stat(bound); err != nil {
+		t.Fatalf("the server never listened: %v", err)
+	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	for listening(port) {
@@ -112,8 +118,11 @@ func TestRetryingAConsumerDuringItsServicesStopGraceWaitsForTheRestart(t *testin
 // Two consumers retried back to back both wait for the one service the
 // first retry revived: the second retry finds it unsettled and not yet
 // dispatched, or dispatched and still being probed, neither of which is
-// ready. a lingers on its second run so the service stays up until b's
-// retry has landed whatever the scheduling: one restart, never two.
+// ready. b's retry may also land in the moment the scheduler has marked the
+// revived service running but not yet dispatched it, which must read as
+// live rather than stopping. a lingers on its second run so the service
+// stays up until b's retry has landed whatever the scheduling: one restart,
+// never two.
 func TestTwoConsumersRetriedBackToBackBothWaitForTheRevivedService(t *testing.T) {
 	marks := t.TempDir()
 	lingering := retriedConsumer(filepath.Join(marks, "a"))
@@ -154,6 +163,9 @@ func TestTwoConsumersRetriedBackToBackBothWaitForTheRevivedService(t *testing.T)
 	}
 	if attemptIndex(events, api.ServiceReady, "db", 3) >= 0 {
 		t.Error("db was restarted twice: the second retry should wait for the first one's restart")
+		for _, e := range events {
+			t.Logf("%d %s %s #%d %s", e.Seq, e.Type, e.Step, e.Attempt, e.Payload)
+		}
 	}
 	states := foldStates(t, dir)
 	for _, step := range []string{"a", "b"} {
@@ -163,6 +175,62 @@ func TestTwoConsumersRetriedBackToBackBothWaitForTheRevivedService(t *testing.T)
 		if states[step] != api.StateRecovered {
 			t.Errorf("%s = %s, want recovered", step, states[step])
 		}
+	}
+}
+
+// A retried SERVICE whose own service need does not come back is skipped
+// without ever running, and a consumer retried right behind it, waiting for
+// that retried service's execution, is told so rather than left waiting.
+//
+// a serves once and fails on its restart (after a second, which is the
+// window the two retries land in); b needs a, is ready once and dies a
+// second later; c needs b and fails on its first run because b died under
+// it. keep holds the run open.
+func TestAConsumerOfARetriedServiceThatNeverRunsIsNotLeftWaiting(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "a-ran")
+	a := serveNode(t, "a", freePort(t), false)
+	self := a.Cmd[0]
+	a.Cmd = []string{"sh", "-c", fmt.Sprintf(
+		`if [ -f %s ]; then sleep 1; exit 1; fi; touch %s; exec %s '-test.run=^TestHelperServe$'`,
+		marker, marker, self)}
+	b := serveNode(t, "b", freePort(t), false)
+	b.Needs = []string{"a"}
+	b.Env = append(b.Env, "SENRO_TEST_SERVE_EXIT_AFTER_MS=1000")
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{
+		a, b,
+		{ID: "keep", Kind: "exec", Cmd: []string{"sleep", "8"}},
+		{ID: "c", Kind: "exec", Needs: []string{"b"}, Cmd: []string{"sh", "-c", "sleep 2; exit 1"}},
+	}}
+	dir := t.TempDir()
+	csink := newControlSink()
+	cFinished := make(chan api.Event, 4)
+	csink.onEmit = func(e api.Event) {
+		if e.Type == api.StepFinished && e.Step == "c" {
+			cFinished <- e
+		}
+	}
+	out := runAsync(context.Background(), p, engine.Options{
+		Dir: dir, Executor: localexec.New(dir, nil), Sink: csink, MaxParallel: 4, RunID: "01NEVERRUNS",
+	})
+
+	waitForEvent(t, cFinished, func(api.Event) bool { return true })
+	for _, step := range []string{"b", "c"} {
+		resp := sendSettled(t, csink, sink.ControlRequest{
+			ID: "r-" + step, Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": step},
+		})
+		if !resp.OK {
+			t.Fatalf("step.retry %s response = %+v, want OK", step, resp)
+		}
+	}
+	// keep ends at 8s; a consumer left waiting would hold the run until the
+	// test's own deadline.
+	awaitResult(t, out, 15*time.Second)
+	states := foldStates(t, dir)
+	if states["b"] != api.StateSkippedUpstreamFailed {
+		t.Errorf("b = %s, want skipped_upstream_failed: its need a did not come back", states["b"])
+	}
+	if states["c"] != api.StateSkippedUpstreamFailed {
+		t.Errorf("c = %s, want skipped_upstream_failed: the b it waited for never ran", states["c"])
 	}
 }
 
