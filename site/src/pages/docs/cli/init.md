@@ -106,10 +106,11 @@ The file is a Go package, so it needs a module. `senro init` handles three cases
 
 - If `DIR/go.mod` exists (a Go repository) and `--out` is inside `DIR`, the pipeline joins that
   module.
-- If `--out` is somewhere else (an absolute path, say, or `../ci`), it gets a module of its own:
-  `<out>/go.mod` is used as it is when it exists.
-- Otherwise it writes `<out>/go.mod`, with the module path `<DIR's name>/<out's name>` (so
-  `myrepo/ci` by default) and the Go version of the toolchain running `senro`.
+- Otherwise the pipeline gets a module of its own at `<out>/go.mod`. That covers a repository
+  with no `go.mod` and an `--out` somewhere else (an absolute path, say, or `../ci`). An existing
+  `<out>/go.mod` is used as it is; a missing one is written with the module path
+  `<DIR's name>/<out's name>` (so `myrepo/ci` by default) and the Go version of the toolchain
+  running `senro`.
 
 Then, in the module's directory, it runs `go get github.com/xavidop/senro@<version>` and
 `go mod tidy`. The version is the one `senro` itself was built from, or `latest` for a development
@@ -141,8 +142,8 @@ Next: senro run ./ci
 ```
 
 - `Wrote <out>/go.mod` appears only when `senro init` created the module file.
-- When it joined an existing module instead, and both commands succeeded, a line
-  `Updated go.mod: go get github.com/xavidop/senro@<version>` takes its place.
+- When it used an existing module instead (`DIR`'s, or one already at `<out>`), and both commands
+  succeeded, a line `Updated go.mod: go get github.com/xavidop/senro@<version>` takes its place.
 - `Next:` follows `--out`: `senro run ./<out>`, or the bare path for an absolute `--out`. The path is
   shell-quoted when it needs it. When the process is not running in `DIR`, it is prefixed with
   `cd <DIR> &&`.
