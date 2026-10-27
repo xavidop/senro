@@ -101,11 +101,14 @@ type Addressable interface { HostAddress(ctx context.Context, port int) (string,
 
 Consumers get, for each service they `Need` directly, `SENRO_SERVICE_<ID>_HOST` and
 `SENRO_SERVICE_<ID>_PORT_<declared>` where `<ID>` is the step id upper-cased with every
-non-alphanumeric rune replaced by `_` (`db` → `DB`, `infra/db` → `INFRA_DB`). A local consumer
-gets the host address as published. A container consumer gets host `host.docker.internal` and the
-published host port; its container is created with `--add-host host.docker.internal:host-gateway`
-(`dockerd.ContainerSpec.ExtraHosts`, new), which is what makes the one address scheme work on
-Linux as well as Docker Desktop. These variables never enter a cache key: they change every run,
+non-alphanumeric rune replaced by `_` (`db` → `DB`, `infra/db` → `INFRA_DB`). (Amended in the
+final review.) A local consumer gets the published coordinator address; a container consumer of a
+CONTAINER service gets that container's bridge IP and the declared port
+(`executor.ContainerAddressable`, from `NetworkSettings.IPAddress`), because native Linux cannot
+route a container to the coordinator's loopback. A container consumer of a LOCAL service gets
+`host.docker.internal` and the declared port via `--add-host host.docker.internal:host-gateway`
+(`dockerd.ContainerSpec.ExtraHosts`), with the documented Linux caveat that the local service must
+listen beyond `127.0.0.1`. These variables never enter a cache key: they change every run,
 exactly like the trace context the engine already injects.
 
 ### Lifecycle in the engine

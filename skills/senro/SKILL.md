@@ -251,17 +251,30 @@ verify.Step("integration", exec.Command("go", "test", "./store/...")).Needs("db"
   still waiting are `skipped_upstream_failed`; run cancelled before ready is
   `cancelled`, after ready `succeeded`.
 - Addresses, for each service a consumer `Needs` DIRECTLY:
-  `SENRO_SERVICE_<ID>_HOST` and `SENRO_SERVICE_<ID>_PORT_<declared>` whose
-  value is the PUBLISHED host port. `<ID>` is the id upper-cased, every
-  non-alphanumeric rune `_` (`infra/db` is `INFRA_DB`). Local consumer:
-  `127.0.0.1`. Container consumer: `host.docker.internal`, its container
-  created with `--add-host host.docker.internal:host-gateway`. A local service
+  `SENRO_SERVICE_<ID>_HOST` and `SENRO_SERVICE_<ID>_PORT_<declared>` (the
+  port to dial from where the consumer runs). `<ID>` is the id upper-cased,
+  every non-alphanumeric rune `_` (`infra/db` is `INFRA_DB`). A local service
   binds its declared port itself; a container service is published to
-  `127.0.0.1` on a free port. Never part of a cache key.
-- `Build` refuses: a func-kind service, no ports, a probe on an undeclared
-  port, an HTTP path without a leading `/`, `Retry`, `Pure`, `Generates`,
-  `OnFailure`/`Always`, a service as a handler, and any executor but local or
-  container.
+  `127.0.0.1` on a free port. By (service, consumer): local/local
+  `127.0.0.1`:declared; container/local `127.0.0.1`:published;
+  container/container the service container's bridge IP:declared;
+  local/container `host.docker.internal`:declared, via
+  `--add-host host.docker.internal:host-gateway` (on native Linux the local
+  service must listen on all interfaces or the gateway, and a firewall such
+  as ufw must allow the bridge). `service.ready` shows the published address.
+  Addresses never enter a cache key; a Pure consumer's key does carry each
+  direct service's node digest.
+- TCP probe: ready when a connection is accepted and not dropped within
+  200 ms. A local service's probe dials 127.0.0.1 (IPv4 only), and a local
+  service whose port is already taken fails `port N is already in use`.
+- A consumer retried or rerun after its service stopped restarts it first.
+- A service mounts its workspaces read-only, holds them only until its
+  process starts, and never snapshots them.
+- `Build` refuses: a func-kind service, no ports, a port outside 1..65535 or
+  repeated, a probe on an undeclared port, an HTTP path without a leading
+  `/`, a TCP probe with a path, a negative ReadyTimeout/StopGrace, `Retry`,
+  `Pure`, `Generates`, `OnFailure`/`Always`, a service as a handler, and any
+  executor but local or container.
 - Fold: `step.created` carries `service: true` (`StepState.IsService`);
   `service.ready` sets `StepState.Service` (`Ready` time, `Endpoints`), kept
   after the stop; `(*StepState).Ready()` is true only while it is up. TUI

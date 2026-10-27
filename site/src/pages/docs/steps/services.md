@@ -71,9 +71,23 @@ api := infra.Service("api", exec.Command("./bin/api"),
 declared is refused at `Build`, not silently trusted. An HTTP probe follows no redirect: a `302`
 to a login page counts as up, and a `503` from a server still starting does not.
 
+A TCP probe passes when a connection is accepted **and not dropped**: senro waits 200 ms on it,
+and silence or any bytes (a greeting) mean ready, while a connection closed at once means nothing
+is listening yet. That matters for a container. Docker's port forwarder accepts on the published
+port from the moment the container starts, before the server inside is listening, and drops each
+connection it can't pass on. A server that accepts and then hangs up straight away without a
+word never reads as ready; give it an HTTP probe, or a port that holds the connection.
+
 **The probe runs from the coordinator**, against the address the service is published on. That is
-the vantage the dependent steps have, and the one the engine can use on every executor: a probe
-that ran inside the service's container would pass for a port the host can't reach.
+the vantage a person on the coordinator has, and the one the engine can use on every executor: a
+probe that ran inside the service's container would pass for a port the host can't reach. For a
+local service that address is `127.0.0.1` on the declared port, IPv4: a server bound only to `::1`
+never becomes ready. Bind `127.0.0.1` or every interface.
+
+A local service whose declared port something on the coordinator already holds is not started:
+it fails with `localexec: port 5432 is already in use`. Otherwise the probe would pass against
+whatever owns the port, your own database or a previous run's leftover, and hand that to the
+consumers as this service.
 
 ## Where the service is: `SENRO_SERVICE_*`
 
@@ -82,22 +96,34 @@ A step that names a service in its `Needs` gets two kinds of variable for it:
 | Variable | Value |
 |---|---|
 | `SENRO_SERVICE_<ID>_HOST` | The host to connect to |
-| `SENRO_SERVICE_<ID>_PORT_<declared>` | The **published** host port for that declared port, one per port |
+| `SENRO_SERVICE_<ID>_PORT_<declared>` | The port to connect to for that declared port, one per port |
 
 `<ID>` is the step id upper-cased, with every character that is not an ASCII letter or digit
 replaced by `_`: `db` is `SENRO_SERVICE_DB`, `infra/db` is `SENRO_SERVICE_INFRA_DB`. The port in the
-variable's **name** is the one you declared; its **value** is the port on the coordinator. For the
-`api` service above, `SENRO_SERVICE_API_PORT_8080` might be `54321`.
+variable's **name** is always the one you declared; its **value** is the port to dial from where
+the consumer runs, which is not always the same number.
 
-Every service is reached through the coordinator's loopback, whichever executor runs it. A local
-process binds its declared port itself, so there the two ports are the same. A container's port is
-published by the daemon to `127.0.0.1` on a free port. What host a consumer is given depends on
-where **the consumer** runs:
+A local service binds its declared port itself on the coordinator. A container service's ports
+are published by the daemon to `127.0.0.1` on free ports. The address a consumer is given depends
+on **both** ends, because no one address works for every pair on native Linux, where a container
+can't reach the coordinator's loopback:
 
-| Consumer runs on | `_HOST` | |
-|---|---|---|
-| The local executor | `127.0.0.1` | The published address as it is |
-| The container executor | `host.docker.internal` | Its container is created with `--add-host host.docker.internal:host-gateway`, which is what makes the name resolve on Linux as well as on Docker Desktop |
+| Service | Consumer | `_HOST` | `_PORT_<declared>` |
+|---|---|---|---|
+| local | local | `127.0.0.1` | the declared port |
+| container | local | `127.0.0.1` | the published port, `54321` say |
+| container | container | the service container's bridge IP, `172.17.0.3` say | the declared port |
+| local | container | `host.docker.internal` | the declared port |
+
+`service.ready` and `senro up` always show the published coordinator address, the one a person on
+the coordinator dials.
+
+**A local service consumed from a container, on native Linux.** The consumer's container is
+created with `--add-host host.docker.internal:host-gateway`, so the name resolves to the Docker
+bridge's gateway, an address of the coordinator's on the bridge network. A server bound to
+`127.0.0.1` is not listening there. Bind it to every interface (`0.0.0.0`) or to the gateway's
+address, and check that a host firewall such as `ufw` lets the bridge reach the port. Docker
+Desktop forwards `host.docker.internal` to the host's loopback, so there it works either way.
 
 Three things worth knowing:
 
@@ -106,7 +132,9 @@ Three things worth knowing:
   your step is done.
 - **The variables never enter a cache key.** A published port is different every run, so digesting
   it would make a `Pure()` consumer miss every time. They are left out for the same reason the
-  trace context is. See [Cache keys](/docs/data/cache-keys/).
+  trace context is. What the service **is** does enter: a `Pure()` consumer's key carries the
+  digest of each service it needs directly, so changing the service's image or command misses.
+  See [Cache keys](/docs/data/cache-keys/).
 - **The address carries a host and a port, nothing else.** A credential the service needs is the
   service's own `SecretEnv`, never part of what its consumers are told.
 
@@ -129,8 +157,16 @@ flowchart LR
 3. **Ready.** senro emits `service.ready` with every endpoint, then dispatches the steps that need
    it. None of them starts before that event is in the ledger.
 4. **Stopped** once every step that names it in `Needs` has settled, or straight after it became
-   ready when nothing needs it. senro asks it to stop (`SIGTERM` locally, `docker stop` in a
-   container), waits up to `StopGrace`, then kills it.
+   ready when nothing needs it. senro asks it to stop (`SIGTERM` to its process group locally,
+   `docker stop` in a container), waits up to `StopGrace`, then kills it. A container service runs
+   under an init (`docker run --init`), so a server that installs no `SIGTERM` handler of its own
+   still stops on the signal rather than at the kill. Locally, a wrapper that already exited on its
+   own has its process group killed anyway, so a child it left behind doesn't keep the port.
+
+A consumer that runs again after its service stopped, through `step.retry`, `run.rerun_from` or an
+accepted analysis, restarts the service first: the service gets a new attempt, a new probe and new
+endpoints, and the consumer starts once that `service.ready` is in the ledger. A service that
+fails to come back leaves the consumer `skipped_upstream_failed`.
 
 A ready service is waiting, not working, so it gives back its parallel slot the moment it is ready.
 Holding it for its whole life would starve its own consumers under a small limit, and deadlock them
@@ -184,8 +220,11 @@ Each of these assumes a step that finishes, or a place senro can't reach:
 - **A service on a [Go function step](/docs/steps/functions/).** A function runs in-process and
   returns; there is no process to keep up and no port for it to listen on.
 - **No ports.** The probe needs one, and the service's consumers reach it through one.
+- **A port outside 1 to 65535, or the same port twice.**
 - **A probe on a port not in `Ports`.**
-- **An HTTP probe whose path doesn't start with `/`.**
+- **An HTTP probe whose path doesn't start with `/`, or a TCP probe with a path.** A TCP probe
+  sends nothing, so a path there means you wanted `service.HTTP`.
+- **A negative `ReadyTimeout` or `StopGrace`.**
 - **`Retry`.** A service that exits has failed, and restarting it would hand its consumers a
   different instance than the one they started against.
 - **`Pure`.** A service produces no result to cache, and a hit would skip starting the process its
@@ -222,8 +261,14 @@ The plain renderer prints `db ready at 127.0.0.1:54321 (port 5432)`, and the bro
   needs a tunnel. Both are follow-ups.
 - **TCP and HTTP probes only.** No command probe run inside the service, because both kinds run
   from the coordinator and one probe loop then serves every executor.
-- **No per-run network.** Service to service, and step to service, always goes through the
-  coordinator's published port.
+- **No per-run network.** Containers reach a container service on the daemon's default bridge,
+  and everything else goes through the coordinator. See the table above.
+- **A service reads its workspaces, it never produces them.** Its mounts are read-only, as a
+  handler's are, and are taken when it starts: senro holds a workspace for a service only until
+  its process is started, so a long-lived service can't block a sibling's cache restore into the
+  same workspace. That restore can replace files under a running service. A service takes no
+  snapshot when it stops, so nothing it writes reaches the ledger, a cache key or its consumers'
+  view of the workspace. Write scratch data to a temporary directory instead.
 - **No retries, `Pure`, `Generates` or handlers on a service.** See above.
 
 ## Where to go next

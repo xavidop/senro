@@ -37,7 +37,7 @@ today:
 | `senro shell` | yes | yes | yes, in a pod of its own | yes |
 | `senro shell --tty` | yes | yes | yes, a pty the runtime allocates | `executor_no_terminal` |
 | [Services](/docs/steps/services/) | yes, the process binds its declared port | yes, published to `127.0.0.1` on a free port | refused at `Build()` | refused at `Build()` |
-| Reaches a service at | `127.0.0.1` | `host.docker.internal`, with a `host-gateway` entry | n/a | n/a |
+| Reaches a service at | `127.0.0.1`: the declared port of a local service, the published port of a container one | a container service's bridge IP on its declared port; a local service at `host.docker.internal` (a `host-gateway` entry), which on native Linux must listen beyond `127.0.0.1` | n/a | n/a |
 | stdout and stderr | kept apart | kept apart | merged into one stream | kept apart |
 | Private registries | nothing to pull | `container.RegistryAuth` | the node pulls, via an `imagePullSecret` you set | nothing to pull |
 | Cache class | `local/<os>/<arch>` | platform and resolved image digest | image digest and platform, never the namespace | `ssh/<os>/<arch>`, or your `ssh.CacheClass` |

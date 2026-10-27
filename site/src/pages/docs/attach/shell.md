@@ -76,6 +76,12 @@ event stream the hold is a `breakpoint.hit` with `"reason":"failure"`, and a cli
 - **A hold costs the run something while it lasts.** The held step keeps its parallel slot, and a
   sibling whose cache hit would restore into a workspace the held step mounts waits for the
   release. Other work carries on. `breakpoint.set` on a held step is refused with `step_held`.
+- **A step armed while it ran and then held takes two releases.** The first `B` clears the armed
+  breakpoint and the step stays held; the second releases the hold. `control.applied` says which
+  in its `released` argument (`breakpoint` or `hold`).
+- **A hold needs someone to release it.** With nothing attached to the run (no attach server, or a
+  read-only one), `--break-on-failure` prints a warning and holds nothing, rather than leaving a
+  failed step waiting for a release that can't come.
 
 From Go, the run option is `senro.WithBreakOnFailure()`. `senro run` passes it to the pipeline as
 `SENRO_BREAK_ON_FAILURE=1`.
@@ -87,7 +93,7 @@ From Go, the run option is `senro.WithBreakOnFailure()`. `senro run` passes it t
 | **Workspaces** | Every workspace the step mounts, at the same paths, carrying whatever is in them now. |
 | **Working directory** | The step's own, so a bare `ls` means what it means in the step. |
 | **Executor** | The step's. A container step's session runs inside the same image. |
-| **Environment** | The step's declared environment, minus anything naming a secret. |
+| **Environment** | The step's declared environment, minus anything naming a secret, plus the `SENRO_SERVICE_*` addresses of the services it needs that are still up. |
 | **Secrets** | **None.** Never. See below. |
 
 Every mount is read-only, whatever mode the step declared, and on the container and Kubernetes
@@ -205,14 +211,17 @@ senro shell: offline, workspaces restored to /tmp/senro-shell-20260812T151058-54
   even while the run is live. `--offline`, `--keep` and `--cache-dir` need `--run`: `--pid` and
   `--addr` always name a live run.
 - **What is restored.** The latest snapshot the step itself recorded for each workspace, at the
-  step's own mount paths under the temporary directory. The shell starts in the mount at the step's
-  `WorkDir`, else the first mount. A step that recorded no snapshot is refused, naming it.
+  step's own mount paths under the temporary directory. The shell starts at the step's `WorkDir`:
+  the mount there, or the same path inside the mount that contains it (`/src/app` under a mount at
+  `/src`), else the first mount. A step that recorded no snapshot is refused, naming it.
 - **What it runs.** This machine's own `$SHELL` (`/bin/sh` when unset), or the command after
   `--cmd` or `--`. **It is the coordinator's shell over restored files, not the step's image**: a
   tool the step's container had and this machine lacks is missing.
 - **The environment.** The step's declared environment minus anything naming a secret, your own
   `PATH`, `HOME` and `TERM`, `SENRO_SHELL=1`, and `SENRO_SHELL_RUN` and `SENRO_SHELL_STEP` naming
-  where you stand. No secrets, by the same rule a live session follows.
+  where you stand. No secrets, by the same rule a live session follows. Variables that would run
+  code in your own shell are dropped too: `LD_*`, `DYLD_*`, `BASH_ENV`, `ENV`, `ZDOTDIR`,
+  `PROMPT_COMMAND`, `SHELLOPTS`, `BASHOPTS`, `IFS` and `PS4`.
 - **The directory is yours.** Edit anything; nothing is written back. It is removed when the shell
   exits, unless you pass `--keep`. `--cache-dir` names the content store to restore from, as for
   `senro ws`.
