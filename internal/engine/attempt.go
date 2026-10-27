@@ -569,10 +569,11 @@ func (rc *runCore) prepareAttempt(
 		spec.Ports = n.Service.Ports
 	}
 	if len(serviceEnv) > 0 && consumesFromContainer(n) {
-		// The one address scheme a container consumer is given
-		// (host.docker.internal and the published port) resolves only with
-		// this entry on Linux; Docker Desktop has it built in, and adding it
-		// there is harmless. See serviceTable.envFor.
+		// A container consumer of a LOCAL service is given
+		// host.docker.internal, which resolves only with this entry on
+		// Linux; Docker Desktop has it built in, and adding it there (or for
+		// a consumer of a container service only, which is given an IP) is
+		// harmless. See serviceTable.envFor.
 		spec.ExtraHosts = []string{dockerHostGateway}
 	}
 	s.sb, err = s.ex.Sandbox(attemptCtx, spec)

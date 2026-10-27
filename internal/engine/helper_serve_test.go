@@ -3,6 +3,7 @@
 package engine_test
 
 import (
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -66,13 +67,20 @@ func TestHelperServe(t *testing.T) {
 		})
 		go func() { _ = http.Serve(ln, mux) }()
 	} else {
+		// Each connection is held until the client hangs up, as a real
+		// server waiting for a request would: the TCP probe reads a
+		// connection dropped at once as nothing listening (a port forwarder
+		// with no server behind it).
 		go func() {
 			for {
 				c, err := ln.Accept()
 				if err != nil {
 					return
 				}
-				_ = c.Close()
+				go func() {
+					_, _ = io.Copy(io.Discard, c)
+					_ = c.Close()
+				}()
 			}
 		}()
 	}

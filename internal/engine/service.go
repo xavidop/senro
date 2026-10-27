@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -27,76 +28,156 @@ var probeInterval = 250 * time.Millisecond
 // probe that will never pass is the one outcome a deadline exists to prevent.
 const defaultReadyTimeout = 60 * time.Second
 
-// dockerHostName is the host a container consumer reaches a service by, and
-// dockerHostGateway the ExtraHosts entry that makes it resolve on Linux.
-// One scheme for every container consumer: the service is published on the
-// coordinator's loopback, whichever executor runs it, and from inside a
-// container the coordinator is the gateway.
+// dockerHostName is the host a container consumer reaches a LOCAL service
+// by, and dockerHostGateway the ExtraHosts entry that makes it resolve on
+// Linux (Docker Desktop has it built in). A local service binds its declared
+// port on the coordinator, and from inside a container the coordinator is
+// the gateway.
 const (
 	dockerHostName    = "host.docker.internal"
 	dockerHostGateway = dockerHostName + ":host-gateway"
 )
 
 // serviceTable is where every ready service in this run answers, keyed by
-// step id: written by runService once the probe passes, read by
-// prepareAttempt for each consumer's environment. Its own lock rather than
-// oc.mu: a consumer's attempt setup reads it from a step goroutine, and
-// nothing here needs to be consistent with the scheduler's maps, because a
-// consumer is dispatched only after publish has returned (markReady follows
-// it).
+// step id: written by runService once the probe passes, withdrawn once it
+// stops, read by prepareAttempt for each consumer's environment. Its own
+// lock rather than oc.mu: a consumer's attempt setup reads it from a step
+// goroutine, and nothing here needs to be consistent with the scheduler's
+// maps, because a consumer is dispatched only after publish has returned
+// (markReady follows it).
 type serviceTable struct {
-	mu        sync.Mutex
-	endpoints map[string][]api.Endpoint
+	mu      sync.Mutex
+	entries map[string]serviceEntry
+	// waiters are closed by the next publish or withdraw of their step: how
+	// a step.retry of a consumer whose service had stopped waits for the
+	// restarted one (see handleStepRetry). One per step, made on demand.
+	waiters map[string]chan struct{}
 }
 
-// publish records step's endpoints. A rerun's new execution replaces the
+// serviceEntry is one ready service: which executor runs it, its declared
+// ports as published on the coordinator (what service.ready reports), and,
+// for a container service, the address another container dials each
+// declared port at (executor.ContainerAddressable), nil otherwise.
+type serviceEntry struct {
+	kind        string
+	published   []api.Endpoint
+	inContainer map[int]string
+}
+
+// publish records step's addresses. A rerun's new execution replaces the
 // previous one's, which is the address its consumers must now be given.
-func (t *serviceTable) publish(step string, eps []api.Endpoint) {
+func (t *serviceTable) publish(step string, e serviceEntry) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.endpoints == nil {
-		t.endpoints = make(map[string][]api.Endpoint)
+	if t.entries == nil {
+		t.entries = make(map[string]serviceEntry)
 	}
-	t.endpoints[step] = eps
+	t.entries[step] = e
+	t.wakeLocked(step)
 }
 
-// envFor is the SENRO_SERVICE_* environment for consumer: for each service
-// it needs DIRECTLY, the host and one variable per declared port, carrying
-// the PUBLISHED host port. A transitive service is not included: a step
-// that wants to reach one names it in Needs, which is also what keeps the
-// service up until that step is done.
+// withdraw forgets step's addresses once it has stopped, for whatever
+// reason: a consumer set up after this (a retry, a rerun, a shell) must not
+// be handed an address nothing answers on.
+func (t *serviceTable) withdraw(step string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.entries, step)
+	t.wakeLocked(step)
+}
+
+func (t *serviceTable) wakeLocked(step string) {
+	if ch, ok := t.waiters[step]; ok {
+		close(ch)
+		delete(t.waiters, step)
+	}
+}
+
+// wait returns a channel closed once step is published or withdrawn; at
+// once when it is published already.
+func (t *serviceTable) wait(step string) <-chan struct{} {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, ok := t.entries[step]; ok {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	if t.waiters == nil {
+		t.waiters = make(map[string]chan struct{})
+	}
+	ch, ok := t.waiters[step]
+	if !ok {
+		ch = make(chan struct{})
+		t.waiters[step] = ch
+	}
+	return ch
+}
+
+// ready reports whether step is published right now.
+func (t *serviceTable) ready(step string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, ok := t.entries[step]
+	return ok
+}
+
+// envFor is the SENRO_SERVICE_* environment for consumer: for each ready
+// service it needs DIRECTLY, the host and one variable per declared port. A
+// transitive service is not included: a step that wants to reach one names
+// it in Needs, which is also what keeps the service up until that step is
+// done. A service that has stopped is not in the table, so it is not
+// included either.
 //
-// The host depends on the CONSUMER's executor, not the service's: every
-// service is published on the coordinator, so a process on the coordinator
-// reaches it as published, and one in a container reaches the coordinator
-// as host.docker.internal on the same port.
+// The address depends on both ends' executors, because no one address works
+// for all four pairs on native Linux, where a container cannot reach the
+// coordinator's loopback:
+//
+//   - a local consumer dials what is published on the coordinator, which is
+//     the declared port for a local service and 127.0.0.1:<ephemeral> for a
+//     container one;
+//   - a container consumer of a container service dials the service
+//     container's bridge IP on the declared port, container to container;
+//   - a container consumer of a local service dials host.docker.internal
+//     (made to resolve by dockerHostGateway) on the declared port, which the
+//     local service binds itself.
 //
 // In Needs order, so the environment is deterministic.
 func (t *serviceTable) envFor(consumer *plan.Node) []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	boxed := consumesFromContainer(consumer)
 	var env []string
 	for _, need := range consumer.Needs {
-		eps, ok := t.endpoints[need]
-		if !ok || len(eps) == 0 {
+		e, ok := t.entries[need]
+		if !ok || len(e.published) == 0 {
 			continue
 		}
 		name := serviceEnvName(need)
-		host, _, err := net.SplitHostPort(eps[0].Address)
-		if err != nil {
-			continue
-		}
-		if consumesFromContainer(consumer) {
-			host = dockerHostName
-		}
-		env = append(env, name+"_HOST="+host)
-		for _, ep := range eps {
-			_, port, err := net.SplitHostPort(ep.Address)
+		var host string
+		ports := make([]string, 0, len(e.published))
+		for _, ep := range e.published {
+			addr := ep.Address
+			switch {
+			case boxed && e.kind == plan.ExecutorContainer && e.inContainer[ep.Port] != "":
+				addr = e.inContainer[ep.Port]
+			case boxed && e.kind != plan.ExecutorContainer:
+				addr = net.JoinHostPort(dockerHostName, strconv.Itoa(ep.Port))
+			}
+			h, port, err := net.SplitHostPort(addr)
 			if err != nil {
 				continue
 			}
-			env = append(env, name+"_PORT_"+strconv.Itoa(ep.Port)+"="+port)
+			if host == "" {
+				host = h
+			}
+			ports = append(ports, name+"_PORT_"+strconv.Itoa(ep.Port)+"="+port)
 		}
+		if host == "" {
+			continue
+		}
+		env = append(env, name+"_HOST="+host)
+		env = append(env, ports...)
 	}
 	return env
 }
@@ -116,7 +197,8 @@ func executorKind(n *plan.Node) string {
 }
 
 // consumesFromContainer reports whether n runs in a container, and so
-// reaches a service through the gateway rather than on loopback.
+// reaches a service by a container or gateway address rather than on the
+// coordinator's loopback (see serviceTable.envFor).
 func consumesFromContainer(n *plan.Node) bool {
 	return executorKind(n) == plan.ExecutorContainer
 }
@@ -144,9 +226,10 @@ func serviceEnvName(stepID string) string {
 
 // probeOnce runs p against address once. nil means ready.
 //
-// TCP is a connection accepted and closed: the cheapest evidence a server is
-// listening. HTTP is a GET answered 200..399, so a redirect to a login page
-// counts as up, and a 5xx from a server still starting does not.
+// TCP is a connection accepted and then not dropped (see tcpAnswered): the
+// cheapest evidence a server is listening. HTTP is a GET answered 200..399,
+// so a redirect to a login page counts as up, and a 5xx from a server still
+// starting does not.
 func probeOnce(ctx context.Context, p plan.ProbeSpec, address string) error {
 	if p.Kind == plan.ServiceProbeHTTP {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address+p.Path, nil)
@@ -174,7 +257,40 @@ func probeOnce(ctx context.Context, p plan.ProbeSpec, address string) error {
 	if err != nil {
 		return err
 	}
-	return c.Close()
+	defer func() { _ = c.Close() }()
+	return tcpAnswered(c)
+}
+
+// tcpSettle is how long a TCP probe waits on an accepted connection for the
+// far end to drop it.
+const tcpSettle = 200 * time.Millisecond
+
+// tcpAnswered reads the verdict of an accepted connection: silence for
+// tcpSettle, or any bytes, is a server; an immediate EOF or reset is not.
+//
+// An accepted connect alone is not evidence on a container's published
+// port: Docker's port forwarder (docker-proxy, or Desktop's vpnkit) owns the
+// host side from the moment the container starts, accepts every connection,
+// and drops it only once it fails to reach the container's port. A server
+// that is listening either holds the connection open waiting for a request
+// or speaks first (a greeting); neither closes it under 200 ms.
+func tcpAnswered(c net.Conn) error {
+	if err := c.SetReadDeadline(time.Now().Add(tcpSettle)); err != nil {
+		return err
+	}
+	var one [1]byte
+	n, err := c.Read(one[:])
+	if n > 0 {
+		return nil
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return nil
+	}
+	if err == nil || errors.Is(err, io.EOF) {
+		return errors.New("connection closed before the server answered")
+	}
+	return err
 }
 
 // readyTimeout is how long n may take to pass its probe: ReadyTimeoutMS, or
@@ -227,6 +343,11 @@ func (rc *runCore) runService(
 	defer giveBack()
 
 	res := rc.serviceAttempt(ctx, n, opts, logs, attempt, start, stop, giveBack, wake)
+	// Before finishStep, so by the time the scheduler sees this service
+	// terminal no consumer set up afterwards (a retry, a rerun, a shell) can
+	// be handed its address, and a retry waiting on it (handleStepRetry)
+	// learns it is gone.
+	rc.services.withdraw(n.ID)
 	// After serviceAttempt has returned: its writer closes have run, so the
 	// log files are final (see archiveAttempt).
 	rc.archiveAttempt(logs, n.ID, attempt)
@@ -378,6 +499,21 @@ func (rc *runCore) serviceAttempt(
 		}
 		eps = append(eps, api.Endpoint{Port: port, Address: a})
 	}
+	// Where another container reaches each port, for a container consumer
+	// (see serviceTable.envFor). Not in service.ready: that event reports
+	// what a person on the coordinator dials, which is the published port.
+	var inContainer map[int]string
+	if ca, ok := s.sb.(executor.ContainerAddressable); ok {
+		inContainer = make(map[int]string, len(n.Service.Ports))
+		for _, port := range n.Service.Ports {
+			a, err := ca.ContainerAddress(ctx, port)
+			if err != nil {
+				_ = stopNow()
+				return serviceFailure(ctx, err)
+			}
+			inContainer[port] = a
+		}
+	}
 	rc.emit(api.Event{
 		Type: api.ServiceReady, Step: n.ID, Attempt: attempt,
 		Payload: mustMarshal(api.ServiceReadyBody{Endpoints: eps, Duration: time.Since(start)}),
@@ -386,7 +522,7 @@ func (rc *runCore) serviceAttempt(
 	// the service as ready, so no consumer is dispatched to an environment
 	// missing its address; and the event precedes both, so service.ready is
 	// in the ledger before any consumer's step.started.
-	rc.services.publish(n.ID, eps)
+	rc.services.publish(n.ID, serviceEntry{kind: executorKind(n), published: eps, inContainer: inContainer})
 	rc.oc.markReady(n.ID)
 	release()
 	wake()

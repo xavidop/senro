@@ -420,6 +420,95 @@ func TestAContainerServiceIsReachableFromALocalConsumer(t *testing.T) {
 	}
 }
 
+// containerService is the daemon-backed setup the container service tests
+// share: a store, a container executor on busybox, and the spec it serves.
+func containerService(t *testing.T) (*storage.Storage, plan.ExecutorSpec, executor.Executor) {
+	t.Helper()
+	cli := dockertest.Require(t)
+	dockertest.Pull(t, cli)
+	store, err := storage.Open(filepath.Join(t.TempDir(), "cache"))
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	spec := plan.ExecutorSpec{Kind: plan.ExecutorContainer, Image: dockertest.Image}
+	ex, err := containerexec.New(spec, store.Snapshotter,
+		containerexec.WithClient(cli), containerexec.WithRunID(testRunID(t)))
+	if err != nil {
+		t.Fatalf("containerexec.New: %v", err)
+	}
+	return store, spec, ex
+}
+
+// A container service that takes three seconds to listen is not ready
+// before it does. Docker's port forwarder accepts on the published port from
+// the moment the container starts, so a probe that only connected passed at
+// once; the probe must see the forwarder drop the connection for what it is.
+// Skips with no daemon.
+func TestAContainerServiceIsNotReadyBeforeItListens(t *testing.T) {
+	store, spec, ex := containerService(t)
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{
+		{ID: "web", Kind: "exec", Executor: &spec,
+			Cmd: []string{"sh", "-c", "sleep 3; exec httpd -f -p 8080"},
+			Service: &plan.ServiceSpec{
+				Ports: []int{8080}, Probe: plan.ProbeSpec{Kind: plan.ServiceProbeTCP, Port: 8080},
+				ReadyTimeoutMS: 30000, StopGraceMS: 1000,
+			}},
+	}}
+	dir := t.TempDir()
+	rec := sink.Recording()
+	status, err := engine.Run(context.Background(), p, engine.Options{
+		Dir: dir, RunID: "01SLOWLISTEN", Sink: rec, MaxParallel: 4, Storage: store,
+		Executor:  localexec.New(dir, store.Snapshotter),
+		Executors: map[string]executor.Executor{spec.Key(): ex},
+	})
+	if err != nil || status != api.RunSucceeded {
+		t.Fatalf("Run = %s, %v; want succeeded", status, err)
+	}
+	for _, e := range rec.Events() {
+		if e.Type != api.ServiceReady {
+			continue
+		}
+		var body api.ServiceReadyBody
+		if err := json.Unmarshal(e.Payload, &body); err != nil {
+			t.Fatalf("decoding service.ready: %v", err)
+		}
+		if body.Duration < 3*time.Second {
+			t.Errorf("service.ready after %v, want at least 3s: the probe passed before httpd listened", body.Duration)
+		}
+		return
+	}
+	t.Fatal("no service.ready")
+}
+
+// A container consumer of a container service reaches it container to
+// container: the service's bridge IP and the declared port, which works on
+// native Linux where the coordinator's loopback is out of a container's
+// reach. Skips with no daemon.
+func TestAContainerServiceIsReachableFromAContainerConsumer(t *testing.T) {
+	store, spec, ex := containerService(t)
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{
+		{ID: "web", Kind: "exec", Executor: &spec, Cmd: []string{"sh", "-c",
+			"mkdir -p /www && echo hello > /www/index.html && exec httpd -f -p 8080 -h /www"},
+			Service: &plan.ServiceSpec{
+				Ports: []int{8080}, Probe: plan.ProbeSpec{Kind: plan.ServiceProbeTCP, Port: 8080},
+				ReadyTimeoutMS: 30000, StopGraceMS: 1000,
+			}},
+		{ID: "use", Kind: "exec", Needs: []string{"web"}, Executor: &spec, Cmd: []string{"sh", "-c",
+			"wget -qO- http://$SENRO_SERVICE_WEB_HOST:$SENRO_SERVICE_WEB_PORT_8080/ | grep -q hello"}},
+	}}
+	dir := t.TempDir()
+	status, err := engine.Run(context.Background(), p, engine.Options{
+		Dir: dir, RunID: "01BOXTOBOX", Sink: sink.Nop(), MaxParallel: 4, Storage: store,
+		Executor:  localexec.New(dir, store.Snapshotter),
+		Executors: map[string]executor.Executor{spec.Key(): ex},
+	})
+	if err != nil || status != api.RunSucceeded {
+		_, fin := lastStepFinished(t, readLedger(t, dir), "use")
+		t.Fatalf("Run = %s, %v; want succeeded (use: %s %q)", status, err, fin.State, fin.Error)
+	}
+}
+
 // A service retried through step.retry runs as a service again: it becomes
 // ready on its new attempt, publishes, and a consumer still waiting runs
 // against it. The consumer waits behind gate (listed first in Needs) so the
