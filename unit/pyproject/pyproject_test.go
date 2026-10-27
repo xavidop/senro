@@ -66,6 +66,34 @@ func write(t *testing.T, files map[string]string) string {
 	return root
 }
 
+func TestIsDistribution(t *testing.T) {
+	root := write(t, map[string]string{
+		"named/pyproject.toml":  "[project]\nname = \"named\"\n",
+		"poetry/pyproject.toml": "[tool.poetry]\nname = \"poetry\"\n",
+		"tools/pyproject.toml":  "[tool.pytest.ini_options]\naddopts = \"-q\"\n",
+		"setuppy/setup.py":      "from setuptools import setup\nsetup()\n",
+		"setupcfg/setup.cfg":    "[metadata]\nname = cfg\n",
+		"ini/pytest.ini":        "[pytest]\n",
+		"broken/pyproject.toml": "[project\n",
+	})
+	for dir, want := range map[string]bool{
+		"named": true, "poetry": true, "setuppy": true, "setupcfg": true,
+		"tools": false, "ini": false,
+	} {
+		got, err := pyproject.IsDistribution(filepath.Join(root, dir))
+		if err != nil {
+			t.Errorf("%s: %v", dir, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("IsDistribution(%s) = %v, want %v", dir, got, want)
+		}
+	}
+	if _, err := pyproject.IsDistribution(filepath.Join(root, "broken")); err == nil {
+		t.Error("a pyproject.toml that does not parse is not an error")
+	}
+}
+
 func TestPackagesDiscoversEveryDistribution(t *testing.T) {
 	got := ids(t, pyproject.Packages(), workspace)
 	want := []string{

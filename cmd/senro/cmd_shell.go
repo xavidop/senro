@@ -30,11 +30,18 @@ const ttyBanner = "senro shell: terminal session. ^D ends it; ^C goes to the rem
 // and the wire in internal/source, so this resolves which live run to talk
 // to, hands over the three streams, and maps the result to an exit code.
 //
-// It requires a LIVE run and does not fall back to disk the way `senro
-// attach` can: a session stands inside the running engine's workspace
-// directories and needs that engine to create a sandbox. The error names
-// `senro ws pull`, which writes the same files out.
+// A session proper needs a LIVE run: it stands inside the running engine's
+// workspace directories and needs that engine to create a sandbox. A --run
+// naming no live run, or --offline, gets the offline form instead (see
+// shell_offline.go): the step's recorded workspaces restored into a
+// temporary directory and a local shell run there. --pid and --addr name a
+// live engine by construction and never fall back.
+//
+// --cmd takes the rest of argv as the command, so it is split off before
+// the flags are parsed: in `--cmd sh -c 'ls -la'` the -c is the command's,
+// not a flag of this one's.
 func cmdShell(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
+	args, cmdArgs, hasCmd := splitCmdArgs(args)
 	fs := flag.NewFlagSet("senro shell", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	pid := fs.Int("pid", 0, "open a shell on the live run with this pid")
@@ -48,6 +55,11 @@ func cmdShell(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	step := fs.String("step", "", "the step whose workspaces the session stands in (required)")
 	tty := fs.Bool("tty", false, "run the session on a real terminal: job control, line editing, "+
 		"^C as a signal, and a window size. Refused by an executor that cannot host one")
+	offline := fs.Bool("offline", false, "restore the --run's recorded workspaces for the step into a temporary "+
+		"directory and run a local shell there, even if the run is live")
+	keep := fs.Bool("keep", false, "offline: leave the restored directory behind on exit")
+	cacheDir := fs.String("cache-dir", "", "offline: the content store to restore from "+
+		"(default $SENRO_CACHE_DIR, else the platform cache directory)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -73,11 +85,34 @@ func cmdShell(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 			"a discovered run already records whether it speaks TLS")
 		return exitUsage
 	}
+	if (*offline || *keep || *cacheDir != "") && *runID == "" {
+		_, _ = fmt.Fprintln(stderr, "senro shell: --offline, --keep and --cache-dir describe the offline form, "+
+			"which reads a recorded run named by --run; --pid and --addr always name a live one")
+		return exitUsage
+	}
+	if hasCmd && (len(cmdArgs) == 0 || fs.NArg() > 0) {
+		_, _ = fmt.Fprintln(stderr, "senro shell: --cmd takes the rest of the arguments as the command: "+
+			"name one after it, and not a second one after --")
+		return exitUsage
+	}
+	cmd := fs.Args()
+	if hasCmd {
+		cmd = cmdArgs
+	}
+	if *offline {
+		return cmdShellOffline(*runID, *step, *cacheDir, *keep, false, cmd, stdin, stdout, stderr)
+	}
 
 	ctx, stop, _ := attachSignalContext(context.Background())
 	defer stop()
 
 	src, err := resolveShellSource(ctx, *pid, *runID, *addr, *useTLS)
+	if errors.Is(err, errRunNotLive) {
+		// Stopped now rather than deferred: the offline shell handles its
+		// own signals, and this context would cancel on the first ^C.
+		stop()
+		return cmdShellOffline(*runID, *step, *cacheDir, *keep, true, cmd, stdin, stdout, stderr)
+	}
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
 		return exitUsage
@@ -98,7 +133,7 @@ func cmdShell(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	}
 
 	shellReq := source.ShellRequest{
-		Step: *step, Cmd: fs.Args(), Stdin: stdin, Stdout: stdout, Stderr: stderr,
+		Step: *step, Cmd: cmd, Stdin: stdin, Stdout: stdout, Stderr: stderr,
 	}
 	if *tty {
 		// Raw mode and the size watcher belong to the CLIENT: the server
@@ -166,8 +201,13 @@ func shellExitCode(code int) int {
 	return code
 }
 
-// resolveShellSource finds the live run to open a session on. Unlike
-// resolveAttachSource it has no offline path at all; see cmdShell's own doc.
+// errRunNotLive is resolveShellSource's answer for a --run with no live
+// registration: not a failure, but cmdShell's cue to take the offline form.
+var errRunNotLive = errors.New("senro shell: no live run by that name")
+
+// resolveShellSource finds the live run to open a session on. A --run that
+// names no live run is errRunNotLive, which cmdShell turns into the offline
+// form; see its own doc.
 func resolveShellSource(ctx context.Context, pid int, runID, addr string, useTLS bool) (source.Source, error) {
 	// An explicit address skips discovery: the run is on another machine,
 	// and nothing in this machine's registry describes it.
@@ -192,16 +232,29 @@ func resolveShellSource(ctx context.Context, pid int, runID, addr string, useTLS
 				return connectLive(ctx, e)
 			}
 		}
-		return nil, fmt.Errorf(
-			"senro shell: no LIVE run named %q: a session needs the running engine that owns the "+
-				"run's workspaces. If the run has finished, `senro ws pull %s <workspace>` writes its "+
-				"files out instead", runID, runID)
+		return nil, errRunNotLive
 	}
 	e, err := selectEntry(pid)
 	if err != nil {
 		return nil, err
 	}
 	return connectLive(ctx, e)
+}
+
+// splitCmdArgs splits argv at the first --cmd that comes before any "--":
+// what precedes it is this command's flags, what follows it the command to
+// run. hasCmd is false when there is no such --cmd, and args comes back
+// whole.
+func splitCmdArgs(args []string) (flags, cmd []string, hasCmd bool) {
+	for i, a := range args {
+		switch a {
+		case "--":
+			return args, nil, false
+		case "--cmd", "-cmd":
+			return args[:i], args[i+1:], true
+		}
+	}
+	return args, nil, false
 }
 
 // cmdShellMain is main's entry point, closing over the process's own stdin.

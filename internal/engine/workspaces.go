@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +51,12 @@ type wsManager struct {
 
 	mu    sync.Mutex
 	state map[string]cas.Digest
+
+	// indexOf maps every body digest record has seen to the index digest
+	// stored with it, so CheckGenerated can read the file list of the
+	// snapshot a mount was realised from. A body put back by a cache hit
+	// has no entry: cache.Result stores only bodies (see mountedIndex).
+	indexOf map[cas.Digest]cas.Digest
 
 	// wsLocks is one sync.RWMutex per workspace name, created lazily under
 	// mu and kept for the run. It guards a real race: a ScopeRun workspace
@@ -153,6 +161,8 @@ func newWSManager(
 		specs:  make(map[string]plan.WorkspaceSpec, len(p.Workspaces)),
 		state:  make(map[string]cas.Digest, len(p.Workspaces)),
 		runDir: runDir,
+
+		indexOf: make(map[cas.Digest]cas.Digest),
 
 		scratchSpecs:  make(map[string]plan.ScratchSpec, len(p.Scratch)),
 		scratchKeys:   make(map[string]string, len(p.Scratch)),
@@ -508,6 +518,146 @@ func (m *wsManager) handlerMounts(parent *plan.Node) ([]executor.Mount, error) {
 	return mounts, nil
 }
 
+// serviceMounts is what a service step mounts: handlerMounts (its own
+// mounts, read-only), each pointed at a PRIVATE copy of the workspace under
+// the run directory instead of the shared one. cleanup removes the copies.
+//
+// A service outlives the workspace hold that protects every other reader
+// (see prepareAttempt), so it must not be standing in the shared directory:
+// a sibling's cache hit restores into that directory by RemoveAll then
+// Rename, which would empty a bind mount under a running container and
+// change a local service's files mid-flight. A copy taken under the hold is
+// the workspace as it was when the service started, and stays that way.
+//
+// The copy is of the DIRECTORY as it is on disk, never a restore of the
+// recorded snapshot: a snapshot applies the default excludes (node_modules
+// and the like) and misses whatever a step wrote without snapshotting, and
+// a service such as `node server.js` needs exactly those. A step standing in
+// the shared directory sees it whole, and so must a service.
+//
+// skipped is every path copyTree could not read, as "<workspace>/<path>",
+// for the caller to report in the service's own log.
+//
+// The caller must hold lockMounts for n's workspaces until this returns.
+func (m *wsManager) serviceMounts(ctx context.Context, n *plan.Node, attempt int) (
+	mounts []executor.Mount, skipped []string, cleanup func(), err error,
+) {
+	mounts, err = m.handlerMounts(n)
+	if err != nil || len(mounts) == 0 {
+		return mounts, nil, func() {}, err
+	}
+	base := filepath.Join(m.runDir, "service-mounts", stepDirName(n.ID), "attempt-"+strconv.Itoa(attempt))
+	cleanup = func() { _ = os.RemoveAll(base) }
+	defer func() {
+		if err != nil {
+			cleanup()
+		}
+	}()
+	// One copy per workspace, however many paths mount it, so two mounts of
+	// one workspace still see one tree.
+	copies := make(map[string]string, len(mounts))
+	for i := range mounts {
+		mt := &mounts[i]
+		if dest, ok := copies[mt.Name]; ok {
+			mt.Path = dest
+			continue
+		}
+		dest := filepath.Join(base, stepDirName(mt.Name))
+		if err := ctx.Err(); err != nil {
+			return nil, nil, nil, err
+		}
+		unread, err := copyTree(mt.Path, dest)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("engine: copy workspace %q for service %q: %w", mt.Name, n.ID, err)
+		}
+		for _, rel := range unread {
+			skipped = append(skipped, mt.Name+"/"+filepath.ToSlash(rel))
+		}
+		copies[mt.Name] = dest
+		mt.Path = dest
+	}
+	return mounts, skipped, cleanup, nil
+}
+
+// copyTree copies the directory src to dest, which must not exist:
+// directories, empty ones included, regular files (with their permission
+// bits) and symlinks (as links, never followed, so a link pointing outside
+// the workspace is not a way to copy the host into it). A directory keeps
+// its bits plus owner rwx, without which nothing could be copied into it.
+// Anything else (a socket, a device) is skipped: it is not workspace
+// content.
+//
+// Written here rather than reused: the repo's other ways of moving a
+// workspace (workspace.Snapshotter, mountxfer's tar streams) all apply the
+// snapshot excludes, which is exactly what a service's copy must not do.
+//
+// A file or directory the coordinator may not read (a root-owned file a
+// container step left behind, a 0000 mode) is skipped rather than failing
+// the copy: the service most likely never reads it, and refusing to start
+// over it would fail a service for a file nobody asked about. skipped names
+// each one, relative to src, so the caller can say so where the service's
+// author will look.
+func copyTree(src, dest string) (skipped []string, err error) {
+	err = filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		rel, rerr := filepath.Rel(src, p)
+		if rerr != nil {
+			return rerr
+		}
+		if err != nil {
+			// The root itself is not optional; below it, an unreadable
+			// directory is skipped whole (WalkDir reports it after the
+			// directory was created, so the copy has it, empty).
+			if p != src && errors.Is(err, fs.ErrPermission) {
+				skipped = append(skipped, rel)
+				return nil
+			}
+			return err
+		}
+		target := filepath.Join(dest, rel)
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		switch {
+		case d.IsDir():
+			return os.MkdirAll(target, info.Mode().Perm()|0o700)
+		case info.Mode()&fs.ModeSymlink != 0:
+			link, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(link, target)
+		case info.Mode().IsRegular():
+			err := copyFile(p, target, info.Mode().Perm())
+			if errors.Is(err, fs.ErrPermission) {
+				skipped = append(skipped, rel)
+				return nil
+			}
+			return err
+		default:
+			return nil
+		}
+	})
+	return skipped, err
+}
+
+func copyFile(src, dest string, perm fs.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
 // capturableWorkspaces is every workspace name n mounts that this
 // coordinator can capture on demand, sorted and deduplicated by
 // workspaceMountNames, minus the claim-backed ones.
@@ -600,7 +750,44 @@ func (m *wsManager) record(snaps []wsSnapshot) {
 	for _, s := range snaps {
 		m.state[s.Name] = s.Digest
 		m.produced = append(m.produced, s.Digest, s.Index)
+		if s.Index != "" {
+			m.indexOf[s.Digest] = s.Index
+		}
 	}
+}
+
+// mountedIndex returns the file index of the snapshot whose body is body:
+// what a mount carrying executor.Mount.Digest == body was realised from. An
+// empty body is a workspace that started from nothing, whose index is
+// empty.
+//
+// A body this run snapshotted has its index recorded. One put back by a
+// cache hit does not, since a cache entry stores only bodies, so the index
+// is rebuilt by extracting the body into a scratch directory under the run
+// and discarding the tree: slow for a large workspace, but only a
+// CheckGenerated step mounting a cache-restored workspace that then changed
+// ever pays it. ctx is the run's own, not WithoutCancel: the rebuild only
+// reads a body that is already stored, so a cancelled run abandons it and
+// loses nothing.
+func (m *wsManager) mountedIndex(ctx context.Context, body cas.Digest) (workspace.Index, error) {
+	if body == "" {
+		return workspace.Index{Version: workspace.IndexVersion}, nil
+	}
+	m.mu.Lock()
+	ix, ok := m.indexOf[body]
+	m.mu.Unlock()
+	if ok {
+		return m.snap.LoadIndex(ctx, ix)
+	}
+	if err := os.MkdirAll(m.runDir, 0o755); err != nil {
+		return workspace.Index{}, fmt.Errorf("engine: create %s: %w", m.runDir, err)
+	}
+	tmp, err := os.MkdirTemp(m.runDir, ".senro-index-*")
+	if err != nil {
+		return workspace.Index{}, fmt.Errorf("engine: stage index of %s: %w", body.Short(), err)
+	}
+	defer func() { _ = os.RemoveAll(tmp) }()
+	return m.snap.RestoreTree(ctx, body, filepath.Join(tmp, "tree"))
 }
 
 // allSnapshotDigests is every digest this run's snapshots produced, body

@@ -122,6 +122,12 @@ type Model struct {
 
 	showHelp bool
 
+	// showTests swaps the focused step's log pane for its test verdicts.
+	// Plain, like showHelp: set only by handleKey on the bubbletea
+	// goroutine and read by View under mu. It is a mode, not per-step
+	// state, so enter on another step keeps it.
+	showTests bool
+
 	width, height int
 
 	reqSeq uint64 // monotonic source of control frame IDs
@@ -554,6 +560,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "pgup":
 		return m.loadOlderLogsCmd()
+	case "t":
+		if m.focused == "" {
+			m.status = "tests: no step focused, press enter on a step first"
+			return m, nil
+		}
+		m.showTests = !m.showTests
+		return m, nil
 	}
 	return m, nil
 }

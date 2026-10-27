@@ -83,6 +83,9 @@ Everything below is a method on the `*senro.StepBuilder` that `Step(...)` return
 | Set env vars, a directory, a time limit | `Env`, `WorkDir`, `Timeout` | [Env, dir & timeout](/docs/steps/settings/) |
 | Let dependents run even if this fails | `ContinueOnError` | [Env, dir & timeout](/docs/steps/settings/) |
 | Try again when it breaks | `Retry`, `RetryPolicy` | [Retries](/docs/steps/retries/) |
+| See which test failed, rerun just it | `Tests` | [Test results](/docs/steps/tests/) |
+| Add a preset step for go test, pytest, ESLint or Playwright | `Add` (on the workflow) | [Kits](/docs/steps/kits/) |
+| Keep a database up while other steps use it | `Service` (on the workflow) | [Services](/docs/steps/services/) |
 | Clean up or collect logs afterwards | `OnFailure`, `Always` | [Failure handlers](/docs/steps/handlers/) |
 | Skip it unless something is true | `When` | [Conditions](/docs/steps/conditions/) |
 | Give it files, and keep what it wrote | `Mount`, `NoSnapshot` | [Workspaces](/docs/data/workspaces/) |

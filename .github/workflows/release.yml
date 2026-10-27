@@ -47,7 +47,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
 
       - uses: actions/setup-node@v7
         with:
@@ -60,7 +60,7 @@ jobs:
       # create and push the tag.
       - name: Semantic Release
         id: semantic
-        uses: cycjimmy/semantic-release-action@v6
+        uses: cycjimmy/semantic-release-action@v8
         with:
           semantic_version: 24
           extra_plugins: |

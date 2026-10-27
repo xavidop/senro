@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -209,7 +210,31 @@ type Options struct {
 	// nodes each is the same runaway as one producing five thousand, and only
 	// a run-wide count sees it. Zero means DefaultMaxNodes.
 	MaxNodes int
+
+	// HoldServices keeps every service up once it is ready, until the run
+	// is cancelled, instead of stopping it when its last consumer settles.
+	// It is what `senro up` runs under: there the services ARE the point,
+	// and a service with no consumers would otherwise stop the moment it
+	// became ready. The cancellation that ends it is still a clean end, so
+	// each service settles succeeded (see runService).
+	HoldServices bool
+
+	// BreakOnFailure holds each failed attempt open, sandbox and workspace
+	// included, until a client clears it with breakpoint.clear or the run is
+	// cancelled, so it can be inspected with a shell before anything tears
+	// it down. It is what `senro run --break-on-failure` sets. It never
+	// changes a step's outcome; see runAttempt and holds.
+	BreakOnFailure bool
 }
+
+// noControlForBreakOnFailure is the warning Run prints when BreakOnFailure
+// is asked for and nothing could ever release a held step.
+const noControlForBreakOnFailure = "senro: --break-on-failure needs an attached client to release a held step; " +
+	"nothing is attached, so steps will not be held"
+
+// warnOut is where Run's operator warnings go. A var so an internal test can
+// capture it; nothing else writes it.
+var warnOut io.Writer = os.Stderr
 
 // Run executes p to completion: it opens the run's ledger and log set under
 // Options.Dir, schedules every node respecting Needs and ContinueOnError, and
@@ -244,6 +269,15 @@ func Run(ctx context.Context, p *plan.Plan, opts Options) (api.RunStatus, error)
 	}
 	if opts.Sink == nil {
 		opts.Sink = sink.Nop()
+	}
+	// A hold is released only by a client's breakpoint.clear (or by the run
+	// being cancelled). With no control channel nothing can send one, so a
+	// held step would sit until the run is killed: a CI job hanging until
+	// its timeout, which is worse than not holding. So the option is
+	// dropped, out loud, rather than honoured into a hang.
+	if opts.BreakOnFailure && opts.Sink.Control() == nil {
+		_, _ = fmt.Fprintln(warnOut, noControlForBreakOnFailure)
+		opts.BreakOnFailure = false
 	}
 
 	if err := checkSecretRefs(p, opts.Secrets); err != nil {
@@ -497,7 +531,9 @@ func Run(ctx context.Context, p *plan.Plan, opts Options) (api.RunStatus, error)
 	for _, n := range p.Nodes {
 		rc.emit(api.Event{
 			Type: api.StepCreated, Step: n.ID,
-			Payload: mustMarshal(api.StepCreatedBody{Kind: n.Kind, Group: n.Group, Needs: n.Needs}),
+			Payload: mustMarshal(api.StepCreatedBody{
+				Kind: n.Kind, Group: n.Group, Needs: n.Needs, Service: n.IsService(),
+			}),
 		})
 	}
 
@@ -702,6 +738,14 @@ type runCore struct {
 	// once by schedule before any step goroutine starts.
 	live *[]*plan.Node
 	byID map[string]*plan.Node
+
+	// services is where every ready service answers, for its consumers'
+	// environment. Its zero value is ready to use. See serviceTable.
+	services serviceTable
+
+	// holds is every step kept open after a failed attempt under
+	// Options.BreakOnFailure. Its zero value is ready to use. See holds.
+	holds holds
 
 	// genDepth and genParent record where a generated node came from: how
 	// deep its generator chain runs, and which generator produced it. Ids are
@@ -1136,6 +1180,15 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 	// makes the map lock-free (see breakpoint). A nil control channel
 	// means no client can arm one, so the map stays empty.
 	breakpoints := make(map[string]*breakpoint)
+	// The stop signal of every dispatched service not yet told to stop,
+	// owned by this goroutine alone for the reason breakpoints is: created
+	// here at dispatch, closed (once, then forgotten) by stopIdleServices
+	// from this same loop.
+	serviceStops := make(map[string]chan struct{})
+	// Services to restart once they have stopped, owned by this goroutine
+	// for the same reason: queued by serve, drained at the top of a pass
+	// (see reviveServicesLocked and revivePendingLocked).
+	pendingRevive := make(map[string]string)
 	// The run-wide pause (api.OpRunPause), owned by this goroutine for the
 	// same reason the breakpoints map is: handleRunPause writes it only
 	// from serve, and only this loop reads it.
@@ -1143,8 +1196,8 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 	handle := func() schedHandle {
 		return schedHandle{
 			ctx: ctx, byID: byID, live: &live, mu: mu, states: states, running: running,
-			breakpoints: breakpoints, paused: &paused,
-			wg: &wg, acquire: acquire, release: release, signal: signal,
+			breakpoints: breakpoints, paused: &paused, serviceStops: serviceStops,
+			pendingRevive: pendingRevive, wg: &wg, acquire: acquire, release: release, signal: signal,
 			logs: logs, opts: opts,
 		}
 	}
@@ -1211,6 +1264,11 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 			}
 		}
 		mu.Lock()
+		// Before readySet, in the same critical section, so a service queued
+		// to restart behind its StopGrace is unsettled the moment its old
+		// execution has settled, and nothing that needs it is dispatched
+		// against the stopped one in between.
+		restarts := rc.revivePendingLocked(handle())
 		// Read ONCE per pass and reused below: the idle wait's decision to
 		// watch ctx.Done() must describe the same instant readySet was
 		// given. Two reads let one pass both decline to settle a cancelled
@@ -1219,7 +1277,8 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 		// TestControlRunPauseStillNoticesAnExternalCancel ending at exactly
 		// grace/2).
 		runCancelled := ctx.Err() != nil
-		ready, settled, reasons, held := readySet(live, byID, states, running, runCancelled, rc.pruned, breakpoints)
+		ready, settled, reasons, held := readySet(
+			live, byID, states, rc.oc.ready, running, runCancelled, rc.pruned, breakpoints)
 		if paused {
 			// A paused run dispatches nothing new: ready nodes are DROPPED,
 			// stay pending, and are reclassified after the resume. Dropped
@@ -1231,8 +1290,26 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 			// settling is not dispatching.
 			ready = nil
 		}
+		// A service's stop channel and generation are made here, in the same
+		// critical section that marks it running, before the goroutine
+		// exists: stopIdleServices can never look for a channel a service
+		// has not been handed yet, a rerun replaces a stale one, and a
+		// control request served before the dispatch loop below (the
+		// non-blocking read) sees a running service that is live, never one
+		// with no stop channel, which reviveServicesLocked would take for a
+		// service on its way down.
+		type serviceRun struct {
+			stop chan struct{}
+			gen  int
+		}
+		serviceRuns := map[string]serviceRun{}
 		for _, n := range ready {
 			running[n.ID] = true
+			if n.IsService() {
+				r := serviceRun{stop: make(chan struct{}), gen: rc.services.begin(n.ID)}
+				serviceStops[n.ID] = r.stop
+				serviceRuns[n.ID] = r
+			}
 		}
 		for id, st := range settled {
 			states[id] = st
@@ -1258,6 +1335,10 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 		unresolved := len(live) - len(states)
 		mu.Unlock()
 
+		for _, r := range restarts {
+			rc.emitRevived(r.consumer, r.svcs)
+		}
+
 		if len(settled) > 0 {
 			// Sorted so nodes settling in the same pass are recorded in a
 			// deterministic order; map iteration would make two runs of one
@@ -1276,6 +1357,13 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 		// order things happened: the upstream settled, then the scheduler
 		// declined to dispatch what it unblocked.
 		rc.announceBreakpoints(breakpoints, held)
+
+		// After this pass's step.finished events too: a consumer skipped in
+		// this very pass is terminal in states already, but its
+		// step.finished must still precede the service's.
+		if !opts.HoldServices {
+			rc.stopIdleServices(&live, states, serviceStops)
+		}
 
 		if done {
 			// A configured accept policy may still have something to say: an
@@ -1368,6 +1456,8 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 
 		for _, n := range ready {
 			n := n
+			// Made when the pass marked it running; zero for a step.
+			stop, gen := serviceRuns[n.ID].stop, serviceRuns[n.ID].gen
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -1389,6 +1479,16 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 					state = api.StateCancelled
 					rc.emitStepFinished(n.ID, state, "")
 					release()
+					if n.IsService() {
+						// An execution that never ran still has an outcome,
+						// for anyone awaiting it.
+						rc.services.withdraw(n.ID, gen)
+					}
+				} else if n.IsService() {
+					// A service's whole life, start to stop; runService owns
+					// the slot from here exactly as runStep does, and gives it
+					// back once the service is ready (see runService).
+					state = rc.runService(ctx, n, opts, logs, stop, gen, release, signal, false)
 				} else {
 					// From here runStep owns releasing the slot, exactly
 					// once, however it returns: its retry loop gives the
@@ -1431,6 +1531,10 @@ var skipPropagation = map[api.State]string{
 // dispatched before the cancellation was observed is in `running` and
 // skipped here; schedule's own goroutine handles it.
 //
+// ready is outcomes.ready: a service that passed its probe satisfies its
+// dependents while it is still running, so a need absent from states is
+// waited on only when it is not a ready service (see satisfiedBy).
+//
 // prune reports whether a node otherwise ready is gated out by its When
 // conditions, and why (see runCore.pruned); called only once a node's Needs
 // are satisfied.
@@ -1446,11 +1550,12 @@ func readySet(
 	nodes []*plan.Node,
 	byID map[string]*plan.Node,
 	states map[string]api.State,
+	ready map[string]bool,
 	running map[string]bool,
 	cancelled bool,
 	prune func(*plan.Node) (bool, string),
 	breakpoints map[string]*breakpoint,
-) (ready []*plan.Node, settled map[string]api.State, reasons map[string]string, held []string) {
+) (dispatch []*plan.Node, settled map[string]api.State, reasons map[string]string, held []string) {
 	settled = make(map[string]api.State)
 	reasons = make(map[string]string)
 	for i := range nodes {
@@ -1470,8 +1575,8 @@ func readySet(
 		var inherited api.State
 		var blockingNeed string
 		for _, need := range n.Needs {
-			st, ok := states[need]
-			if !ok {
+			st, terminal := states[need]
+			if !terminal && !ready[need] {
 				waiting = true
 				break
 			}
@@ -1484,7 +1589,7 @@ func readySet(
 				blockingNeed = need
 				break
 			}
-			if !satisfies(st, byID[need].ContinueOnError) {
+			if !satisfiedBy(byID[need], st, terminal, ready[need]) {
 				blocked = true
 				break
 			}
@@ -1509,26 +1614,86 @@ func readySet(
 				held = append(held, n.ID)
 				continue
 			}
-			ready = append(ready, n)
+			dispatch = append(dispatch, n)
 		}
 	}
-	return ready, settled, reasons, held
+	return dispatch, settled, reasons, held
 }
 
-// satisfies reports whether a Need in state st (whose own node declared
-// continueOnError) lets a dependent proceed as though it had succeeded.
+// satisfiedBy reports whether need, in state st (terminal says whether it
+// has one at all) and ready (whether it is a service that passed its
+// probe), lets a dependent proceed as though it had succeeded.
+//
+// A service still running satisfies its dependents once it is ready: that
+// is the whole point of one, a step its dependents run ALONGSIDE. Once it is
+// terminal the ordinary rule applies, so a service stopped cleanly
+// (succeeded) still satisfies a dependent dispatched afterwards, while one
+// that died after becoming ready does not hand a dependent an address
+// nothing answers on.
+//
 // Keyed off State.Failed() rather than enumerating StateFailed alone: a
 // dependent surviving a plain non-zero exit under ContinueOnError must
 // equally survive a timed-out or panicked upstream, and State.Failed() is
 // senro's one definition of "fails".
-func satisfies(st api.State, continueOnError bool) bool {
+func satisfiedBy(need *plan.Node, st api.State, terminal, ready bool) bool {
+	if !terminal {
+		return need.IsService() && ready
+	}
 	switch {
 	case st == api.StateSucceeded, st == api.StateCached, st == api.StateRecovered:
 		return true
 	case st.Failed():
-		return continueOnError
+		return need.ContinueOnError
 	default:
 		return false
+	}
+}
+
+// stopIdleServices signals every ready service none of whose consumers is
+// still to finish, closing its stop channel once and forgetting it. A
+// consumer counts as finished once it has a terminal state, which includes
+// one pruned or skipped without running; one dispatched and still running
+// has none yet, and neither has one still waiting on another need. A ready
+// service with no consumers at all is stopped on the first pass after it
+// became ready.
+//
+// Called from schedule's loop after a pass's settles, which is what orders
+// a service's step.finished after its last consumer's: a consumer's
+// step.finished is emitted before its state reaches states.
+//
+// live is a pointer, read only under oc.mu, for the reason rc.live is one: a
+// generator splicing into the graph grows it from a step goroutine.
+func (rc *runCore) stopIdleServices(live *[]*plan.Node, states map[string]api.State, stops map[string]chan struct{}) {
+	if len(stops) == 0 {
+		return
+	}
+	var idle []string
+	rc.oc.mu.Lock()
+	for id := range stops {
+		if !rc.oc.ready[id] {
+			continue
+		}
+		pending := false
+		for _, n := range *live {
+			if _, done := states[n.ID]; done || !slices.Contains(n.Needs, id) {
+				continue
+			}
+			pending = true
+			break
+		}
+		if !pending {
+			idle = append(idle, id)
+			// No longer ready from this instant: a consumer unsettled while
+			// the service is inside its StopGrace (a rerun_from) must wait
+			// for the restart reviveServicesLocked queues, not be dispatched
+			// against a server on its way down.
+			delete(rc.oc.ready, id)
+		}
+	}
+	rc.oc.mu.Unlock()
+	for _, id := range idle {
+		close(stops[id])
+		delete(stops, id)
 	}
 }
 

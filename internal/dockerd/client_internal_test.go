@@ -462,6 +462,48 @@ func TestContainerKillPropagatesAnUnrelatedConflict(t *testing.T) {
 	}
 }
 
+// TestContainerStopSendsTheGraceInWholeSeconds pins the request shape: the
+// daemon's t is whole seconds, so a sub-second grace rounds UP rather than
+// to zero, which would be an immediate kill the caller never asked for.
+func TestContainerStopSendsTheGraceInWholeSeconds(t *testing.T) {
+	var got string
+	c := fakeDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+		got = r.Method + " " + r.URL.Path + "?" + r.URL.RawQuery
+		w.WriteHeader(http.StatusNoContent)
+	})
+	if err := c.ContainerStop(ctx(t), "abc", 1500*time.Millisecond); err != nil {
+		t.Fatalf("ContainerStop: %v", err)
+	}
+	if want := "POST /" + APIVersion + "/containers/abc/stop?t=2"; got != want {
+		t.Errorf("request = %q, want %q", got, want)
+	}
+}
+
+// TestContainerStopTreatsAlreadyStoppedAndGoneAsSuccess: 304 is the daemon's
+// "it was not running", 404 its "there is no such container". Either way the
+// outcome a stopping caller wants is already true, ContainerKill's own rule.
+func TestContainerStopTreatsAlreadyStoppedAndGoneAsSuccess(t *testing.T) {
+	for _, code := range []int{http.StatusNotModified, http.StatusNotFound} {
+		c := fakeDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(code)
+		})
+		if err := c.ContainerStop(ctx(t), "abc", time.Second); err != nil {
+			t.Errorf("ContainerStop answered %d: %v, want nil", code, err)
+		}
+	}
+}
+
+// TestContainerStopPropagatesADaemonFailure keeps the carve-outs above narrow.
+func TestContainerStopPropagatesADaemonFailure(t *testing.T) {
+	c := fakeDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"boom"}`))
+	})
+	if err := c.ContainerStop(ctx(t), "abc", time.Second); err == nil {
+		t.Fatal("ContainerStop swallowed a 500")
+	}
+}
+
 // TestContainerRemoveTreatsA404AsSuccess mirrors ImageInspect's contract for
 // the same reason: a caller tearing down a container it already lost the
 // race on should not have to distinguish "already gone" from "gone".
@@ -697,5 +739,104 @@ func TestClassifyStartFailureIgnoresErrorsThatAreNotTheDaemons(t *testing.T) {
 		if got := ClassifyStartFailure(err); got != StartFailureNone {
 			t.Errorf("ClassifyStartFailure(%v) = %d, want %d", err, got, StartFailureNone)
 		}
+	}
+}
+
+// TestContainerStatsDecodesEachSampleOfTheStream: the daemon streams one JSON
+// object per line on stats?stream=true, and each one reaches the callback
+// decoded, until the stream ends.
+func TestContainerStatsDecodesEachSampleOfTheStream(t *testing.T) {
+	var gotPath, gotQuery string
+	c := fakeDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"cpu_stats":{"cpu_usage":{"total_usage":500,"usage_in_usermode":300,"usage_in_kernelmode":200}},`+
+			`"memory_stats":{"usage":4096,"stats":{"inactive_file":1024}}}`+"\n")
+		w.(http.Flusher).Flush()
+		_, _ = io.WriteString(w, `{"cpu_stats":{"cpu_usage":{"total_usage":900}},"memory_stats":{"usage":2048}}`+"\n")
+	})
+	var got []StatsSample
+	err := c.ContainerStats(ctx(t), "abc", func(s StatsSample) bool {
+		got = append(got, s)
+		return true
+	})
+	if err != nil {
+		t.Fatalf("ContainerStats: %v", err)
+	}
+	if gotPath != "/"+APIVersion+"/containers/abc/stats" || gotQuery != "stream=true" {
+		t.Errorf("request = %s?%s", gotPath, gotQuery)
+	}
+	want := []StatsSample{
+		{CPUTotal: 500, CPUUser: 300, CPUKernel: 200, MemUsage: 4096, MemInactiveFile: 1024},
+		{CPUTotal: 900, MemUsage: 2048},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("samples = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("sample %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestContainerStatsFallsBackToTotalInactiveFile: a cgroup v1 daemon may
+// report only total_inactive_file; inactive_file wins when both are present.
+func TestContainerStatsFallsBackToTotalInactiveFile(t *testing.T) {
+	c := fakeDaemon(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"memory_stats":{"usage":4096,"stats":{"total_inactive_file":512}}}`+"\n")
+		_, _ = io.WriteString(w, `{"memory_stats":{"usage":4096,"stats":{"inactive_file":256,"total_inactive_file":512}}}`+"\n")
+	})
+	var got []uint64
+	if err := c.ContainerStats(ctx(t), "abc", func(s StatsSample) bool {
+		got = append(got, s.MemInactiveFile)
+		return true
+	}); err != nil {
+		t.Fatalf("ContainerStats: %v", err)
+	}
+	if len(got) != 2 || got[0] != 512 || got[1] != 256 {
+		t.Errorf("MemInactiveFile = %v, want [512 256]", got)
+	}
+}
+
+// TestContainerStatsIsCutByItsContext: a stats stream on a stopped but
+// unremoved container never ends by itself, so cancelling the context is
+// the only way out, and it must be prompt.
+func TestContainerStatsIsCutByItsContext(t *testing.T) {
+	c := fakeDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"memory_stats":{"usage":1}}`+"\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // a stream that never ends on its own
+	})
+	cctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	n := 0
+	start := time.Now()
+	_ = c.ContainerStats(cctx, "abc", func(StatsSample) bool { n++; return true })
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("ContainerStats returned %s after a 300ms context; the stream was not cut", elapsed)
+	}
+	if n != 1 {
+		t.Errorf("callback ran %d times, want 1", n)
+	}
+}
+
+// TestContainerStatsStopsWhenTheCallbackSaysSo: returning false ends the
+// stream early without an error.
+func TestContainerStatsStopsWhenTheCallbackSaysSo(t *testing.T) {
+	c := fakeDaemon(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		for range 3 {
+			_, _ = io.WriteString(w, `{"memory_stats":{"usage":1}}`+"\n")
+		}
+	})
+	n := 0
+	if err := c.ContainerStats(ctx(t), "abc", func(StatsSample) bool { n++; return false }); err != nil {
+		t.Fatalf("ContainerStats: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("callback ran %d times, want 1", n)
 	}
 }

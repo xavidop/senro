@@ -273,8 +273,7 @@ func TestACancelledExecFailsRatherThanReturningWhatItHad(t *testing.T) {
 	for !strings.Contains(out.String(), "started") {
 		if time.Now().After(deadline) {
 			cancel()
-			<-done
-			t.Fatal("the exec'd command never produced output")
+			t.Fatalf("the exec'd command never produced output (Exec returned %v)", <-done)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

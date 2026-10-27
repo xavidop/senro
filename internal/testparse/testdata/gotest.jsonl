@@ -1,0 +1,13 @@
+{"Action":"start","Package":"example.com/m/a"}
+{"Action":"run","Package":"example.com/m/a","Test":"TestOK"}
+{"Action":"pass","Package":"example.com/m/a","Test":"TestOK","Elapsed":0.01}
+{"Action":"run","Package":"example.com/m/a","Test":"TestBad"}
+{"Action":"run","Package":"example.com/m/a","Test":"TestBad/sub"}
+{"Action":"pass","Package":"example.com/m/a","Test":"TestBad/sub","Elapsed":0}
+{"Action":"output","Package":"example.com/m/a","Test":"TestBad","Output":"--- FAIL: TestBad (0.02s)\n"}
+{"Action":"output","Package":"example.com/m/a","Test":"TestBad","Output":"    a_test.go:9: nope\n"}
+{"Action":"fail","Package":"example.com/m/a","Test":"TestBad","Elapsed":0.02}
+{"Action":"run","Package":"example.com/m/a","Test":"TestSkip"}
+{"Action":"skip","Package":"example.com/m/a","Test":"TestSkip","Elapsed":0}
+{"Action":"output","Package":"example.com/m/a","Output":"FAIL\n"}
+{"Action":"pass","Package":"example.com/m/a","Elapsed":0.05}

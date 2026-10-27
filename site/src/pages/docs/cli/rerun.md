@@ -8,8 +8,8 @@ title: rerun
 Re-execute the plan a previous run recorded.
 
 ```
-senro rerun [--run RUN] [--step STEP] [--regenerate] [--dir DIR]
-            [--cache-dir DIR] [--local-class CLASS]
+senro rerun [--run RUN] [--step STEP [--test NAME ...] [--failed-tests]]
+            [--regenerate] [--dir DIR] [--cache-dir DIR] [--local-class CLASS]
 ```
 
 Reach for this when you need to reproduce a past run exactly: replaying a failure to debug it, or
@@ -25,12 +25,19 @@ pipeline source is needed.
 Steps whose inputs haven't changed are served from the action cache, so an unchanged re-run is
 mostly cache hits.
 
+A rerun reapplies the recorded pins. A run that applied a [lock](/docs/cli/lock/) wrote the pins it
+used to `<run>/lock.json`, and `senro rerun` applies that file, so the rerun pulls the image digests
+the original run pulled rather than whatever the tags or `<pkg>/senro.lock` say now. A run without
+`lock.json` was not locked, and reruns unlocked.
+
 ## Flags
 
 | Flag | Meaning |
 | --- | --- |
 | `--run RUN` | The run to re-execute. Defaults to the most recent one here. |
 | `--step STEP` | Re-execute this step, what it needs, and everything below it. |
+| `--test NAME` | With `--step`, run only the named test of that step. Repeatable. `NAME` must be a test the recorded run reported on that step, bare (`TestCheckout`) or as `suite.name`. |
+| `--failed-tests` | With `--step`, run only the tests that failed on that step in the run being re-executed. Combines with `--test`. |
 | `--regenerate` | Ask generators for a fresh subgraph instead of replaying the recorded one. |
 | `--dir DIR` | Where to write this run. Defaults to a new run directory. |
 | `--cache-dir DIR` | The storage root. Defaults to `$SENRO_CACHE_DIR`. |
@@ -54,6 +61,47 @@ didn't run. Including the dependencies costs little, since the unchanged ones ar
 
 The dependency graph comes from the recorded plan, so "everything below it" means exactly what it
 meant in the run you're repeating.
+
+## Rerunning one test
+
+```
+senro rerun --step unit --test TestCheckout
+senro rerun --step unit --failed-tests
+```
+
+When the step declares [`Tests`](/docs/steps/tests/) with a selection, these narrow it to the tests
+you name. `--failed-tests` names every test still `failed` on that step in the recorded run's
+ledger; `--test` names them yourself; the two combine, and a name given twice runs once. The step's
+selection is appended to its command with `{tests}` replaced by the names, so for
+`testreport.GoTestJSON()` the step runs with `-run '^(TestCheckout)$'` added.
+
+Each name is checked against the tests the recorded run reported on that step, by its bare name
+or as `suite.name` (the form every client prints). A name the run never reported would select
+nothing, and a test run that runs nothing exits 0, so the rerun would come back green having
+checked nothing; it is refused instead. A test added since the recorded run cannot be rerun by
+name: rerun the whole step.
+
+For `GoTestJSON()` the names are shaped for `-run`: each is regexp-quoted, so `TestA+B` selects
+itself, and a subtest such as `TestParent/sub` reruns its parent `TestParent`, because `go test`
+splits `-run` on `/` outside parentheses and the subtest's own name inside the group would match
+nothing. Several failed subtests of one parent run it once. For other formats the names are
+substituted as they are, and your `Selecting` argv owns any quoting.
+
+Rerunning a run that was itself narrowed appends a second selection to the already narrowed
+command. For `go test` the last `-run` wins, so the newer selection is the one that runs.
+
+The command changes, and the command is part of the cache key, so the narrowed step is never served
+from the full run's cache entry. A hit there would replay the full run's output and the selection
+would silently do nothing.
+
+Each of these is a usage error (exit `2`), refused before anything runs:
+
+- `--test` or `--failed-tests` without `--step`.
+- A step with no `Tests` declaration, or one with no selection (`TAP()` and `JUnitXML` carry none
+  until you add `Selecting`).
+- `--failed-tests` when no test on that step failed.
+- `--test NAME` for a test the recorded run did not report on that step:
+  `senro rerun: step "unit" recorded no test "TestNope"`.
 
 ## `--regenerate` is a separate verb, deliberately
 
@@ -93,5 +141,7 @@ the step writes, so re-running the step produces a fresh one.
 
 - **[Generated subgraphs](/docs/monorepo/generators/)**: what is being replayed, and why recording
   it is what lets a generator be nondeterministic.
+- **[Test results](/docs/steps/tests/)**: declaring how a step reports its tests, which is what
+  `--test` and `--failed-tests` need.
 - **[cache & verify](/docs/cli/cache/)**: why a step hit or missed, and re-checking a `Pure()`
   claim.

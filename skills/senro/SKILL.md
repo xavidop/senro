@@ -1,6 +1,6 @@
 ---
 name: senro
-description: Use when defining, running, retrying, or attaching to a pipeline built with senro (github.com/xavidop/senro): writing a Pipeline of Workflows and Steps, wiring exec.Command actions or senro.Func Go functions, targeting a workflow at the local, container.Image, k8s.Pod or ssh.Host executor, Expand fan-out over a unit graph (glob, gowork, cargo, jswork, maven, gradle, pyproject, bazel, MaxParallel, MaxNodes), NeedsEach per-unit edges and Partition/TemplateShard duration-balanced shards, Affected monorepo fan-out with a change source, When/Branch/ParamIs/EnvIs conditions, retry.OnInfra policies, Timeout, OnFailure/Always handlers, workspaces and scratch caches, Pure() action caching with Inputs/Outputs/CacheEnv, senro.WithSecrets credentials with SecretEnv, trigger gating with senro.WithTrigger, notifications through senro.WithSink and the notify package, failure analysis through senro.WithAnalyzer and contrib/genkitanalyzer, the shared cache over an S3 bucket or an OCI registry, attach.Listen live attach, or the senro CLI (run, attach, shell, verify, cache gc, cache explain, ws ls/pull/diff, logs fetch, func check). CI/CD is the familiar case, not the only one senro covers.
+description: Use when defining, running, retrying, or attaching to a pipeline built with senro (github.com/xavidop/senro): writing a Pipeline of Workflows and Steps, wiring exec.Command actions or senro.Func Go functions, targeting a workflow at the local, container.Image, k8s.Pod or ssh.Host executor, Expand fan-out over a unit graph (glob, gowork, cargo, jswork, maven, gradle, pyproject, bazel, MaxParallel, MaxNodes), NeedsEach per-unit edges and Partition/TemplateShard duration-balanced shards, Affected monorepo fan-out with a change source, When/Branch/ParamIs/EnvIs conditions, retry.OnInfra policies, Service steps with service.Ports/TCP/HTTP readiness and SENRO_SERVICE_* addresses, kit presets (kit/gotest, kit/pytest, kit/eslint, kit/playwright) added with WorkflowBuilder.Add, Timeout, OnFailure/Always handlers, workspaces and scratch caches, Pure() action caching with Inputs/Outputs/CacheEnv, senro.WithSecrets credentials with SecretEnv, trigger gating with senro.WithTrigger, notifications through senro.WithSink and the notify package (GitHub Checks, including adopting a dispatcher-created check run with notify.GitHubChecksFromEnv), CheckGenerated for checked-in generated files, senro lock and senro.WithLock image digest pinning, the contrib/dispatcher GitHub App mode (-github-app-id, SENRO_GITHUB_* environment), failure analysis through senro.WithAnalyzer and contrib/genkitanalyzer, the shared cache over an S3 bucket or an OCI registry, attach.Listen live attach, or the senro CLI (run, run --break-on-failure, up, init, lock, attach, shell including the offline form, verify, cache gc, cache explain, ws ls/pull/diff, logs fetch, func check). CI/CD is the familiar case, not the only one senro covers.
 ---
 
 # senro: a pipeline engine defined in Go
@@ -152,6 +152,239 @@ is JSON; no closure crosses the engine's process boundary): `Build` refuses a
 step using one rather than silently retrying on every failure. Use
 `retry.RegisterPredicate` + `retry.Named` for the same Go code with a name a
 plan can record; `retry.Func` remains for a `retry.Policy` applied directly.
+
+## Step usage
+
+`step.finished` carries an optional `usage` object: `cpu_user_ns`, `cpu_system_ns` and
+`max_rss_bytes` for the attempt that concluded. Local steps report it from rusage, container steps
+from the daemon's stats stream (a container that exits before the first one-second sample may report
+nothing); Kubernetes and SSH report nothing and the field is absent. The run state folds it into
+`StepState.Usage` and `step.retried` clears it. Renderers show `cpu 1.2s  rss 48 MB` (rss only when
+measured). `duration.Record` also keeps a `cpu` map in the history file, but `Partition` still
+balances wall time. The otelspan example adds `senro.cpu_user_ns`, `senro.cpu_system_ns` and
+`senro.max_rss_bytes` to the step span.
+
+## Test results: `Tests`
+
+A step that runs tests declares how they are reported, so the run records one
+result per test instead of one exit code for the step. senro never sniffs the
+format from argv; a wrong guess would turn a green step red or report no
+tests, which reads as "all passed".
+
+```go
+import "github.com/xavidop/senro/testreport"
+
+verify.Step("unit", exec.Command("go", "test", "-json", "./...")).
+	Tests(testreport.GoTestJSON())
+verify.Step("pytest", exec.Command("pytest", "--junitxml=report.xml")).
+	Tests(testreport.JUnitXML("report.xml").Selecting("-k", "{tests}").JoinedBy(" or "))
+```
+
+- `testreport.GoTestJSON()`: Go's `-json` stream on stdout (the command must
+  pass `-json` itself). Carries `Select` `["-run", "^({tests})$"]` and `Join`
+  `|`, anchored so `TestFoo` does not also select `TestFooBar`.
+- `testreport.TAP()`: TAP on stdout. No `Select`.
+- `testreport.JUnitXML(path)`: a file read after the step exits, resolved
+  against the directory it ran in. No `Select`. **Local executor only**: it is
+  read from the coordinator's filesystem, so `Build` refuses it on container,
+  Kubernetes and SSH and points at the two stdout formats.
+- `.Selecting(args...)` replaces `Select`, which must contain `{tests}`
+  (`testreport.Placeholder`); `.JoinedBy(sep)` replaces `Join` (empty means
+  `|`). Argv, not a closure, because `senro rerun` reads it from `plan.json`.
+
+`Build` also refuses `Tests` on a func step, an unknown format and a JUnit
+spec with no path. Each test is one step-scoped `test.finished` event, before
+its attempt's `step.finished`: `name`, `suite`, `outcome`
+(`passed`/`failed`/`skipped`), `duration_ns`, `file`/`line` when the report
+has them, and for failed tests only the redacted last 4096 bytes of `output`.
+A JUnit step that exits 0 with a missing, malformed or stale (modified before
+the attempt started) report fails, naming the path; on a non-zero exit the
+report is read best-effort (what parses is recorded, a missing or malformed
+file is ignored, the step's state, exit code and error are untouched); a
+timed-out, cancelled or panicked step's report is not read. A step served from
+the action cache reports no tests. A test that failed and then passed on a
+later attempt folds to `recovered` in `StepState.Tests`, never on the wire, and
+stays recovered; within one attempt a failed verdict is never replaced by a
+later passed one.
+
+Clients: the TUI row reads ` [N tests · F failed · R recovered]` and `t`
+toggles a tests pane (failed first, with output); the plain renderer prints
+`<step> test <suite>.<name> failed` and suffixes the step line with
+`(N tests, F failed, R recovered)`; the browser detail pane lists tests,
+failures first; the GitHub Checks notifier folds the stream like every other
+client and, when the run finishes, annotates each test the fold still has
+`failed` (its file and line, else `.senro`) ahead of its step's annotation,
+inside the same 50-annotation budget: a recovered test is not annotated, and
+one that failed on every attempt is annotated once.
+`senro rerun --step S --test NAME` or `--failed-tests` reruns only those
+tests; see `references/cli.md`. From Go it is
+`senro.WithTestSelection(step, names...)`, which `RunPlan` refuses for a step
+with no `Select`, a step not in the plan, or one `WithOnlySteps` leaves out
+(its tests would never run). Not
+supported: sharding by per-test timing, a `test.started` event, rerunning one
+test from the TUI.
+
+## Services: `Service`
+
+A service is a step that stays up while other steps use it (a database for
+integration tests), declared rather than inferred: a step that never exits
+looks like a hang to an engine that waits for exit.
+
+```go
+import (
+	"github.com/xavidop/senro/executor/container"
+	"github.com/xavidop/senro/service"
+)
+
+infra := p.Workflow("infra", senro.On(container.Image("postgres:16")))
+infra.Service("db", exec.Command("postgres"), service.Ports(5432)).
+	Env("POSTGRES_HOST_AUTH_METHOD", "trust")
+verify.Step("integration", exec.Command("go", "test", "./store/...")).Needs("db")
+```
+
+- `(*WorkflowBuilder).Service(id, action, opts...)` returns an ordinary
+  `*StepBuilder` (`Needs`, `Env`, `WorkDir`, `Mount`, `Timeout`, `When` work).
+  Options: `service.Ports(...)` (required), `service.TCP(port)` (default, on
+  the first port), `service.HTTP(port, path)` (ready on 200..399, redirects
+  not followed), `service.ReadyTimeout(d)` (default 60s),
+  `service.StopGrace(d)` (default 10s). `TCP`/`HTTP` do not add the port to
+  `Ports`.
+- Lifecycle: started, probed FROM THE COORDINATOR every 250 ms against the
+  published address until ready or `min(ReadyTimeout, Timeout)` (`Timeout`
+  bounds readiness, never lifetime); `service.ready` (`endpoints:[{port,
+  address}]`, `duration_ns`) is emitted, then consumers (steps that `Needs`
+  it) dispatch; it gives back its parallel slot once ready; it is stopped
+  (SIGTERM / `docker stop`, kill after `StopGrace`) once its last consumer
+  settles, or right away if nothing needs it.
+- States: stopped by senro is `succeeded` with exit 0 (`recovered` after a
+  manual `step.retry` of a failed one); `not ready after ...`, or exiting
+  before ready or before its consumers finished, is `failed` and consumers
+  still waiting are `skipped_upstream_failed`; run cancelled before ready is
+  `cancelled`, after ready `succeeded`.
+- Addresses, for each service a consumer `Needs` DIRECTLY:
+  `SENRO_SERVICE_<ID>_HOST` and `SENRO_SERVICE_<ID>_PORT_<declared>` (the
+  port to dial from where the consumer runs). `<ID>` is the id upper-cased,
+  every non-alphanumeric rune `_` (`infra/db` is `INFRA_DB`). A local service
+  binds its declared port itself; a container service is published to
+  `127.0.0.1` on a free port. By (service, consumer): local/local
+  `127.0.0.1`:declared; container/local `127.0.0.1`:published;
+  container/container the service container's bridge IP:declared;
+  local/container `host.docker.internal`:declared, via
+  `--add-host host.docker.internal:host-gateway` (on native Linux the local
+  service must listen on all interfaces or the gateway, and a firewall such
+  as ufw must allow the bridge). `service.ready` shows the published address.
+  Addresses never enter a cache key; a Pure consumer's key does carry each
+  direct service's node digest.
+- TCP probe: ready when a connection is accepted and not dropped within
+  200 ms. A local service's probe dials 127.0.0.1 (IPv4 only), and a local
+  service whose port is already taken fails `port N is already in use`.
+- A consumer retried or rerun after its service stopped restarts it first.
+- A service mounts a private read-only copy of each workspace directory,
+  taken when it starts (excludes do not apply, node_modules included); later
+  changes, a sibling's cache restore included, never reach it. It never
+  snapshots them.
+- `Build` refuses: a func-kind service, no ports, a port outside 1..65535 or
+  repeated, a probe on an undeclared port, an HTTP path without a leading
+  `/`, a TCP probe with a path, a negative ReadyTimeout/StopGrace, `Retry`,
+  `Pure`, `Generates`, `OnFailure`/`Always`, a service as a handler, and any
+  executor but local or container.
+- Fold: `step.created` carries `service: true` (`StepState.IsService`);
+  `service.ready` sets `StepState.Service` (`Ready` time, `Endpoints`), kept
+  after the stop; `(*StepState).Ready()` is true only while it is up. TUI
+  label `ready`, header `ready at <addr> (port N)` / `ran at` once stopped.
+- `senro up <pkg>` runs only services and their transitive needs (sets
+  `SENRO_UP=1`, which is `senro.WithHoldServices()` plus that selection;
+  every other step is `skipped_condition`, `not selected`), holds them until
+  Ctrl-C, prints `<step>  <address>  (port <n>)` per endpoint under plain/none.
+  Exit 0 if every service settled `succeeded`, 1 otherwise, 2 for no services.
+- Not supported: services on Kubernetes or SSH, command probes, a per-run
+  Docker network, retries/Pure/handlers on a service.
+
+## Generated files: `CheckGenerated`
+
+`(*StepBuilder).CheckGenerated()` fails a step that exits `0` but leaves any
+read-write workspace it mounts different from what it was given: for a step
+that regenerates checked-in files (codegen, formatting, lock files).
+
+```go
+src := senro.Workspace("src", senro.Scope(senro.ScopeRun))
+verify.Step("generated", exec.Command("go", "generate", "./...")).
+	WorkDir("/src").
+	Mount(src.At("/src", senro.RW)).
+	CheckGenerated()
+```
+
+- The step settles `failed` with exit code `0` and the error
+  `generated files are out of date in workspace src: N changed: a, b, ...`
+  (up to ten paths, then `and N more`). Added, removed, modified, mode and
+  kind changes all count.
+- A non-zero exit is the generator's own failure; the check does not run.
+- The drift is within one run. The drifted snapshot is kept: `senro ws pull
+  RUN src` writes out what the generator produced (the workspace's last
+  snapshot in the run); `senro ws diff CLEAN-RUN RUN src` only compares with a
+  clean run.
+- A sibling step that writes the same run-scoped workspace shows as drift.
+  Give the checking step its own workspace or order it with `Needs`.
+- `Build` refuses it on a service, together with `NoSnapshot`, and on a step
+  with no read-write workspace mount.
+- `Retry` together with `CheckGenerated` is refused at `Build`: a retry would compare against the
+  drifted tree. A manual `step.retry` (TUI, browser, after a `--break-on-failure` hold), or a
+  `run.rerun_from` that would re-execute the step, is refused
+  `check_generated_drifted_tree` for the same reason; `senro rerun --step` is a fresh run and works.
+- A step whose only read-write mounts are step-scoped or claim-backed is refused too: neither is
+  snapshotted (no later step reads a step-scoped one; a claim has no coordinator-side copy). A
+  handler cannot `CheckGenerated`: it mounts its parent's workspaces read-only.
+- `CheckGenerated` is part of the cache key (`step_shape`).
+
+## Kits: `Add` and `kit/*`
+
+A kit is a preset step for one tool with per-test results already wired in.
+Packages: `kit/gotest`, `kit/pytest`, `kit/eslint`, `kit/playwright`
+(`github.com/xavidop/senro/kit/...`).
+
+```go
+verify.Add("test", gotest.Step(gotest.Race()))
+verify.Add("e2e", playwright.Step(playwright.Dir("e2e")))
+verify.Expand("test", gowork.Modules()).Template(gotest.Template())
+```
+
+- `(*WorkflowBuilder).Add(id, sb)` adopts a builder made elsewhere (a kit's
+  `Step`, or `senro.NewStep`) and returns it, so `Needs`, `Env`, `When` chain
+  as on `Step`. `Build` refuses, naming the id: a builder added twice (or to
+  two workflows), a handler builder, a nil builder.
+- Every kit has `Step(opts...)` (one step, `WorkDir` from `Dir`),
+  `Template(opts...)` (a func for `Expand(...).Template`, one step per unit run
+  from `u.Dir`, `Dir` ignored, a fresh builder per call) and
+  `Detect(root) ([]kit.Match, error)`. Options on all: `Dir(d)`, `Args(a...)`.
+  Neither form calls `Pure()`: add `.Pure().Inputs(u.Sources()...)` yourself.
+- gotest: `go test -json [-race] [-tags a,b] [Args...] <Packages|./...>`;
+  `testreport.GoTestJSON()`, so reruns select by test. Options `Packages`,
+  `Race`, `Tags`. Applies where a `go.mod` is.
+- pytest: `<runner> pytest --junitxml=.senro/pytest.xml [Args...] [Paths...]`;
+  runner `uv run` (uv.lock), `poetry run` (poetry.lock), else `python -m`,
+  found at build time from the process working directory; `Runner(argv...)`
+  overrides. Report `JUnitXML` with `Selecting("-k", "{tests}").JoinedBy(" or ")`.
+  Options `Paths`, `Runner`. Applies on `[tool.pytest.ini_options]`, pytest in
+  project/optional/poetry dependencies, `pytest.ini`, `[pytest]` in tox.ini,
+  `[tool:pytest]` in setup.cfg.
+- eslint: `<pm> eslint <Paths|.> --format junit --output-file
+  .senro/eslint.xml [Args...]`; `<pm>` is `pnpm exec`, `yarn`, `bunx` or `npx`
+  from the nearest lockfile (none is npx). Report `JUnitXML` with NO selection
+  (rule hits are not rerunnable names), so a rerun runs the whole step. Option
+  `Paths`. Applies on a package.json with an ESLint config file or eslint as a
+  dependency.
+- playwright: `<pm> playwright test --reporter=list,junit [Args...]` with
+  `PLAYWRIGHT_JUNIT_OUTPUT_NAME=.senro/playwright.xml`; report `JUnitXML` with
+  NO selection: per-test rerun is not available, because Playwright's JUnit
+  names join the title path with ` › ` while `--grep` matches it joined with
+  spaces, so a rerun runs the whole step. Applies on a
+  `playwright.config.{ts,js,mjs,cjs,mts,cts}`.
+- Reports go under `.senro/` in the step's working directory
+  (`kit.ReportDir`); detection skips `.`/`_`-prefixed directories,
+  `node_modules`, `vendor`, `testdata`, `venv`, `env`, `build`, `dist`,
+  `target`, `site-packages`.
+- `kit/all.Detect(ctx, root)` runs every kit's `Detect`, sorted by kit then
+  directory; `senro init` uses it (see the CLI section).
 
 ## `Timeout`, `OnFailure`, `Always`
 
@@ -671,7 +904,8 @@ reserved in prose any more (`ws.snapshot` was the last). `run.cancel`,
 An interactive session on a live step is **not** a control operation but its own
 route, `POST /api/shell` (`senro shell --step <id>`, the TUI's `s` key): every
 executor hosts one, no secrets delivered, every mount read-only, live engine
-required (a run tailed from disk offers `senro ws pull`). `--tty` runs it on a
+required (the TUI on a run tailed from disk offers `senro ws pull`; the CLI
+falls back to the offline shell, below). `--tty` runs it on a
 real terminal (job control, line editing, `^C` as a signal, a window size
 following yours): a session KIND, not an upgrade, since a pty is one device with
 one merged output stream. Local, container and Kubernetes host one; ssh hosts a
@@ -679,6 +913,26 @@ shell, NOT a terminal (it drives `ssh` with pipes, and ssh takes the remote
 window size from its own stdin's terminal, which it lacks):
 `executor_no_terminal`, never downgraded.
 
+- **Break on failure**: `senro run --break-on-failure` (forwarded as
+  `SENRO_BREAK_ON_FAILURE=1`; library `senro.WithBreakOnFailure()`) holds a
+  `failed` or `timed_out` attempt with its sandbox and workspaces intact,
+  emitting `breakpoint.hit` with `reason: "failure"` (folded to
+  `StepState.Held`; TUI `failed, held (s shell · B release)`). `s` opens a
+  session in the failed state, `B` (`breakpoint.clear`) releases, `run.cancel`
+  releases everything. It never changes the outcome: after release a retry
+  policy continues (and holds again on the next failure); a run cancelled
+  while held gets no further attempt. The held step keeps its parallel slot,
+  a sibling's cache restore into a workspace it mounts waits, and
+  `breakpoint.set` on it is refused `step_held`.
+- **Offline shell**: `senro shell --run <id> --step <s>` on a run that is not
+  live (or with `--offline`) restores the step's latest `ws.snapshot` per
+  workspace into a temp dir (prints
+  `senro shell: offline, workspaces restored to <root>`), and runs this
+  machine's `$SHELL` (or `--cmd ARG...` / `-- cmd`) in the mount at the step's
+  `WorkDir`, with the step's env minus secrets plus `SENRO_SHELL=1`,
+  `SENRO_SHELL_RUN`, `SENRO_SHELL_STEP`. It is the coordinator's shell, NOT
+  the step's image. Removed on exit unless `--keep`; `--cache-dir DIR` names
+  the store. `--offline`/`--keep`/`--cache-dir` need `--run`.
 - `step.skip` settles a step, and every step needing it, as `skipped_manual`:
   nothing failed, so nothing is blamed `skipped_upstream_failed`,
   `ContinueOnError` does not apply, and the run still rolls up as succeeded.
@@ -726,23 +980,87 @@ window size from its own stdin's terminal, which it lacks):
 
 A refusal is a first-class answer: `ok:false` with a stable code (`unknown_op`,
 `run_finished`, `already_cancelled`, `run_not_active`, `missing_step`,
-`unknown_step`, `step_running`, `step_not_failed`, `step_settled`,
-`step_not_settled`, `breakpoint_exists`, `no_breakpoint`, `already_paused`,
+`unknown_step`, `step_running`, `step_not_failed`,
+`check_generated_drifted_tree`, `step_settled`, `step_not_settled`, `breakpoint_exists`, `no_breakpoint`, `already_paused`,
 `not_paused`, `missing_proposal`, `unknown_proposal`, `proposal_settled`,
 `no_remedy`, `no_workspace`, `snapshot_failed`). An operation applies completely
 or is refused.
 
+## Locking images: `senro lock`
+
+A tag moves; `senro lock <pkg>` writes `<pkg>/senro.lock`, pinning every
+container image the pipeline names by tag to its current digest. `senro run`
+and `senro up` apply that file when it exists (`SENRO_LOCK`; a `SENRO_LOCK` you
+set yourself wins, an empty value counts as unset, and to run unlocked you move
+or delete the file); from Go it is `senro.WithLock(path)`, which wins over the
+variable.
+
+- A locked run records the pins it applied (only its plan's images) as
+  `runs/<id>/lock.json` (`senro.RunLockFile`); `senro rerun` reapplies them, so
+  a rerun pulls the same digests. No `lock.json`, no lock on the rerun.
+
+- Strict: a locked run refuses an image the file does not list, before a run
+  directory exists (`senro: image "golang:1.26" is not in ci/senro.lock; run
+  senro lock`). A reference that already names a digest needs no entry.
+- `senro lock <pkg> --check` writes nothing, prints
+  `<ref>  <locked>  ->  <current>` per difference and the stderr line
+  `senro: drift detected`, and exits `1`. Go: `errors.Is(err, lock.ErrDrift)`.
+- The lock modes (`SENRO_LOCK_WRITE`, `SENRO_LOCK_CHECK`) run before the
+  trigger gate, so they never exit `78`.
+- Container images only. Kubernetes steps already require a digest at `Build`
+  and need no entry. Steps a `Generates` fragment adds are not pinned. HTTPS
+  registries only.
+- A container's `executor_class` cache key component carries the image digest,
+  so re-locking misses exactly the steps that run in the changed image.
+
+## GitHub App dispatcher
+
+`contrib/dispatcher` with `-github-app-id` and `-github-private-key-file`
+(together; also `-github-api`, `-check-name` default `senro`, `-details-url`
+with `{run}`) creates a queued check run per `push` or `pull_request`
+delivery before the `202`, and closes it itself when the pipeline does not:
+exit 78 `neutral`, exit 0 `success`, non-zero `failure`, killed by the
+dispatcher's `-timeout` or `-cancel-in-progress` `cancelled`, a start or
+staging failure `failure`, a busy group `neutral`. A check the pipeline already
+completed is left alone. The App needs `checks: write` and `metadata: read` and
+the `push` and `pull_request` events. The installation token is scoped to the
+delivery's one repository with `checks: write` and `metadata: read`, lives one
+hour (refreshed at 50 minutes for the close, same scope), hence `-timeout`
+defaults to one hour. A dispatcher that crashes mid-run leaves its check
+`in_progress`.
+
+The pipeline gets `SENRO_GITHUB_TOKEN`, `_API`, `_REPO`, `_SHA`, `_CHECK_RUN`,
+`_CHECK_NAME` and `_DETAILS_URL`, read by `notify.GitHubChecksFromEnv()`:
+
+```go
+if dest, ok := notify.GitHubChecksFromEnv(); ok {
+	n := notify.New(dest)
+	defer func() { _ = n.Close() }()
+	opts = append(opts, senro.WithSink(n))
+}
+```
+
+`notify.ExistingCheckRun(id)` adopts a created check (`run.started` PATCHes it
+to in progress) and `notify.DetailsURL(tmpl)` sets the link, `{run}` being the
+path-escaped run id.
+
 ## The CLI
 
 ```
-senro run <pkg> [--ui=auto|tui|plain|none] [--trigger-event PATH] [-- pipeline-args...]
+senro run <pkg> [--ui=auto|tui|plain|none] [--trigger-event PATH] [--break-on-failure]
+    [-- pipeline-args...]
+senro up <pkg> [--ui=auto|tui|plain|none] [-- pipeline-args...]
+senro init [DIR] [--out ci] [--force] [--dry-run] [--no-tidy]
+senro lock <pkg> [--check] [--file PATH] [-- pipeline-args...]
 senro attach [--pid <pid> | --run <id> | --addr <host:port>] [--follow] [--tls]
     [--ui=auto|tui|plain|none]
-senro shell [--pid <pid> | --run <id> | --addr <host:port>] [--tls] --step ID [-- cmd...]
+senro shell [--pid <pid> | --run <id> | --addr <host:port>] [--tls] [--tty]
+    [--offline] [--keep] [--cache-dir DIR] --step ID [--cmd ARG... | -- cmd...]
 senro cache gc [--max-size 50G] [--keep-failed 168h] [--dry-run] [--cache-dir DIR]
     (--max-size has no default: without it, nothing is evicted for size)
 senro cache explain [--run RUN] [STEP]
 senro verify --recheck-pure [--run RUN] [--rerun] [--step STEP] [--limit N]
+senro rerun [--run RUN] [--step STEP [--test NAME ...] [--failed-tests]] [--regenerate]
 senro ws ls [--cache-dir DIR] [RUN] [NAME]
 senro ws pull [--cache-dir DIR] [--force] RUN NAME [DEST]
 senro ws diff [--cache-dir DIR] [--json] RUN-A RUN-B [NAME]

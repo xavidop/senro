@@ -121,6 +121,7 @@ flowchart TD
   D -- yes --> A["senro attach --run ID --follow:<br>replay it in the full UI"]
   D -- no --> F["senro logs fetch ID:<br>pull the archived run back, then attach"]
   A --> W["senro ws pull / ws diff:<br>the files a step left behind"]
+  A --> O["senro shell --run ID --step:<br>a local shell over them"]
 ```
 
 ### Replaying it: `senro attach --follow`
@@ -140,12 +141,17 @@ See [The TUI](/docs/attach/tui/) and [Run and watch](/docs/cli/run/).
 
 While a run is **still alive**, `senro shell --step build` opens a session inside that step's own
 workspaces: read-only, at the same paths the step saw, on the step's own executor. Pair it with a
-breakpoint (`b` in the TUI) to freeze the workspace while you look around. See
-[The shell](/docs/attach/shell/).
+breakpoint (`b` in the TUI) to freeze the workspace before a step runs. To catch the moment a step
+fails instead, start the run with `senro run --break-on-failure`: a failed attempt is held with its
+sandbox and workspaces intact, `s` opens a shell in it, and `B` releases it. See
+[The shell](/docs/attach/shell/#stand-in-a-failure).
 
-Once the process has exited, there's no engine left to create a sandbox for you. Instead, use
-[`senro ws pull`](/docs/cli/workspaces/) to write those same files out of the content store. `senro
-ws diff RUN-A RUN-B src` shows you what changed in a workspace between two runs, file by file.
+Once the process has exited, there's no engine left to create a sandbox for you.
+`senro shell --run <id> --step build` then restores the step's last workspace snapshots into a
+temporary directory and opens this machine's own shell there, not the step's image. See
+[The shell](/docs/attach/shell/#a-finished-run-the-offline-shell).
+[`senro ws pull`](/docs/cli/workspaces/) writes one workspace out to keep, and `senro ws diff RUN-A
+RUN-B src` shows you what changed in a workspace between two runs, file by file.
 
 ### Reading it after the machine is gone
 

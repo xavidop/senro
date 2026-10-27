@@ -60,6 +60,82 @@ type GenerateSpec struct {
 	Path string `json:"path,omitempty"`
 }
 
+// The test report formats and the Select placeholder, as plan.json spells
+// them. They are testreport's FormatGoTest, FormatTAP, FormatJUnit and
+// Placeholder; plan keeps its own copy because it imports nothing outside
+// the standard library, and TestTestsConstantsMatchTestreport fails the day
+// the two drift.
+const (
+	TestFormatGoTest = "gotest"
+	TestFormatTAP    = "tap"
+	TestFormatJUnit  = "junit"
+	TestsPlaceholder = "{tests}"
+)
+
+// TestsSpec declares how a step reports tests: the format its output is
+// read as, and how a subset of them is selected for a re-run. It mirrors
+// testreport.Spec field for field; the plan keeps its own type because the
+// plan package is internal and testreport is the public surface.
+//
+// The declaration lives in the plan, not only in the engine's options,
+// because "senro rerun --test" works from plan.json alone and needs Select
+// and Join there.
+type TestsSpec struct {
+	// Format is "gotest", "tap" or "junit".
+	Format string `json:"format"`
+	// Path is the report file, for "junit" only.
+	Path string `json:"path,omitempty"`
+	// Select is argv appended to the step's command to run only some tests,
+	// with "{tests}" where their names go.
+	Select []string `json:"select,omitempty"`
+	// Join separates the chosen names where they replace "{tests}".
+	Join string `json:"join,omitempty"`
+}
+
+// The service probe kinds, as plan.json spells them. They are service's
+// ProbeTCP and ProbeHTTP; plan keeps its own copy because it imports nothing
+// outside the standard library, and TestServiceConstantsMatchService fails
+// the day the two drift.
+const (
+	ServiceProbeTCP  = "tcp"
+	ServiceProbeHTTP = "http"
+)
+
+// ProbeSpec is the readiness check of a service. It mirrors service.Probe.
+type ProbeSpec struct {
+	// Kind is "tcp" or "http".
+	Kind string `json:"kind"`
+	// Port is the port probed, one of the service's Ports.
+	Port int `json:"port"`
+	// Path is the request path, for "http" only, starting with "/".
+	Path string `json:"path,omitempty"`
+}
+
+// ServiceSpec declares that a step is a service: a process that stays up
+// while other steps use it, instead of running to completion. It mirrors
+// service.Spec with the durations in milliseconds, the way RetrySpec and
+// TimeoutMS are, so plan.json carries no unit-less number.
+//
+// The declaration lives in the plan because the engine decides readiness and
+// teardown from plan.json alone.
+//
+// Node.TimeoutMS is allowed on a service and means something different from
+// the other step kinds: it bounds readiness (how long the service may take
+// to become ready), not the service's lifetime, which ends when the run
+// stops it. ReadyTimeoutMS is the dedicated bound on the same wait.
+type ServiceSpec struct {
+	// Ports are the TCP ports the service listens on. Required: the probe
+	// needs a port, and a service nothing can reach is only a long step.
+	Ports []int `json:"ports"`
+	// Probe is the readiness check, run from the coordinator.
+	Probe ProbeSpec `json:"probe"`
+	// ReadyTimeoutMS is how long the engine waits for Probe to pass.
+	ReadyTimeoutMS int64 `json:"ready_timeout_ms"`
+	// StopGraceMS is how long the service gets to exit after being asked to
+	// stop, before it is killed.
+	StopGraceMS int64 `json:"stop_grace_ms"`
+}
+
 // FuncSpec is a registered Go function and the parameters it is called with.
 //
 // Params is canonical JSON (CanonicalParams: keys sorted at every level,
@@ -359,13 +435,21 @@ type Node struct {
 	// Generate is set for a step whose output produces a plan fragment, and
 	// nil for every ordinary step: omitempty keeps a plan that declares no
 	// generator at exactly the digest it has always had.
-	Generate        *GenerateSpec `json:"generate,omitempty"`
-	WorkDir         string        `json:"workdir,omitempty"`
-	Env             []string      `json:"env,omitempty"`
-	Needs           []string      `json:"needs,omitempty"`
-	ContinueOnError bool          `json:"continue_on_error,omitempty"`
-	Retry           *RetrySpec    `json:"retry,omitempty"`
-	TimeoutMS       int64         `json:"timeout_ms,omitempty"`
+	Generate *GenerateSpec `json:"generate,omitempty"`
+	// Tests is set for a step that reports individual test results, and nil
+	// for every other: omitempty on a pointer keeps a plan that declares no
+	// tests at exactly the digest it has always had.
+	Tests *TestsSpec `json:"tests,omitempty"`
+	// Service is set for a step that is a long-running service, and nil for
+	// every other: omitempty on a pointer keeps a plan that declares no
+	// service at exactly the digest it has always had.
+	Service         *ServiceSpec `json:"service,omitempty"`
+	WorkDir         string       `json:"workdir,omitempty"`
+	Env             []string     `json:"env,omitempty"`
+	Needs           []string     `json:"needs,omitempty"`
+	ContinueOnError bool         `json:"continue_on_error,omitempty"`
+	Retry           *RetrySpec   `json:"retry,omitempty"`
+	TimeoutMS       int64        `json:"timeout_ms,omitempty"`
 
 	// Executor is where this node runs, or nil for the coordinator. A
 	// handler inherits its parent step's executor; Validate refuses one
@@ -393,6 +477,11 @@ type Node struct {
 	// NoSnapshot suppresses the post-step workspace snapshot for a step
 	// whose output nobody consumes.
 	NoSnapshot bool `json:"no_snapshot,omitempty"`
+	// CheckGenerated fails an attempt that exits 0 but leaves any
+	// read-write workspace different from what it mounted: the post-step
+	// snapshot's index is compared with the index of the snapshot the mount
+	// was realised from. For a step that regenerates checked-in files.
+	CheckGenerated bool `json:"check_generated,omitempty"`
 
 	// Secrets are the credentials this node needs, by REFERENCE. A value is
 	// never here: a plan must be serializable, storable and re-runnable,
@@ -421,6 +510,23 @@ type Node struct {
 	// forms parsed by internal/cond. omitempty keeps condition-less nodes
 	// at their old digest.
 	When []string `json:"when,omitempty"`
+}
+
+// IsService reports whether this node is a service: a process that stays up
+// while other steps use it, rather than a command that runs to completion.
+func (n *Node) IsService() bool {
+	return n.Service != nil
+}
+
+// TestsStreaming reports whether this node's test results arrive on its
+// stdout while it runs (gotest, tap), as opposed to in a file read after it
+// exits (junit) or not at all. The engine uses it to decide whether to
+// watch the output as it passes.
+func (n *Node) TestsStreaming() bool {
+	if n.Tests == nil {
+		return false
+	}
+	return n.Tests.Format == TestFormatGoTest || n.Tests.Format == TestFormatTAP
 }
 
 // ExecutorKey is the key of the executor this node runs on: ExecutorLocal for

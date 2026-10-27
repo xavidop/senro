@@ -18,15 +18,20 @@ and how to read a miss.
 | `command` | The step's kind, argument vector and working directory |
 | `env` | The allowlisted environment, as name plus value digest pairs, never a value |
 | `secrets` | The declared secrets' identity: name, source, version and a salted digest, never a value |
-| `executor_class` | The executor's cache equivalence class, deliberately not host identity |
+| `executor_class` | The executor's cache equivalence class, deliberately not host identity. For a container, it carries the image's digest |
 | `platform` | The declared platform |
 | `input_digests` | The sorted paths and digests of the step's declared inputs |
 | `workspace_digests` | The sorted names and digests of the workspaces the step mounts |
 | `mount_shape` | The same mounts' name, mode and path, without their content |
-| `step_shape` | `NoSnapshot` and the declared `Outputs`, which decide what a saved result contains |
+| `step_shape` | `NoSnapshot`, the declared `Outputs` and `CheckGenerated` (`check_generated`), which decide what a saved result contains |
 | `func_identity` | A `Func` step's binary digest, registered name and parameter digest |
 | `tool_versions` | The declared toolchain fingerprint |
 | `version` | The key format's own version |
+
+A step that needs a [service](/docs/steps/services/) directly has one more, `services`: the
+digest of each such service's declaration, so changing its image or command misses. Its address
+never enters, since that changes every run. A step that needs no service has no `services`
+component at all, so its key is the twelve above.
 
 Each component comes from something you wrote: `Inputs` feeds `input_digests`, `Mount` feeds
 `workspace_digests` and `mount_shape`, `CacheEnv` feeds `env`. See
@@ -59,6 +64,10 @@ flowchart LR
 - **How you grouped your steps.** Moving steps between workflows does not change the plan's digest.
   Adding a workflow-level `Needs` does, because that adds real edges. See
   [Ordering](/docs/steps/ordering/).
+
+A container's class names the image by digest, not by tag, so a tag that moves invalidates the
+steps that run in it. With a [lock file](/docs/cli/lock/) the digest is the locked one: re-locking
+onto a newer image misses exactly those steps, and an unchanged lock keeps hitting.
 
 Two details about `executor_class` are worth knowing. A declared
 [`container.User`](/docs/executors/containers/) enters the class, but the default doesn't, since the

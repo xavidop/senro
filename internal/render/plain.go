@@ -12,6 +12,7 @@ import (
 
 	"github.com/xavidop/senro/api"
 	"github.com/xavidop/senro/internal/source"
+	"github.com/xavidop/senro/internal/webui/present"
 )
 
 // Plain renders a run as plain-text lines with no ANSI escapes of its own:
@@ -56,8 +57,22 @@ func Plain(ctx context.Context, src source.Source, w io.Writer) (api.RunStatus, 
 		if err := lp.flush(ctx); err != nil {
 			return "", err
 		}
+		// A snapshot holds only the folded verdicts, so a test that failed
+		// and then recovered is already summarised on the step line below and
+		// is not named here; only tests still failing are.
+		if err := printFailedTests(w, s); err != nil {
+			return "", fmt.Errorf("render: %w", err)
+		}
 		if err := printStep(w, s); err != nil {
 			return "", fmt.Errorf("render: %w", err)
+		}
+		// Only a service still up: the snapshot folds service.ready away, and
+		// a stopped service's address is no longer news. The live path below
+		// prints on each service.ready instead.
+		if s.Ready() {
+			if err := printEndpoints(w, s); err != nil {
+				return "", fmt.Errorf("render: %w", err)
+			}
 		}
 	}
 	if st.Run.Done {
@@ -137,9 +152,31 @@ func (p *logPrinter) handle(ctx context.Context, st *api.RunState, e api.Event, 
 		p.want(e.Step, e.Attempt, b.Stream, b.Offset+b.Len)
 	case api.BreakpointHit:
 		// A run stopped on purpose must not read like one that went quiet.
-		// No flush: a held step has produced no output to print above.
+		// No flush: a step held at a breakpoint has produced no output, and
+		// one held after failure prints its output when it settles, as any
+		// step does.
 		if err := printStep(w, st.Steps[e.Step]); err != nil {
 			return fmt.Errorf("render: %w", err)
+		}
+	case api.ServiceReady:
+		// Where a dependent can reach the service, said the moment the probe
+		// passes. No flush: the event has no step output of its own, and the
+		// step line on step.finished is unchanged.
+		if err := printEndpoints(w, st.Steps[e.Step]); err != nil {
+			return fmt.Errorf("render: %w", err)
+		}
+	case api.TestFinished:
+		// A failing test is named the moment it is reported, so the CI log
+		// says which test broke without opening a report. No flush: the event
+		// has no step output of its own, as with BreakpointHit.
+		var b api.TestFinishedBody
+		if err := e.Decode(&b); err != nil {
+			return fmt.Errorf("render: %w", err)
+		}
+		if b.Outcome == api.TestFailed {
+			if err := printTest(w, e.Step, b); err != nil {
+				return fmt.Errorf("render: %w", err)
+			}
 		}
 	case api.CacheDegraded:
 		// "Why was this build slow, why did nothing hit" is asked afterwards
@@ -209,10 +246,17 @@ func printStep(w io.Writer, s *api.StepState) error {
 	}
 	var err error
 	switch {
+	case s.Held == api.HoldReasonFailure:
+		// First, for the reason Paused comes before Started below: the hold
+		// comes before step.finished, so the step has no State yet, and
+		// "paused at breakpoint" would send a reader looking for a resume
+		// where the failure is what there is to look at. No exit code: the
+		// fold has none until step.finished, which prints it after release.
+		_, err = fmt.Fprintf(w, "%s held after failure\n", s.ID)
 	case s.State != "" && s.Error != "":
-		_, err = fmt.Fprintf(w, "%s %s: %s\n", s.ID, s.State, s.Error)
+		_, err = fmt.Fprintf(w, "%s %s: %s%s%s\n", s.ID, s.State, s.Error, testSummary(s), usageSuffix(s))
 	case s.State != "":
-		_, err = fmt.Fprintf(w, "%s %s\n", s.ID, s.State)
+		_, err = fmt.Fprintf(w, "%s %s%s%s\n", s.ID, s.State, testSummary(s), usageSuffix(s))
 	case s.Paused:
 		// Before the started case: a held step never started, so it would
 		// otherwise print nothing and a deliberate stop would read as a
@@ -222,6 +266,65 @@ func printStep(w io.Writer, s *api.StepState) error {
 		_, err = fmt.Fprintf(w, "%s started\n", s.ID)
 	}
 	return err
+}
+
+// printEndpoints names where a ready service listens, one line per endpoint.
+func printEndpoints(w io.Writer, s *api.StepState) error {
+	if s == nil || s.Service == nil {
+		return nil
+	}
+	for _, ep := range s.Service.Endpoints {
+		if _, err := fmt.Fprintf(w, "%s ready at %s (port %d)\n", s.ID, ep.Address, ep.Port); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// testSummary is the step line's test suffix, empty for a step with no tests
+// so its line stays byte for byte what it was. Zero failed and zero recovered
+// clauses are dropped: a green step reads "(12 tests)", not a row of zeros.
+func testSummary(s *api.StepState) string {
+	if len(s.Tests) == 0 {
+		return ""
+	}
+	c := s.TestCounts()
+	out := fmt.Sprintf(" (%d tests", c.Total)
+	if c.Failed > 0 {
+		out += fmt.Sprintf(", %d failed", c.Failed)
+	}
+	if c.Recovered > 0 {
+		out += fmt.Sprintf(", %d recovered", c.Recovered)
+	}
+	return out + ")"
+}
+
+// printTest names one failed test, attributed to its step. Only failures get
+// a line: a passing or skipped test is a count on the step line, not log noise.
+func printTest(w io.Writer, step string, b api.TestFinishedBody) error {
+	name := b.Name
+	if b.Suite != "" {
+		name = b.Suite + "." + b.Name
+	}
+	_, err := fmt.Fprintf(w, "%s test %s failed\n", step, name)
+	return err
+}
+
+// printFailedTests names every test a step's folded state still has as
+// failed, for the snapshot path where no test.finished event is replayed.
+func printFailedTests(w io.Writer, s *api.StepState) error {
+	if s == nil {
+		return nil
+	}
+	for _, t := range s.Tests {
+		if t.Outcome != api.TestFailed {
+			continue
+		}
+		if err := printTest(w, s.ID, api.TestFinishedBody{Name: t.Name, Suite: t.Suite, Outcome: t.Outcome}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // printRun writes the run's final line: the status recorded on
@@ -460,4 +563,16 @@ func (p *logPrinter) cursor(k logKey) *logCursor {
 	p.cursors[k] = c
 	p.cursorOrder = append(p.cursorOrder, k)
 	return c
+}
+
+// FormatUsage is a step's cost as "cpu 1.2s  rss 85 MB", or "" when its
+// executor could not measure it. The TUI uses the same text, so a step reads
+// the same in a CI log and on a terminal.
+func FormatUsage(u *api.ResourceUsage) string { return present.FormatUsage(u) }
+
+func usageSuffix(s *api.StepState) string {
+	if t := FormatUsage(s.Usage); t != "" {
+		return "  " + t
+	}
+	return ""
 }

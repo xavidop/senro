@@ -18,7 +18,7 @@ func sampleKey() cache.Key {
 		InputDigests:     cache.InputsComponent([]cache.FileDigest{{Path: "a.go", Digest: cas.FromBytes([]byte("a"))}}),
 		WorkspaceDigests: cache.WorkspacesComponent([]cache.WorkspaceDigest{{Name: "src", Digest: cas.FromBytes([]byte("w"))}}),
 		MountShape:       cache.MountShapeComponent([]cache.MountShape{{Name: "src", Mode: "rw", At: "/src"}}),
-		StepShape:        cache.StepShapeComponent(false, []string{"file:out.txt"}),
+		StepShape:        cache.StepShapeComponent(false, false, []string{"file:out.txt"}),
 		FuncIdentity:     "",
 		ToolVersions:     "",
 		Version:          cache.KeyVersion,
@@ -59,6 +59,7 @@ func TestEveryComponentIsLoadBearing(t *testing.T) {
 		{"step_shape", func(k *cache.Key) { k.StepShape = "changed" }},
 		{"func_identity", func(k *cache.Key) { k.FuncIdentity = "changed" }},
 		{"tool_versions", func(k *cache.Key) { k.ToolVersions = "changed" }},
+		{"services", func(k *cache.Key) { k.Services = "changed" }},
 		{"version", func(k *cache.Key) { k.Version = 99 }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,6 +86,32 @@ func TestComponentsAreNamedAndOrdered(t *testing.T) {
 		if got[i].Name != want[i] {
 			t.Errorf("component %d is %q, want %q: the order is part of the digest", i, got[i].Name, want[i])
 		}
+	}
+}
+
+// The services component exists only when a step needs a service: absent,
+// it is not a component at all, so a key that never had one digests exactly
+// as it did before the component was added. Present, it sits before
+// version, and Explain matches it by name against a key without one.
+func TestTheServicesComponentIsAbsentWhenEmpty(t *testing.T) {
+	for _, c := range sampleKey().Components() {
+		if c.Name == "services" {
+			t.Fatal("a key with no services lists a services component")
+		}
+	}
+	with := sampleKey()
+	with.Services = cache.ServicesComponent([]cache.ServiceDigest{{Step: "db", Digest: "abc"}})
+	cs := with.Components()
+	if cs[len(cs)-2].Name != "services" || cs[len(cs)-1].Name != "version" {
+		t.Errorf("components end %q, %q; want services, version", cs[len(cs)-2].Name, cs[len(cs)-1].Name)
+	}
+	diffs := cache.Explain(sampleKey(), with)
+	if len(diffs) != 1 || diffs[0].Name != "services" || diffs[0].From != "" {
+		t.Errorf("Explain(without, with) = %+v, want one services diff from empty", diffs)
+	}
+	diffs = cache.Explain(with, sampleKey())
+	if len(diffs) != 1 || diffs[0].Name != "services" || diffs[0].To != "" {
+		t.Errorf("Explain(with, without) = %+v, want one services diff to empty", diffs)
 	}
 }
 
@@ -379,8 +406,8 @@ func TestMountShapeComponentDistinguishesNamesThatCollideUnderNaiveJoining(t *te
 }
 
 func TestStepShapeComponentIsOrderIndependent(t *testing.T) {
-	a := cache.StepShapeComponent(false, []string{"file:a", "glob:**/*.go"})
-	b := cache.StepShapeComponent(false, []string{"glob:**/*.go", "file:a"})
+	a := cache.StepShapeComponent(false, false, []string{"file:a", "glob:**/*.go"})
+	b := cache.StepShapeComponent(false, false, []string{"glob:**/*.go", "file:a"})
 	if a != b {
 		t.Errorf("output declaration order changed the component: %q vs %q", a, b)
 	}
@@ -389,18 +416,44 @@ func TestStepShapeComponentIsOrderIndependent(t *testing.T) {
 // Flipping NoSnapshot with the same (empty) Outputs must move the
 // component: it changes whether Result.Workspaces is ever populated.
 func TestStepShapeComponentDistinguishesNoSnapshot(t *testing.T) {
-	on := cache.StepShapeComponent(true, nil)
-	off := cache.StepShapeComponent(false, nil)
+	on := cache.StepShapeComponent(true, false, nil)
+	off := cache.StepShapeComponent(false, false, nil)
 	if on == off {
 		t.Error("NoSnapshot true and false produced the same step_shape component")
+	}
+}
+
+// A step without CheckGenerated must render byte-identically to before the
+// flag existed, or every existing cache entry is orphaned. The literals were
+// recorded from the two-argument StepShapeComponent.
+func TestStepShapeComponentWithoutCheckGeneratedIsUnchanged(t *testing.T) {
+	if got, want := cache.StepShapeComponent(false, false, []string{"file:out.txt"}),
+		"11:no_snapshot 5:false\n12:file:out.txt 8:declared\n"; got != want {
+		t.Errorf("step_shape = %q, want %q", got, want)
+	}
+	if got, want := cache.StepShapeComponent(true, false, nil), "11:no_snapshot 4:true\n"; got != want {
+		t.Errorf("step_shape = %q, want %q", got, want)
+	}
+}
+
+// CheckGenerated decides whether a drifted tree is a success, so a result
+// saved without it must not satisfy a step that has it.
+func TestStepShapeComponentDistinguishesCheckGenerated(t *testing.T) {
+	off := cache.StepShapeComponent(false, false, []string{"file:out.txt"})
+	on := cache.StepShapeComponent(false, true, []string{"file:out.txt"})
+	if on == off {
+		t.Error("CheckGenerated true and false produced the same step_shape component")
+	}
+	if !strings.Contains(on, "check_generated") {
+		t.Errorf("step_shape = %q, want a check_generated record", on)
 	}
 }
 
 // Declaring an output where there was none must move the component: it
 // changes whether Result.Outputs is ever populated on a save.
 func TestStepShapeComponentDistinguishesOutputs(t *testing.T) {
-	none := cache.StepShapeComponent(false, nil)
-	one := cache.StepShapeComponent(false, []string{"file:out.txt"})
+	none := cache.StepShapeComponent(false, false, nil)
+	one := cache.StepShapeComponent(false, false, []string{"file:out.txt"})
 	if none == one {
 		t.Error("declaring an output where there was none produced the same step_shape component")
 	}
@@ -421,7 +474,7 @@ func TestAKeyWithNoSecretsDigestsExactlyAsItAlwaysHas(t *testing.T) {
 		InputDigests:     cache.InputsComponent(nil),
 		WorkspaceDigests: cache.WorkspacesComponent(nil),
 		MountShape:       cache.MountShapeComponent(nil),
-		StepShape:        cache.StepShapeComponent(false, nil),
+		StepShape:        cache.StepShapeComponent(false, false, nil),
 		Version:          cache.KeyVersion,
 	}
 	const want = "sha256:067148553514e52383584f0d51fd4c70df7d268e0cf4c87906b0847e504c9514"

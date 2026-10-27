@@ -127,6 +127,7 @@ func (s *RunState) Apply(e Event) error {
 		st := s.step(e.Step)
 		st.Kind = b.Kind
 		st.Needs = b.Needs
+		st.IsService = b.Service
 		if b.Group != "" {
 			st.Group = b.Group
 		} else if e.Group != "" {
@@ -143,6 +144,7 @@ func (s *RunState) Apply(e Event) error {
 		st.ExitCode = 0
 		st.Error = ""
 		st.Paused = false
+		st.Held = ""
 		if e.Attempt > st.Attempt {
 			st.Attempt = e.Attempt
 		}
@@ -158,6 +160,8 @@ func (s *RunState) Apply(e Event) error {
 		st.Error = b.Error
 		st.Finished = e.TS
 		st.Paused = false
+		st.Held = ""
+		st.Usage = b.Usage
 		if b.Cached {
 			st.Cached = true
 		}
@@ -177,11 +181,60 @@ func (s *RunState) Apply(e Event) error {
 		st.ExitCode = 0
 		st.Error = ""
 		st.Paused = false
+		st.Held = ""
+		// The new attempt is not ready yet; keeping the old endpoints would
+		// report a dead address as live.
+		st.Service = nil
+		// Usage belongs to the attempt that reported it.
+		st.Usage = nil
 		// Each attempt gets its own log file starting at byte 0 (see
 		// eventlog.LogSet.Path). LogBytes accumulates via max() (see
 		// StepLogAppended below), so leaving the old attempt's high-water
 		// mark would hide the new attempt's smaller offsets entirely.
 		st.LogBytes = nil
+		// st.Tests is deliberately NOT cleared. Recovered detection compares
+		// the next attempt's verdict against this attempt's failure, so
+		// wiping it here would leave nothing to recover from.
+
+	case TestFinished:
+		var b TestFinishedBody
+		if err := e.Decode(&b); err != nil {
+			return err
+		}
+		st := s.step(e.Step)
+		existing := st.Test(b.Suite, b.Name)
+		// Within one attempt the worst verdict wins. A TAP stream or a
+		// `go test -count=N` run can name one test twice in one attempt, and
+		// a later passed line there does not undo the earlier failure: that
+		// attempt still failed the test. Keeping the failed entry, and the
+		// output that explains it, is the conservative error. A failed
+		// verdict from the same attempt still replaces passed or skipped.
+		if existing != nil && existing.Attempt == e.Attempt &&
+			existing.Outcome == TestFailed && b.Outcome != TestFailed {
+			break
+		}
+		outcome := b.Outcome
+		// Recovered is failed on an earlier attempt, then passed on a later
+		// one. The attempt comparison keeps a replayed failed event from
+		// promoting itself. A replay must neither promote nor demote: once
+		// recovered, a replayed or later passed event leaves the test
+		// recovered, or re-folding the last event would turn it back into
+		// passed. Only a failed verdict replaces a recovered entry, below.
+		if existing != nil && b.Outcome == TestPassed &&
+			(existing.Outcome == TestRecovered ||
+				(existing.Outcome == TestFailed && e.Attempt > existing.Attempt)) {
+			outcome = TestRecovered
+		}
+		r := &TestResult{
+			Name: b.Name, Suite: b.Suite, Outcome: outcome,
+			Duration: b.Duration, Attempt: e.Attempt,
+			Output: b.Output, File: b.File, Line: b.Line,
+		}
+		if existing != nil {
+			*existing = *r
+		} else {
+			st.Tests = append(st.Tests, r)
+		}
 
 	case StepLogAppended:
 		var b StepLogAppendedBody
@@ -201,11 +254,29 @@ func (s *RunState) Apply(e Event) error {
 		s.step(e.Step).Cached = true
 
 	case BreakpointHit:
-		// The payload names who armed it; the fold does not need that and does
-		// not decode it. The one underivable bit: this step is held, and the
-		// run is stopped rather than stuck. Cleared by StepStarted,
-		// StepFinished, StepRetried and ControlApplied below.
-		s.step(e.Step).Paused = true
+		// Who armed it the fold does not need. The underivable bits are that
+		// this step is held, so the run is stopped rather than stuck, and why:
+		// a failure hold offers a shell where a breakpoint offers resume.
+		// Cleared by StepStarted, StepFinished, StepRetried and ControlApplied
+		// below.
+		var b BreakpointHitBody
+		if err := e.Decode(&b); err != nil {
+			return err
+		}
+		st := s.step(e.Step)
+		st.Paused = true
+		// Unconditional: the hit is authoritative, so a plain hit clears a
+		// stale failure reason.
+		st.Held = b.Reason
+
+	case ServiceReady:
+		var b ServiceReadyBody
+		if err := e.Decode(&b); err != nil {
+			return err
+		}
+		// The envelope's timestamp is when it became ready: the event IS the
+		// moment the probe passed.
+		s.step(e.Step).Service = &ServiceState{Ready: e.TS, Endpoints: b.Endpoints}
 
 	case ControlApplied:
 		var b ControlAppliedBody
@@ -222,9 +293,18 @@ func (s *RunState) Apply(e Event) error {
 		// ledger conjure steps that were never in any plan.
 		switch b.Op {
 		case OpBreakpointClear:
-			if st, ok := s.Steps[b.Args["step"]]; ok {
-				st.Paused = false
+			st, ok := s.Steps[b.Args["step"]]
+			if !ok {
+				break
 			}
+			// Releasing an armed breakpoint leaves a failure hold in place:
+			// the step is still stopped. Anything else (a released hold, or
+			// a ledger that predates "released") lets go of everything.
+			if b.Args["released"] == ReleasedBreakpoint && st.Held != "" {
+				break
+			}
+			st.Paused = false
+			st.Held = ""
 		case OpRunPause:
 			// Unlike a breakpoint, no separate event announces the scheduler
 			// acted: a pause takes effect the instant it is accepted, so this

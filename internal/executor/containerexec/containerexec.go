@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xavidop/senro/internal/dockerd"
@@ -140,6 +141,13 @@ func (e *Executor) resolve(ctx context.Context) error {
 	}
 	repo, _ := dockerd.SplitRef(e.spec.Image)
 	e.img, e.digest = info, info.Digest(repo)
+	// An image named by digest IS that digest: a repository can list several
+	// RepoDigests (a manifest list and a platform manifest, two pulls), and
+	// the first is not necessarily the one asked for. A locked run names the
+	// pinned digest, so its class reports the pin by construction.
+	if _, d, ok := strings.Cut(e.spec.Image, "@"); ok && strings.HasPrefix(d, "sha256:") {
+		e.digest = d
+	}
 	e.resolved = true
 	return nil
 }
@@ -340,6 +348,10 @@ type sandbox struct {
 
 	mu sync.Mutex
 	id string // the container, once Run has created one
+	// usage is the most recent Run's, folded from the daemon's stats stream
+	// by followStats and read by Usage. See usage.go.
+	usage   senroexec.ResourceUsage
+	usageOK bool
 }
 
 // HostSecretDir is the coordinator-side directory this sandbox delivers
@@ -421,6 +433,12 @@ var logDrainGrace = 5 * time.Second
 // twice; the engine adds trace context (TRACEPARENT, TRACESTATE) at most
 // once and never when the step declared it (engine.spanTable.outboundEnv),
 // and this function must keep passing the result through.
+//
+// SandboxSpec.ExtraHosts applies to every container built here, an ordinary
+// step's included, not only a service's: the container that needs
+// host.docker.internal mapped is the CONSUMER, which is an ordinary step
+// reaching a service published on the host. StartService adds the published
+// ports on top; nothing else does, so a step publishes nothing.
 func (s *sandbox) containerSpecFor(c senroexec.Cmd) (dockerd.ContainerSpec, error) {
 	binds := make([]dockerd.Bind, 0, len(s.spec.Mounts)+1)
 	for _, m := range s.spec.Mounts {
@@ -450,6 +468,7 @@ func (s *sandbox) containerSpecFor(c senroexec.Cmd) (dockerd.ContainerSpec, erro
 	return dockerd.ContainerSpec{
 		Image: s.ex.spec.Image, Cmd: c.Args, Env: c.Env,
 		WorkingDir: workDir, User: s.ex.user, Binds: binds,
+		ExtraHosts: s.spec.ExtraHosts,
 		Labels: map[string]string{
 			"senro.run":     s.ex.runID,
 			"senro.step":    s.spec.StepID,
@@ -468,6 +487,8 @@ func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Wr
 	if len(c.Args) == 0 {
 		return 0, fmt.Errorf("containerexec: %w: empty command", senroexec.ErrInfra)
 	}
+	// Never report a previous Run's figures as this one's.
+	s.resetUsage()
 	spec, err := s.containerSpecFor(c)
 	if err != nil {
 		return 0, err
@@ -501,12 +522,27 @@ func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Wr
 	// cancellation, so a killed container is still reaped and its output
 	// still lands in the step's log.
 	bg := context.WithoutCancel(ctx)
+	// The stats stream starts right after start, so the first sample the
+	// daemon takes is not missed, and survives cancellation like the log
+	// stream: a killed workload still consumed something. The daemon does
+	// not end it when the container stops (only removal does), so it is
+	// cut below, statsTailGrace after the exit.
+	statsCtx, stopStats := context.WithCancel(bg)
+	defer stopStats()
+	var exited atomic.Bool
+	statsDone := s.followStats(statsCtx, id, &exited)
 	// The log stream gets its own cancellable context so the drain below
 	// can STOP it rather than merely stop waiting for it.
 	logCtx, stopLogs := context.WithCancel(bg)
 	defer stopLogs()
-	logsDone := make(chan error, 1)
-	go func() { logsDone <- s.ex.cli.ContainerLogs(logCtx, id, stdout, stderr) }()
+	// The stream's error is not the step's verdict: ContainerWait owns the
+	// exit code, and the drain below cancels the stream on purpose, so its
+	// error is expected on that path. logsDone only says "it ended".
+	logsDone := make(chan struct{}, 1)
+	go func() {
+		_ = s.ex.cli.ContainerLogs(logCtx, id, stdout, stderr)
+		logsDone <- struct{}{}
+	}()
 
 	type waitResult struct {
 		code int
@@ -527,6 +563,13 @@ func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Wr
 		_ = s.ex.cli.ContainerKill(bg, id)
 		res = <-waitDone
 	}
+	// The container has exited. The stats stream gets statsTailGrace to
+	// deliver one more sample (or the empty one that ends it, see
+	// keepFollowing) and is then cut; the timer runs alongside the log drain
+	// below rather than in front of it.
+	exited.Store(true)
+	statsTimer := time.AfterFunc(statsTailGrace, stopStats)
+	defer statsTimer.Stop()
 
 	// Drain the log stream before returning, bounded, so every byte the step
 	// produced is in the file before the engine emits step.finished.
@@ -545,6 +588,10 @@ func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Wr
 		stopLogs()
 		<-logsDone
 	}
+	// Bounded by statsTailGrace through the timer above, so Usage, read by
+	// the engine as soon as Run returns, sees every sample the stream
+	// delivered and no goroutine writes the sandbox's usage afterwards.
+	<-statsDone
 
 	switch {
 	case cancelled != nil:

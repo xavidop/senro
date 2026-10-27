@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sort"
 
 	"github.com/xavidop/senro"
@@ -16,8 +20,8 @@ import (
 // here, in site/src/pages/docs/cli/rerun.md and in
 // skills/senro/references/cli.md, and changing either is a breaking change.
 const rerunUsage = `Usage:
-  senro rerun [--run RUN] [--step STEP] [--regenerate] [--cache-dir DIR]
-      [--dir DIR] [--local-class CLASS]
+  senro rerun [--run RUN] [--step STEP [--test NAME ...] [--failed-tests]]
+      [--regenerate] [--dir DIR] [--cache-dir DIR] [--local-class CLASS]
 
       Re-execute the plan a previous run recorded, from <run>/plan.json rather
       than by rebuilding the pipeline package: rebuilding would re-resolve a
@@ -29,6 +33,10 @@ const rerunUsage = `Usage:
       recorded rather than being asked again. That is what makes a re-run
       reproduce a run instead of re-discovering one.
 
+      A run that applied a lock recorded the pins it used as <run>/lock.json,
+      and a re-run reapplies them, so it pulls the digests the run pulled. A
+      run without one re-runs unlocked.
+
   Flags:
     --run RUN            the run to re-execute (default: the most recent one)
     --step STEP          re-execute this step, WHAT IT NEEDS, and everything
@@ -38,6 +46,19 @@ const rerunUsage = `Usage:
                          them cheap: unchanged ones are served rather than
                          re-executed. All of it is read from the recorded plan,
                          so "below it" means what it meant in the original run.
+    --test NAME          with --step, run only the named test of that step
+                         (repeatable). NAME is a test the run being
+                         re-executed recorded on that step, bare or as
+                         suite.name; any other name is a usage error. The
+                         step's declared test selection is appended to its
+                         command, so the step must declare one. For go test
+                         a subtest reruns its top-level parent. The command
+                         changes, so the narrowed step is never served from
+                         the full run's cache entry.
+    --failed-tests       with --step, run only the tests that failed on that
+                         step in the run being re-executed, read from its
+                         ledger. It is a usage error when none failed. It
+                         combines with --test.
     --regenerate         ask generators for a FRESH subgraph instead of
                          replaying the recorded one. Named separately from
                          --step on purpose: silently re-deriving a graph during
@@ -57,11 +78,16 @@ const rerunUsage = `Usage:
 
 func cmdRerun(args []string, stdout, stderr io.Writer) int {
 	var run, step, cacheDir, dir, localClass string
-	var regenerate bool
+	var regenerate, failedOnly bool
+	var tests []string
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
 		case a == "--regenerate":
 			regenerate = true
+		case a == "--failed-tests":
+			failedOnly = true
+		case a == "--test" && i+1 < len(args):
+			tests, i = append(tests, args[i+1]), i+1
 		case a == "--run" && i+1 < len(args):
 			run, i = args[i+1], i+1
 		case a == "--step" && i+1 < len(args):
@@ -81,6 +107,11 @@ func cmdRerun(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	if (len(tests) > 0 || failedOnly) && step == "" {
+		_, _ = fmt.Fprintf(stderr, "senro rerun: --test and --failed-tests need --step to say which step to narrow\n")
+		return exitUsage
+	}
+
 	runDir, err := resolveRunDir(run)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "senro rerun: %v\n", err)
@@ -93,6 +124,14 @@ func cmdRerun(args []string, stdout, stderr io.Writer) int {
 	}
 
 	opts := []senro.Option{}
+	locked, err := recordedLock(runDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "senro rerun: %v\n", err)
+		return exitUsage
+	}
+	if locked != "" {
+		opts = append(opts, senro.WithLock(locked))
+	}
 	if dir != "" {
 		opts = append(opts, senro.WithDir(dir))
 	}
@@ -112,6 +151,36 @@ func cmdRerun(args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		opts = append(opts, senro.WithOnlySteps(sel...))
+
+		if len(tests) > 0 || failedOnly {
+			// Checked here, against the recorded plan, so a step that cannot
+			// select is a usage error before any run starts and not a run
+			// that fails halfway through.
+			node := findNode(p, step)
+			if node.Tests == nil || len(node.Tests.Select) == 0 {
+				_, _ = fmt.Fprintf(stderr, "senro rerun: step %q declares no way to select tests, so it cannot "+
+					"run only some of them; it needs a Tests spec with a Select\n", step)
+				return exitUsage
+			}
+			recorded, err := recordedTests(runDir, step)
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "senro rerun: %v\n", err)
+				return exitUsage
+			}
+			if tests, err = resolveTestNames(step, recorded, tests); err != nil {
+				_, _ = fmt.Fprintf(stderr, "senro rerun: %v\n", err)
+				return exitUsage
+			}
+			if failedOnly {
+				failed := failedTests(recorded)
+				if len(failed) == 0 {
+					_, _ = fmt.Fprintf(stderr, "senro rerun: no test on step %q failed in run %s\n", step, runDir)
+					return exitUsage
+				}
+				tests = append(tests, failed...)
+			}
+			opts = append(opts, senro.WithTestSelection(step, dedupe(tests)...))
+		}
 	}
 
 	if err := senro.RunPlan(context.Background(), p, opts...); err != nil {
@@ -119,6 +188,21 @@ func cmdRerun(args []string, stdout, stderr io.Writer) int {
 		return exitRunFailed
 	}
 	return exitSuccess
+}
+
+// recordedLock is the path of the pins the run applied (senro.RunLockFile),
+// or "" when the run was not locked. A rerun reapplies them, so it pulls the
+// digests the run pulled rather than whatever the tags point at now, and
+// whatever <pkg>/senro.lock says today does not enter into it.
+func recordedLock(runDir string) (string, error) {
+	path := filepath.Join(runDir, senro.RunLockFile)
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	return path, nil
 }
 
 // selectFrom is step, everything it transitively needs, and everything that
@@ -179,4 +263,29 @@ func selectFrom(p *plan.Plan, step string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// findNode is the recorded plan's node for id. selectFrom has already
+// refused an id the plan does not have, so it is never nil here.
+func findNode(p *plan.Plan, id string) *plan.Node {
+	for i := range p.Nodes {
+		if p.Nodes[i].ID == id {
+			return &p.Nodes[i]
+		}
+	}
+	return nil
+}
+
+// dedupe drops repeated names, keeping first-seen order, so --test A given
+// twice, or alongside a failed A, selects A once.
+func dedupe(names []string) []string {
+	seen := make(map[string]bool, len(names))
+	out := names[:0:0]
+	for _, n := range names {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
 }

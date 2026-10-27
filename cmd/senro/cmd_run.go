@@ -13,7 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/xavidop/senro/api"
 	"github.com/xavidop/senro/internal/attachsrv"
+	"github.com/xavidop/senro/internal/source"
 )
 
 // registrationPollInterval is how often `senro run` rechecks
@@ -40,11 +42,20 @@ func cmdRun(args []string, stdout, stderr io.Writer, isTTY bool) int {
 	// Every Fprintln(stderr, ...) below is a best-effort diagnostic: a write
 	// failure there has no further channel to report through and does not
 	// change the exit code, so it is deliberately discarded.
-	pkg, uiStr, pipelineArgs, err := parseRunArgs(args)
+	opts, err := parseRunOptions(args)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "senro run:", err)
 		return exitUsage
 	}
+	return runBuilt("run", opts, false, runHooks{}, stdout, stderr, isTTY)
+}
+
+// runBuilt is everything cmdRun does once the arguments parse: resolve the
+// UI, build the package, exec it and attach. senro up shares it, differing
+// only in up (the child's SENRO_UP) and in the hooks cmdUp supplies, so the
+// two cannot drift on how a pipeline is built, started and attached.
+func runBuilt(verb string, opts runOptions, up bool, hk runHooks, stdout, stderr io.Writer, isTTY bool) int {
+	pkg, uiStr, pipelineArgs := opts.pkg, opts.ui, opts.pipelineArgs
 
 	parsed, err := parseUIMode(uiStr)
 	if err != nil {
@@ -59,7 +70,7 @@ func cmdRun(args []string, stdout, stderr io.Writer, isTTY bool) int {
 
 	goBin, err := exec.LookPath("go")
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "senro run: no Go toolchain found on PATH (`go build` is required to "+
+		_, _ = fmt.Fprintln(stderr, "senro "+verb+": no Go toolchain found on PATH (`go build` is required to "+
 			"build the pipeline package). Build it yourself and run \"./pipeline --tui\" instead")
 		return exitUsage
 	}
@@ -72,7 +83,7 @@ func cmdRun(args []string, stdout, stderr io.Writer, isTTY bool) int {
 		if interrupted.Load() {
 			return exitCodeForInterrupted("")
 		}
-		_, _ = fmt.Fprintln(stderr, "senro run:", err)
+		_, _ = fmt.Fprintln(stderr, "senro "+verb+":", err)
 		return exitUsage
 	}
 	defer cleanup()
@@ -99,7 +110,10 @@ func cmdRun(args []string, stdout, stderr io.Writer, isTTY bool) int {
 	// a func step for a remote host. Passing it here is what makes
 	// `senro run ./ci` need no option in the pipeline's own source; an
 	// explicit senro.WithFuncBuild takes precedence.
-	cmd.Env = append(os.Environ(), funcPkgEnv+"="+pkg)
+	cmd.Env = childEnv(pkg, opts.breakOnFailure, up)
+	if hk.env != nil {
+		cmd.Env = hk.env
+	}
 	// tui owns the whole terminal (alt screen); a child scribbling on the
 	// same one would corrupt it. Relaying is safe for plain/none, since an
 	// attach-embedding pipeline does not print on its own.
@@ -107,12 +121,23 @@ func cmdRun(args []string, stdout, stderr io.Writer, isTTY bool) int {
 		cmd.Stdout = safeStdout
 		cmd.Stderr = safeStderr
 	}
+	// childStderr sees the pipeline's stderr whether or not it is relayed:
+	// under the TUI nothing else would, and senro up needs to read why a
+	// pipeline refused to start.
+	if hk.childStderr != nil {
+		if mode == uiTUI {
+			cmd.Stderr = hk.childStderr
+		} else {
+			cmd.Stderr = io.MultiWriter(safeStderr, hk.childStderr)
+		}
+	}
 	if err := cmd.Start(); err != nil {
-		_, _ = fmt.Fprintln(stderr, "senro run:", err)
+		_, _ = fmt.Fprintln(stderr, "senro "+verb+":", err)
 		return exitUsage
 	}
 
-	return runPipeline(ctx, cmd, mode, safeStdout, safeStderr, interrupted)
+	hk.verb = verb
+	return runPipelineWith(ctx, cmd, mode, safeStdout, safeStderr, interrupted, hk)
 }
 
 // syncWriter serializes concurrent writes to an io.Writer not otherwise
@@ -128,7 +153,66 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 	return s.w.Write(p)
 }
 
-// parseRunArgs splits senro run's own arguments from the pipeline's. The
+// childEnv is the environment the pipeline binary is exec'd with: this
+// process's own, plus what only the CLI knows (see funcPkgEnv) and the
+// switches that select a mode. They travel as environment, not argv, because
+// senro.Run never reads the pipeline's argv (see upEnv in the senro package).
+//
+// A <pkg>/senro.lock is applied through SENRO_LOCK unless the user set
+// SENRO_LOCK themselves; an empty value counts as unset, since an empty path
+// names no lock to apply.
+func childEnv(pkg string, breakOnFailure, up bool) []string {
+	env := append(os.Environ(), funcPkgEnv+"="+pkg)
+	if breakOnFailure {
+		env = append(env, breakOnFailureEnv+"=1")
+	}
+	if up {
+		env = append(env, upEnv+"=1")
+	}
+	if os.Getenv(lockEnv) == "" {
+		if path, ok := existingLock(pkg); ok {
+			env = append(env, lockEnv+"="+path)
+		}
+	}
+	return env
+}
+
+// runOptions is what parseRunOptions pulls out of senro run's (and senro
+// up's) arguments.
+type runOptions struct {
+	pkg, ui      string
+	pipelineArgs []string
+	// breakOnFailure is --break-on-failure: consumed here and never
+	// forwarded as argv; see childEnv.
+	breakOnFailure bool
+}
+
+// runHooks is what senro up and senro lock add to the shared run path. The
+// zero value is senro run.
+type runHooks struct {
+	// wrapSource wraps the attach Source the UI renders from, so a caller can
+	// observe the stream the UI sees without a second subscription.
+	wrapSource func(source.Source) source.Source
+	// exitCode, when set, replaces the exit code derived from the watched
+	// run's status and from an interrupt.
+	exitCode func(status api.RunStatus, interrupted bool) int
+	// childStderr receives a copy of the pipeline's stderr.
+	childStderr io.Writer
+	// env, when non-nil, replaces childEnv as the pipeline's environment
+	// (senro lock, whose child must never apply a lock).
+	env []string
+	// verb names the command in diagnostics; empty means run.
+	verb string
+}
+
+// parseRunArgs is parseRunOptions without the options that only the child's
+// environment carries.
+func parseRunArgs(args []string) (pkg, ui string, pipelineArgs []string, err error) {
+	o, err := parseRunOptions(args)
+	return o.pkg, o.ui, o.pipelineArgs, err
+}
+
+// parseRunOptions splits senro run's own arguments from the pipeline's. The
 // stdlib flag package cannot do it: the package path comes first
 // ("senro run ./ci --ui=plain") and flag.Parse stops at the first non-flag
 // argument. This scans every token up to "--" (everything after it is
@@ -138,9 +222,10 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 // own matcher, which is what keeps a dispatcher stateless. The path is
 // passed through verbatim, since the pipeline runs in this process's
 // working directory and a relative one still resolves.
-func parseRunArgs(args []string) (pkg, ui string, pipelineArgs []string, err error) {
-	ui = string(uiAuto)
-	var rest []string
+func parseRunOptions(args []string) (runOptions, error) {
+	ui := string(uiAuto)
+	var pipelineArgs, rest []string
+	breakOnFailure := false
 	triggerEvent := ""
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -151,28 +236,30 @@ func parseRunArgs(args []string) (pkg, ui string, pipelineArgs []string, err err
 		switch {
 		case a == "--ui":
 			if i+1 >= len(args) {
-				return "", "", nil, errors.New("--ui requires a value")
+				return runOptions{}, errors.New("--ui requires a value")
 			}
 			ui = args[i+1]
 			i++
 		case strings.HasPrefix(a, "--ui="):
 			ui = strings.TrimPrefix(a, "--ui=")
+		case a == "--break-on-failure":
+			breakOnFailure = true
 		case a == "--trigger-event":
 			if i+1 >= len(args) {
-				return "", "", nil, errors.New("--trigger-event requires a path (or \"-\" for stdin)")
+				return runOptions{}, errors.New("--trigger-event requires a path (or \"-\" for stdin)")
 			}
 			triggerEvent = args[i+1]
 			i++
 		case strings.HasPrefix(a, "--trigger-event="):
 			triggerEvent = strings.TrimPrefix(a, "--trigger-event=")
 		case strings.HasPrefix(a, "-"):
-			return "", "", nil, fmt.Errorf("unknown flag %q", a)
+			return runOptions{}, fmt.Errorf("unknown flag %q", a)
 		default:
 			rest = append(rest, a)
 		}
 	}
 	if triggerEvent == "" && sawTriggerEventFlag(args) {
-		return "", "", nil, errors.New("--trigger-event requires a path (or \"-\" for stdin)")
+		return runOptions{}, errors.New("--trigger-event requires a path (or \"-\" for stdin)")
 	}
 	if triggerEvent != "" {
 		// Appended AFTER whatever followed "--", so positional arguments
@@ -182,12 +269,12 @@ func parseRunArgs(args []string) (pkg, ui string, pipelineArgs []string, err err
 	}
 	switch len(rest) {
 	case 0:
-		return "", "", nil, errors.New("missing package path (usage: senro run <pkg> " +
-			"[--ui=auto|tui|plain|none] [--trigger-event PATH] [-- pipeline-args...])")
+		return runOptions{}, errors.New("missing package path (usage: senro run <pkg> " +
+			"[--ui=auto|tui|plain|none] [--trigger-event PATH] [--break-on-failure] [-- pipeline-args...])")
 	case 1:
-		return rest[0], ui, pipelineArgs, nil
+		return runOptions{pkg: rest[0], ui: ui, pipelineArgs: pipelineArgs, breakOnFailure: breakOnFailure}, nil
 	default:
-		return "", "", nil, fmt.Errorf("unexpected extra arguments: %v", rest[1:])
+		return runOptions{}, fmt.Errorf("unexpected extra arguments: %v", rest[1:])
 	}
 }
 
@@ -212,9 +299,32 @@ func sawTriggerEventFlag(args []string) bool {
 // TestRunPassesThePackageToThePipelineForCrossCompilation.
 const funcPkgEnv = "SENRO_FUNC_PKG"
 
-// buildPipeline runs `go build -o <tmp> pkg`. Build output goes to stderr,
-// never stdout: it is a diagnostic about the BUILD, not the pipeline's
-// output. ctx bounds the build (Ctrl-C should interrupt a stuck `go build`,
+// upEnv and breakOnFailureEnv are the same kind of wire name, for senro up
+// and --break-on-failure. Pinned by TestRunForwardsBreakOnFailureAsEnv and
+// the senro package's own tests.
+const (
+	upEnv             = "SENRO_UP"
+	breakOnFailureEnv = "SENRO_BREAK_ON_FAILURE"
+)
+
+// buildArgs is the go command line that builds pkg into the absolute path
+// bin. A pkg naming a local directory (./ci, ci, /abs/ci) is built with
+// `-C pkg`, so the toolchain resolves the module from that directory: a
+// pipeline in ci/ with its own ci/go.mod (what senro init writes for a
+// repository that is not a Go module) builds from the parent, which has no
+// go.mod. Inside a single module -C changes nothing. Any other pkg is an
+// import path and is built from the caller's directory as written. Only the
+// build moves; the binary still runs in the caller's directory.
+func buildArgs(pkg, bin string) []string {
+	if fi, err := os.Stat(pkg); err == nil && fi.IsDir() {
+		return []string{"build", "-C", pkg, "-o", bin, "."}
+	}
+	return []string{"build", "-o", bin, pkg}
+}
+
+// buildPipeline runs `go build` for pkg (see buildArgs) into a temp
+// directory. Build output goes to stderr, never stdout: it is a diagnostic
+// about the BUILD, not the pipeline's output. ctx bounds the build (Ctrl-C should interrupt a stuck `go build`,
 // and there is no run yet to cancel gracefully), unlike the pipeline
 // process, which cmdRun deliberately does not bind to ctx.
 func buildPipeline(ctx context.Context, goBin, pkg string, stderr io.Writer) (binPath string, cleanup func(), err error) {
@@ -224,8 +334,12 @@ func buildPipeline(ctx context.Context, goBin, pkg string, stderr io.Writer) (bi
 	}
 	cleanup = func() { _ = os.RemoveAll(dir) }
 
-	binPath = filepath.Join(dir, "pipeline")
-	cmd := exec.CommandContext(ctx, goBin, "build", "-o", binPath, pkg)
+	binPath, err = filepath.Abs(filepath.Join(dir, "pipeline"))
+	if err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("create build directory: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, goBin, buildArgs(pkg, binPath)...)
 	cmd.Stdout = stderr
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
@@ -242,9 +356,20 @@ func buildPipeline(ctx context.Context, goBin, pkg string, stderr io.Writer) (bi
 // the same waitDone channel, fed by a single goroutine, so a fixture that
 // exits before registering cannot cause a double-Wait.
 func runPipeline(ctx context.Context, cmd *exec.Cmd, mode uiMode, stdout, stderr io.Writer, interrupted *atomic.Bool) int {
+	return runPipelineWith(ctx, cmd, mode, stdout, stderr, interrupted, runHooks{})
+}
+
+// runPipelineWith is runPipeline with senro up's hooks applied.
+func runPipelineWith(ctx context.Context, cmd *exec.Cmd, mode uiMode, stdout, stderr io.Writer, interrupted *atomic.Bool, hk runHooks) int {
 	pid := cmd.Process.Pid
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- cmd.Wait() }()
+	waitDone := make(chan struct{}, 1)
+	// The channel carries "it exited", not Wait's error: every exit code
+	// below comes from cmd.ProcessState (processExitCode), which Wait has
+	// populated by the time the signal is sent, so the error has no reader.
+	go func() {
+		_ = cmd.Wait()
+		waitDone <- struct{}{}
+	}()
 
 	entry, found, exited := waitForRegistrationOrExit(ctx, pid, waitDone)
 
@@ -267,7 +392,7 @@ func runPipeline(ctx context.Context, cmd *exec.Cmd, mode uiMode, stdout, stderr
 
 	src, err := connectAndNegotiate(ctx, entry, stderr)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "senro run:", err)
+		_, _ = fmt.Fprintln(stderr, "senro "+hk.name()+":", err)
 		_ = cmd.Process.Kill()
 		<-waitDone
 		return exitUsage
@@ -276,7 +401,11 @@ func runPipeline(ctx context.Context, cmd *exec.Cmd, mode uiMode, stdout, stderr
 	// explicit to say so, and to survive one that someday does not.
 	defer func() { _ = src.Close() }()
 
-	status, watchErr := watch(ctx, src, mode, stdout)
+	watched := src
+	if hk.wrapSource != nil {
+		watched = hk.wrapSource(src)
+	}
+	status, watchErr := watch(ctx, watched, mode, stdout)
 
 	if interrupted.Load() {
 		// Ask the still-live engine to cancel gracefully BEFORE waiting for
@@ -292,18 +421,24 @@ func runPipeline(ctx context.Context, cmd *exec.Cmd, mode uiMode, stdout, stderr
 			_ = cmd.Process.Kill()
 			<-waitDone
 		}
+		if hk.exitCode != nil {
+			return hk.exitCode(status, true)
+		}
 		return exitCodeForInterrupted(status)
 	}
 
 	<-waitDone // the process may already have exited; this reaps it either way
 
 	if watchErr != nil {
-		_, _ = fmt.Fprintln(stderr, "senro run:", watchErr)
+		_, _ = fmt.Fprintln(stderr, "senro "+hk.name()+":", watchErr)
 		return processExitCode(cmd)
 	}
 	if status != "" {
 		// The contract case: the WATCHED run's outcome is authoritative
 		// over whatever the process itself returned.
+		if hk.exitCode != nil {
+			return hk.exitCode(status, false)
+		}
 		return exitCodeForRunStatus(status)
 	}
 	// watch ended without ever seeing run.finished, so there is no status
@@ -331,7 +466,7 @@ func runPipeline(ctx context.Context, cmd *exec.Cmd, mode uiMode, stdout, stderr
 // registration means a slow process, not one that will never register, and
 // a pipeline with WaitForClient: true blocks on exactly the connection a
 // deadline would give up making. See cmd_run_deadlock_test.go.
-func waitForRegistrationOrExit(ctx context.Context, pid int, waitDone <-chan error) (entry attachsrv.Entry, found, exited bool) {
+func waitForRegistrationOrExit(ctx context.Context, pid int, waitDone <-chan struct{}) (entry attachsrv.Entry, found, exited bool) {
 	ticker := time.NewTicker(registrationPollInterval)
 	defer ticker.Stop()
 	for {
@@ -378,4 +513,12 @@ func processExitCode(cmd *exec.Cmd) int {
 		}
 	}
 	return exitRunFailed
+}
+
+// name is the command word diagnostics are prefixed with.
+func (h runHooks) name() string {
+	if h.verb == "" {
+		return "run"
+	}
+	return h.verb
 }

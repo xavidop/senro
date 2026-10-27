@@ -157,10 +157,208 @@ func nodeShape(n Node) error {
 		// configured; refuse it at plan time rather than after an incident.
 		return fmt.Errorf("plan: step %q retry policy allows %d attempt(s), want at least 2", n.ID, n.Retry.MaxAttempts)
 	}
+	if err := validateTests(n); err != nil {
+		return err
+	}
+	if err := validateService(n); err != nil {
+		return err
+	}
+	if err := validateCheckGenerated(n); err != nil {
+		return err
+	}
 	if err := validateExecutor(n); err != nil {
 		return err
 	}
 	return validateSecrets(n)
+}
+
+// validateCheckGenerated refuses CheckGenerated wherever the check would
+// have nothing to compare. It compares the snapshot taken after the step
+// with the one its read-write mount was realised from, so it needs a step
+// that settles, is snapshotted, and can write to a workspace.
+func validateCheckGenerated(n Node) error {
+	if !n.CheckGenerated {
+		return nil
+	}
+	if n.IsService() {
+		return fmt.Errorf(
+			"plan: step %q is a service and declares CheckGenerated: a service is stopped rather "+
+				"than finishing, so there is no completed run whose workspace the check could compare "+
+				"with what was mounted", n.ID)
+	}
+	if n.NoSnapshot {
+		return fmt.Errorf(
+			"plan: step %q declares both CheckGenerated and NoSnapshot: the check compares the "+
+				"post-step snapshot with what was mounted, and NoSnapshot takes no snapshot", n.ID)
+	}
+	if n.Retry != nil {
+		// The drifted attempt's snapshot becomes the workspace's state, so
+		// the next attempt mounts it and regenerating it changes nothing:
+		// the retry would pass the check it exists to enforce.
+		return fmt.Errorf(
+			"plan: step %q declares both CheckGenerated and a Retry policy: a retry would compare "+
+				"against the drifted tree the failed attempt left, and pass; put the generator in its "+
+				"own step without a retry", n.ID)
+	}
+	for _, m := range n.Mounts {
+		if m.Workspace != "" && m.Mode != "ro" {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		"plan: step %q declares CheckGenerated with no read-write workspace mount: the check "+
+			"compares the post-step snapshot of a read-write mount with what was mounted, and a "+
+			"read-only mount (or a scratch cache, which is never snapshotted) gives it nothing to compare", n.ID)
+}
+
+// validateService checks a node's service declaration. Each refusal is a
+// declaration that would otherwise compile and then hang a run, retry a
+// process that is meant to stay up, or cache something that is not a result.
+func validateService(n Node) error {
+	s := n.Service
+	if s == nil {
+		return nil
+	}
+	if n.Kind == "func" {
+		// A function runs in-process and returns; there is no process to
+		// keep up and no port for it to listen on.
+		return fmt.Errorf(
+			"plan: step %q is a func step and declares Service, which only an exec step can: "+
+				"a service is a process that stays up and listens on a port", n.ID)
+	}
+	// The KIND, not ExecutorKey: the key carries the image (and namespace,
+	// user, host), so "container:postgres:16" never equals "container" and
+	// every container service would be refused. An empty Kind is local, as
+	// ExecutorSpec.Key reads it.
+	k := ExecutorLocal
+	if n.Executor != nil && n.Executor.Kind != "" {
+		k = n.Executor.Kind
+	}
+	if k != ExecutorLocal && k != ExecutorContainer {
+		// The probe runs from the coordinator and dependents reach the
+		// service by a port on it. Only these two put a listening process
+		// where the coordinator can connect.
+		return fmt.Errorf(
+			"plan: step %q is a service and runs on the %s executor: a service is only supported "+
+				"on the local and container executors, the two whose ports the coordinator can reach",
+			n.ID, k)
+	}
+	if len(s.Ports) == 0 {
+		return fmt.Errorf(
+			"plan: step %q is a service with no ports: the readiness probe needs a port and "+
+				"dependents reach the service through one; declare it with service.Ports", n.ID)
+	}
+	declared := false
+	seen := make(map[int]bool, len(s.Ports))
+	for _, p := range s.Ports {
+		if p <= 0 || p > 65535 {
+			return fmt.Errorf("plan: step %q declares port %d, which is not a TCP port (1 to 65535)", n.ID, p)
+		}
+		if seen[p] {
+			// Each port is one SENRO_SERVICE_<ID>_PORT_<n> variable and one
+			// published binding; a second copy can only be a mistake.
+			return fmt.Errorf("plan: step %q declares port %d twice", n.ID, p)
+		}
+		seen[p] = true
+		if p == s.Probe.Port {
+			declared = true
+		}
+	}
+	if s.ReadyTimeoutMS < 0 || s.StopGraceMS < 0 {
+		return fmt.Errorf(
+			"plan: step %q has a negative ReadyTimeout or StopGrace: a duration a service waits "+
+				"cannot be less than zero", n.ID)
+	}
+	if !declared {
+		return fmt.Errorf(
+			"plan: step %q probes port %d, which is not in its Ports %v: a probe can only check a "+
+				"port the service declared", n.ID, s.Probe.Port, s.Ports)
+	}
+	switch s.Probe.Kind {
+	case ServiceProbeTCP:
+		if s.Probe.Path != "" {
+			// A TCP probe sends nothing, so a path would be silently
+			// ignored: the author meant an HTTP probe.
+			return fmt.Errorf("plan: step %q has a TCP probe with path %q: only an HTTP probe "+
+				"requests a path; use service.HTTP", n.ID, s.Probe.Path)
+		}
+	case ServiceProbeHTTP:
+		if !strings.HasPrefix(s.Probe.Path, "/") {
+			return fmt.Errorf("plan: step %q has an HTTP probe path %q that does not start with \"/\"",
+				n.ID, s.Probe.Path)
+		}
+	default:
+		return fmt.Errorf("plan: step %q has unknown probe kind %q, want \"tcp\" or \"http\"", n.ID, s.Probe.Kind)
+	}
+	if n.Retry != nil {
+		return fmt.Errorf(
+			"plan: step %q is a service and declares Retry: a service that exits has failed, and "+
+				"restarting it would hand its dependents a different instance than the one they "+
+				"started against", n.ID)
+	}
+	if n.Pure {
+		return fmt.Errorf(
+			"plan: step %q is a service and is marked Pure: a service produces no result to cache, "+
+				"and a hit would skip starting the process its dependents need", n.ID)
+	}
+	if n.Generate != nil {
+		return fmt.Errorf("plan: step %q is a service and declares Generate: a service never finishes, "+
+			"so it has no output to read a fragment from", n.ID)
+	}
+	if len(n.OnFailure) > 0 || len(n.Always) > 0 {
+		return fmt.Errorf(
+			"plan: step %q is a service and declares OnFailure or Always handlers: a service's "+
+				"lifetime ends when the run stops it, not when it settles, so a handler would run "+
+				"at a moment that means nothing", n.ID)
+	}
+	return nil
+}
+
+// validateTests checks a node's test-report declaration. Each refusal is a
+// declaration that would otherwise compile and then quietly report nothing,
+// which for a test report reads as "all passed".
+func validateTests(n Node) error {
+	t := n.Tests
+	if t == nil {
+		return nil
+	}
+	if n.Kind == "func" {
+		// A function has no stdout to read and no exit status to pair with
+		// a report, so the declaration could never take effect.
+		return fmt.Errorf(
+			"plan: step %q is a func step and declares Tests, which only an exec step can: "+
+				"the report is read from the command's output", n.ID)
+	}
+	switch t.Format {
+	case TestFormatGoTest, TestFormatTAP:
+	case TestFormatJUnit:
+		if t.Path == "" {
+			return fmt.Errorf("plan: step %q declares a junit test report with no path to read it from", n.ID)
+		}
+		if n.ExecutorKey() != ExecutorLocal {
+			// n.Executor is non-nil here: ExecutorKey reports ExecutorLocal
+			// for a nil Executor, so only a node that names one gets this far.
+			return fmt.Errorf(
+				"plan: step %q declares a JUnit report and runs on the %s executor: a JUnit report is "+
+					"read from the coordinator's filesystem, which only the local executor shares; "+
+					"report over stdout with testreport.GoTestJSON() or testreport.TAP() instead",
+				n.ID, n.Executor.Kind)
+		}
+	default:
+		return fmt.Errorf("plan: step %q declares unknown test report format %q, want \"gotest\", \"tap\" or \"junit\"",
+			n.ID, t.Format)
+	}
+	if len(t.Select) > 0 {
+		for _, a := range t.Select {
+			if strings.Contains(a, TestsPlaceholder) {
+				return nil
+			}
+		}
+		return fmt.Errorf(
+			"plan: step %q declares a test selection with no {tests} placeholder in it, so a re-run "+
+				"would select nothing; put {tests} in one of the arguments", n.ID)
+	}
+	return nil
 }
 
 // validateFuncSecrets refuses the one secret channel a func step cannot be
@@ -445,11 +643,23 @@ func validateHandlers(parent *Node, lists ...[]Node) error {
 	seen := make(map[string]bool)
 	for _, list := range lists {
 		for _, h := range list {
+			// Before nodeShape, whose generic "no read-write workspace
+			// mount" refusal would otherwise name the wrong reason.
+			if h.CheckGenerated {
+				return fmt.Errorf(
+					"plan: handler %q of step %q declares CheckGenerated: a handler cannot "+
+						"CheckGenerated: it mounts its parent's workspaces read-only", h.ID, parentID)
+			}
 			if err := nodeShape(h); err != nil {
 				return err
 			}
 			if len(h.Needs) > 0 {
 				return fmt.Errorf("plan: handler %q of step %q must not declare Needs", h.ID, parentID)
+			}
+			if h.Service != nil {
+				return fmt.Errorf(
+					"plan: handler %q of step %q declares a Service, but a handler runs once to "+
+						"completion and cannot be a service", h.ID, parentID)
 			}
 			if len(h.When) > 0 {
 				return fmt.Errorf(
@@ -814,6 +1024,43 @@ func ancestors(byID map[string]*Node, id string) map[string]bool {
 	return out
 }
 
+// validateCheckGeneratedStorage is the half of validateCheckGenerated that
+// needs the plan's workspace declarations: a read-write mount the engine
+// never snapshots gives the check nothing to compare. A step-scoped
+// workspace is skipped because no later step reads it, and a claim-backed
+// one because it has no coordinator-side copy to walk (see
+// engine.snapshotMounts). Mounts of undeclared workspaces were refused by
+// the caller already.
+func validateCheckGeneratedStorage(n *Node, ws map[string]WorkspaceSpec) error {
+	if !n.CheckGenerated {
+		return nil
+	}
+	var skipped []string
+	for _, m := range n.Mounts {
+		if m.Workspace == "" || m.Mode == "ro" {
+			continue
+		}
+		switch {
+		case ws[m.Workspace].Scope == "step":
+			skipped = append(skipped, fmt.Sprintf("%q is step-scoped", m.Workspace))
+		case n.Executor != nil && n.Executor.Claims[m.Workspace] != "":
+			skipped = append(skipped, fmt.Sprintf("%q is backed by the claim %q", m.Workspace, n.Executor.Claims[m.Workspace]))
+		default:
+			return nil
+		}
+	}
+	if len(skipped) == 0 {
+		// No read-write workspace mount at all: validateCheckGenerated's
+		// refusal, which runs before this one.
+		return nil
+	}
+	return fmt.Errorf(
+		"plan: step %q declares CheckGenerated but none of its read-write workspace mounts is "+
+			"snapshotted (%s): the check compares the post-step snapshot with what was mounted, and "+
+			"a step-scoped or claim-backed workspace is never snapshotted. Mount a run-scoped or "+
+			"persistent workspace read-write", n.ID, strings.Join(skipped, ", "))
+}
+
 func validateNodeStorage(n *Node, ws map[string]WorkspaceSpec, sc map[string]ScratchSpec) error {
 	at := make(map[string]bool, len(n.Mounts))
 	var workspaceMounts int
@@ -848,6 +1095,10 @@ func validateNodeStorage(n *Node, ws map[string]WorkspaceSpec, sc map[string]Scr
 		if m.Mode != "" && m.Mode != "rw" {
 			return fmt.Errorf("plan: step %q mounts scratch cache %q read-only; a scratch cache is always writable", n.ID, m.Scratch)
 		}
+	}
+
+	if err := validateCheckGeneratedStorage(n, ws); err != nil {
+		return err
 	}
 
 	if !n.Pure {

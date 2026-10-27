@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xavidop/senro/api"
 )
@@ -337,5 +338,45 @@ func TestFixtureForwardCompatibility(t *testing.T) {
 	}
 	if st := s.Steps["build"]; st == nil || st.State != api.StateSucceeded {
 		t.Errorf("known events must still fold: build = %+v", st)
+	}
+}
+
+// A test that fails on attempt 1 and passes on attempt 2 folds to recovered,
+// while one that passed both times stays passed.
+func TestFixtureTestsFlaky(t *testing.T) {
+	s := replay(t, "testdata/fixtures/tests-flaky.jsonl")
+	st := s.Steps["test"]
+	if x := st.Test("pkg/a", "TestX"); x == nil || x.Outcome != api.TestRecovered || x.Attempt != 2 {
+		t.Errorf("TestX = %+v, want recovered on attempt 2", x)
+	}
+	if c := st.TestCounts(); c != (api.TestCounts{Total: 2, Passed: 1, Recovered: 1}) {
+		t.Errorf("counts = %+v", c)
+	}
+}
+
+// A service step folds ready with its endpoints, and a failure hold that a
+// client clears leaves the step failed with nothing held.
+func TestFixtureServiceAndHold(t *testing.T) {
+	s := replay(t, "testdata/fixtures/service-and-hold.jsonl")
+	db := s.Steps["db"]
+	if !db.IsService || db.Service == nil || len(db.Service.Endpoints) != 1 ||
+		db.Service.Endpoints[0].Address != "127.0.0.1:5432" {
+		t.Errorf("db = %+v service=%+v", db, db.Service)
+	}
+	if st := s.Steps["test"]; st.Held != "" || st.Paused || st.State != api.StateFailed {
+		t.Errorf("test: Held=%q Paused=%v State=%q", st.Held, st.Paused, st.State)
+	}
+}
+
+// A step.finished that carries usage folds it onto the step verbatim; one
+// without usage leaves the step's Usage nil.
+func TestFixtureUsage(t *testing.T) {
+	s := replay(t, "testdata/fixtures/usage.jsonl")
+	want := api.ResourceUsage{CPUUser: 1200 * time.Millisecond, CPUSystem: 300 * time.Millisecond, MaxRSS: 85000000}
+	if u := s.Steps["build"].Usage; u == nil || *u != want {
+		t.Errorf("build Usage = %+v, want %+v", u, want)
+	}
+	if u := s.Steps["lint"].Usage; u != nil {
+		t.Errorf("lint Usage = %+v, want nil: no usage was reported", u)
 	}
 }

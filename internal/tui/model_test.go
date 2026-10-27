@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/xavidop/senro/api"
 	"github.com/xavidop/senro/internal/eventlog"
@@ -1916,6 +1918,24 @@ func TestModelRendersAHeldStepAsPaused(t *testing.T) {
 	}
 }
 
+// TestModelRendersAStepHeldAfterFailure: a --break-on-failure hold is not a
+// breakpoint to resume past but a failure to stand in, and the row names
+// the two keys that act on it.
+func TestModelRendersAStepHeldAfterFailure(t *testing.T) {
+	src := &fakeSource{state: seedState("r1")}
+	m := tui.New(src)
+	m = update(t, m, tui.StateMsg{State: seedState("r1")})
+	m = update(t, m, tui.EventMsg{Event: stepCreated("r1", "build")})
+	m = update(t, m, tui.EventMsg{Event: api.Event{
+		V: 1, Seq: 20, Type: api.BreakpointHit, Run: "r1", Step: "build", Attempt: 1,
+		Payload: []byte(`{"reason":"failure"}`),
+	}})
+
+	if out := plain(m.View()); !strings.Contains(out, "failed, held (s shell \u00b7 B release)") {
+		t.Errorf("View() does not show build held after failure:\n%s", out)
+	}
+}
+
 // ---- 'R' rerun-from ----
 
 func TestModelShiftRSendsRerunFromForTheFocusedStep(t *testing.T) {
@@ -2223,5 +2243,208 @@ func TestModelWWithNoFocusDoesNotSendAControlRequestAndSaysWhy(t *testing.T) {
 	// test that cannot fail.
 	if !strings.Contains(plain(m.View()), "snapshot: no step focused") {
 		t.Fatalf("View() does not explain why 'w' did nothing:\n%s", plain(m.View()))
+	}
+}
+
+// ---- the tests pane: counts on the row, 't' swaps the log for the verdicts ----
+
+// flakyFixtureEvents loads the tests-flaky fixture, keeping events up to and
+// including seq upTo (0 keeps all). Cut at seq 6 it is the first attempt:
+// TestX failed with output, TestY passed.
+func flakyFixtureEvents(t *testing.T, upTo uint64) []api.Event {
+	t.Helper()
+	raw, err := os.ReadFile("../../api/testdata/fixtures/tests-flaky.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []api.Event
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var e api.Event
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatal(err)
+		}
+		if upTo == 0 || e.Seq <= upTo {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func flakyModel(t *testing.T, upTo uint64) *tui.Model {
+	t.Helper()
+	m := tui.New(&fakeSource{state: seedState("r1")})
+	m = update(t, m, tui.StateMsg{State: seedState("r1")})
+	for _, e := range flakyFixtureEvents(t, upTo) {
+		m = update(t, m, tui.EventMsg{Event: e})
+	}
+	return m
+}
+
+func pressT(t *testing.T, m *tui.Model) *tui.Model {
+	t.Helper()
+	return update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+}
+
+func TestModelViewShowsTestCountsOnTheStepRow(t *testing.T) {
+	m := flakyModel(t, 0)
+	if out := plain(m.View()); !strings.Contains(out, "[2 tests · 1 recovered]") {
+		t.Errorf("step row missing test counts:\n%s", out)
+	}
+}
+
+func TestModelTKeyShowsFailedTestsFirstWithOutput(t *testing.T) {
+	m := flakyModel(t, 6)
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = pressT(t, m)
+
+	out := plain(m.View())
+	fx := regexp.MustCompile(`failed\s+pkg/a\.TestX`).FindStringIndex(out)
+	py := regexp.MustCompile(`passed\s+pkg/a\.TestY`).FindStringIndex(out)
+	if fx == nil || py == nil || fx[0] > py[0] {
+		t.Fatalf("want failed TestX before passed TestY:\n%s", out)
+	}
+	if !strings.Contains(out, "    x_test.go:12: boom") {
+		t.Errorf("failed test's output missing, indented four spaces:\n%s", out)
+	}
+}
+
+func TestModelTKeyTogglesBackToTheLog(t *testing.T) {
+	m := flakyModel(t, 6)
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = pressT(t, pressT(t, m))
+	out := plain(m.View())
+	if strings.Contains(out, "pkg/a.TestX") {
+		t.Errorf("second t should restore the log pane:\n%s", out)
+	}
+	if !strings.Contains(out, "test: (no log output yet)") {
+		t.Errorf("log pane not restored:\n%s", out)
+	}
+}
+
+func TestModelTKeyWithNothingFocusedSetsAHint(t *testing.T) {
+	m := pressT(t, flakyModel(t, 6))
+	if out := plain(m.View()); !strings.Contains(out, "tests: no step focused") {
+		t.Errorf("want a hint in the footer:\n%s", out)
+	}
+}
+
+// A step with hundreds of tests must not push its failures, or the footer,
+// off the screen: the pane keeps its top rows, where the failure is, and says
+// what it left out.
+func TestModelTestsPaneIsClippedToTheTerminal(t *testing.T) {
+	m := tui.New(&fakeSource{state: seedState("r1")})
+	m = update(t, m, tui.StateMsg{State: seedState("r1")})
+	m = update(t, m, tea.WindowSizeMsg{Width: 200, Height: 20})
+	seq := uint64(0)
+	emit := func(typ api.Type, body any) {
+		t.Helper()
+		seq++
+		e := api.Event{V: api.Version, Seq: seq, Type: typ, Run: "r1", Step: "unit", Attempt: 1}
+		if body != nil {
+			raw, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.Payload = raw
+		}
+		m = update(t, m, tui.EventMsg{Event: e})
+	}
+	emit(api.StepStarted, nil)
+	for i := 0; i < 200; i++ {
+		emit(api.TestFinished, api.TestFinishedBody{
+			Suite: "pkg", Name: fmt.Sprintf("TestP%03d", i), Outcome: api.TestPassed,
+		})
+	}
+	emit(api.TestFinished, api.TestFinishedBody{
+		Suite: "pkg", Name: "TestBroken", Outcome: api.TestFailed, Output: "boom\n",
+	})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = pressT(t, m)
+
+	out := plain(m.View())
+	if !regexp.MustCompile(`failed\s+pkg\.TestBroken`).MatchString(out) {
+		t.Errorf("the failed test is not shown:\n%s", out)
+	}
+	more := regexp.MustCompile(`… (\d+) more lines \((\d+) passed\)`).FindStringSubmatch(out)
+	if more == nil {
+		t.Fatalf("no \"more lines\" marker:\n%s", out)
+	}
+	shown := strings.Count(out, "pkg.TestP")
+	if lines := shown + 1; lines >= 20 {
+		t.Errorf("pane shows %d test lines, want fewer than 20", lines)
+	}
+	if want := fmt.Sprint(200 - shown); more[2] != want {
+		t.Errorf("marker says %s passed hidden, want %s", more[2], want)
+	}
+}
+
+// testsModel has two steps, "a" with a failing test whose output is one
+// very long line and "b" with no tests, on an 80-column terminal.
+func testsModel(t *testing.T) *tui.Model {
+	t.Helper()
+	m := tui.New(&fakeSource{state: seedState("r1")})
+	m = update(t, m, tui.StateMsg{State: seedState("r1")})
+	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 30})
+	seq := uint64(0)
+	for _, step := range []string{"a", "b"} {
+		seq++
+		e := stepStarted("r1", step, 1)
+		e.Seq = seq
+		m = update(t, m, tui.EventMsg{Event: e})
+	}
+	raw, err := json.Marshal(api.TestFinishedBody{
+		Name: "TestLong", Outcome: api.TestFailed, Output: strings.Repeat("y", 300) + "\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq++
+	m = update(t, m, tui.EventMsg{Event: api.Event{
+		V: api.Version, Seq: seq, Type: api.TestFinished, Run: "r1", Step: "a", Attempt: 1, Payload: raw,
+	}})
+	return m
+}
+
+// The tests mode is a pane mode, not a property of one step: focusing
+// another step keeps it, so an operator walking the failed steps does not
+// press t again on each. A step with no tests says so in place of its log.
+func TestModelTestsModeSurvivesFocusingAnotherStep(t *testing.T) {
+	m := testsModel(t)
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // focus a
+	m = pressT(t, m)
+	if out := plain(m.View()); !strings.Contains(out, "TestLong") {
+		t.Fatalf("tests pane not shown for a:\n%s", out)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // focus b
+	out := plain(m.View())
+	if !strings.Contains(out, "b: (no tests reported)") {
+		t.Errorf("focusing b left the tests mode or did not say b has no tests:\n%s", out)
+	}
+	if strings.Contains(out, "(no log output yet)") {
+		t.Errorf("the log pane came back on enter:\n%s", out)
+	}
+}
+
+// A test output line wider than the pane is cut there, so it ends inside the
+// terminal instead of running off its right edge. Trailing padding is
+// ignored: JoinVertical pads every row to the footer's width.
+func TestModelTestsPaneCutsAnOutputLineAtTheTerminalWidth(t *testing.T) {
+	m := pressT(t, update(t, testsModel(t), tea.KeyMsg{Type: tea.KeyEnter}))
+	out := plain(m.View())
+	if !strings.Contains(out, "y…") {
+		t.Fatalf("the long output line was not cut with an ellipsis:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(strings.TrimRight(line, " ")); w > 80 && strings.Contains(line, "yyy") {
+			t.Errorf("an output line is %d cells on an 80-cell terminal: %q", w, line)
+		}
+	}
+}
+
+func TestModelHelpAdvertisesTheTestsKey(t *testing.T) {
+	m := update(t, testsModel(t), tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	if out := plain(m.View()); !regexp.MustCompile(`(?m)^\s+t\s+show the focused step's tests in place of its log`).MatchString(out) {
+		t.Errorf("help has no line for t:\n%s", out)
 	}
 }

@@ -107,6 +107,14 @@ A step held at a breakpoint renders as `paused`, not as a blank row, and the pla
 `<step> paused at breakpoint`. A run stopped on purpose shouldn't look identical to one that hung.
 A run paused with `p` reads the same way at the run level, with the footer showing `run: paused`.
 
+## Resource usage
+
+A finished step's row ends with its CPU time and peak memory, for example `cpu 1.2s  rss 48 MB`.
+CPU is always in seconds with one decimal (`cpu 0.3s`, `cpu 75.4s`); `rss` appears only when memory
+was measured, in KB, MB or GB. A step that reported no usage (Kubernetes and SSH steps, or a
+container that exited before the first sample) shows neither. The plain renderer puts the same
+suffix on its `finished` line. See [the event stream](/docs/run/event-stream/#resource-usage).
+
 ## Exit codes
 
 Whichever renderer you use, the process exits with the *run's* exit code, not the UI's: `0` for

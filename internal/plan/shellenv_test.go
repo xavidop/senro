@@ -1,10 +1,8 @@
-package engine
+package plan
 
 import (
 	"strings"
 	"testing"
-
-	"github.com/xavidop/senro/internal/plan"
 )
 
 // TestShellEnvDropsEveryVariableThatNamesASecret pins the filter directly,
@@ -20,13 +18,13 @@ import (
 func TestShellEnvDropsEveryVariableThatNamesASecret(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		node *plan.Node
+		node *Node
 		gone []string
 		kept []string
 	}{
 		{
 			name: "a step with no secrets that declares a secret-shaped variable anyway",
-			node: &plan.Node{
+			node: &Node{
 				ID:  "build",
 				Env: []string{"ORDINARY=visible", "SENRO_SECRET_LEFTOVER=/run/senro/secrets/leftover"},
 			},
@@ -35,9 +33,9 @@ func TestShellEnvDropsEveryVariableThatNamesASecret(t *testing.T) {
 		},
 		{
 			name: "a declared secret's own two variable names",
-			node: &plan.Node{
+			node: &Node{
 				ID:      "build",
-				Secrets: []plan.SecretSpec{{Name: "Token", Env: "API_TOKEN"}},
+				Secrets: []SecretSpec{{Name: "Token", Env: "API_TOKEN"}},
 				// Not a combination plan.Validate accepts alongside those
 				// secrets, and that is the point: this function must not
 				// depend on validation having run, because it is what stands
@@ -50,7 +48,7 @@ func TestShellEnvDropsEveryVariableThatNamesASecret(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			env := strings.Join(shellEnv(tc.node), "\n")
+			env := strings.Join(ShellEnv(tc.node), "\n")
 			for _, gone := range tc.gone {
 				if strings.Contains(env, gone) {
 					t.Errorf("a session's environment still carries %q: %q", gone, env)

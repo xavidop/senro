@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/xavidop/senro/api"
 )
@@ -27,6 +30,11 @@ import (
 // out so the list is never quietly partial.
 const MaxAnnotations = 50
 
+// MaxTestAnnotationMessage caps one test annotation's message. A failing
+// test's output can be a whole stack dump; GitHub limits a message's size
+// and the list is for locating a failure, not for reading the log.
+const MaxTestAnnotationMessage = 2000
+
 // GitHubChecks returns a destination that maintains one check run on a
 // commit. owner and repo name the repository, sha is the commit, token needs
 // `checks:write`, and name is the check's UI name (empty means "senro").
@@ -45,7 +53,8 @@ func GitHubChecks(owner, repo, sha, token, name string, opts ...DestinationOptio
 	}
 	r := &GitHubChecksRequester{
 		owner: owner, repo: repo, sha: sha, name: name,
-		api: "https://api.github.com",
+		api:   "https://api.github.com",
+		state: api.NewRunState(),
 	}
 	base := []DestinationOption{
 		Named("github-checks"),
@@ -70,6 +79,71 @@ func GitHubChecksAPI(base string) DestinationOption {
 	}
 }
 
+// ExistingCheckRun adopts a check run that already exists (for example one
+// created by a GitHub App on the user's behalf): run.started PATCHes it to
+// in_progress instead of creating one, and completion PATCHes it as usual.
+func ExistingCheckRun(id int64) DestinationOption {
+	return func(d *Destination) {
+		if g, ok := d.requester.(*GitHubChecksRequester); ok && id != 0 {
+			g.id = id
+			g.adopted = true
+		}
+	}
+}
+
+// DetailsURL sets the check's details_url on every request. {run} in the
+// template is replaced by the run id, path-escaped; a template without {run}
+// is sent as given.
+func DetailsURL(template string) DestinationOption {
+	return func(d *Destination) {
+		if g, ok := d.requester.(*GitHubChecksRequester); ok {
+			g.details = template
+		}
+	}
+}
+
+// Environment variables read by GitHubChecksFromEnv.
+const (
+	EnvGitHubToken      = "SENRO_GITHUB_TOKEN"
+	EnvGitHubAPI        = "SENRO_GITHUB_API"
+	EnvGitHubRepo       = "SENRO_GITHUB_REPO" // owner/name
+	EnvGitHubSHA        = "SENRO_GITHUB_SHA"
+	EnvGitHubCheckRun   = "SENRO_GITHUB_CHECK_RUN"
+	EnvGitHubCheckName  = "SENRO_GITHUB_CHECK_NAME"
+	EnvGitHubDetailsURL = "SENRO_GITHUB_DETAILS_URL"
+)
+
+// GitHubChecksFromEnv builds a GitHub Checks destination from the SENRO_GITHUB_*
+// environment. ok is false, with a nil destination, when the token is empty,
+// the repository is not owner/name, or the check run id is not a number. An
+// empty SENRO_GITHUB_CHECK_RUN means create a check run, as GitHubChecks does.
+func GitHubChecksFromEnv() (*Destination, bool) {
+	token := os.Getenv(EnvGitHubToken)
+	if token == "" {
+		return nil, false
+	}
+	owner, repo, found := strings.Cut(os.Getenv(EnvGitHubRepo), "/")
+	if !found || owner == "" || repo == "" {
+		return nil, false
+	}
+	var opts []DestinationOption
+	if v := os.Getenv(EnvGitHubAPI); v != "" {
+		opts = append(opts, GitHubChecksAPI(v))
+	}
+	if v := os.Getenv(EnvGitHubCheckRun); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, false
+		}
+		opts = append(opts, ExistingCheckRun(id))
+	}
+	if v := os.Getenv(EnvGitHubDetailsURL); v != "" {
+		opts = append(opts, DetailsURL(v))
+	}
+	return GitHubChecks(owner, repo, os.Getenv(EnvGitHubSHA), token,
+		os.Getenv(EnvGitHubCheckName), opts...), true
+}
+
 // GitHubChecksRequester is the state machine behind GitHubChecks, exported
 // so the type is nameable and GitHubChecksAPI can reach it. Its methods run
 // one event at a time on the notifier's delivery goroutine; the mutex only
@@ -83,12 +157,34 @@ type GitHubChecksRequester struct {
 	// response. Zero until then, which is what tells Request whether the
 	// next event is a create or an update.
 	id int64
-	// annotations accumulate from failed steps, sent with the completion.
-	annotations []ghAnnotation
-	// dropped counts annotations past MaxAnnotations, for the summary.
+	// adopted is set by ExistingCheckRun: id was given, not learned, so
+	// run.started updates that check instead of creating one. started
+	// makes the update happen once.
+	adopted, started bool
+	// details is the details_url template; {run} is the run id. Empty
+	// means no details_url is sent.
+	details string
+	// steps accumulate one annotation per failed step.finished, in arrival
+	// order, sent with the completion.
+	steps []stepAnnotation
+	// state folds test.finished and step.finished through api.Apply, the
+	// one fold every client uses. Tests are read from it at completion, not
+	// annotated per event: a test that failed on attempt 1 and passed on
+	// attempt 2 is recovered, and one that failed on three attempts is one
+	// failure, and only the fold knows either.
+	state *api.RunState
+	// dropped counts annotations past MaxAnnotations, for the summary. Set by
+	// complete, which is where the budget is spent.
 	dropped int
 	// done and failed count finished steps, for the summary.
 	done, failed int
+}
+
+// stepAnnotation is a failed step's annotation and the step it is about, so
+// complete can put the step's failed tests ahead of it.
+type stepAnnotation struct {
+	step string
+	ann  ghAnnotation
 }
 
 // Request builds the create, the updates and the completion. Three event
@@ -100,6 +196,15 @@ func (g *GitHubChecksRequester) Request(e api.Event) (*Request, error) {
 
 	switch e.Type {
 	case api.RunStarted:
+		if g.adopted {
+			// An adopted check run already exists: starting is a PATCH to
+			// in_progress, once.
+			if g.started {
+				return nil, nil
+			}
+			g.started = true
+			return g.update(e)
+		}
 		if g.id != 0 {
 			// A second create would leave the first check in progress
 			// forever.
@@ -107,7 +212,19 @@ func (g *GitHubChecksRequester) Request(e api.Event) (*Request, error) {
 		}
 		return g.create(e)
 
+	case api.TestFinished:
+		// Same rule as steps: accumulated, not sent. Folded rather than
+		// annotated here, so retries settle before anything is reported. The
+		// error is ignored like every other best-effort decode in this file:
+		// an event the fold refuses is one fewer annotation, not a stuck
+		// check.
+		_ = g.state.Apply(e)
+		return nil, nil
+
 	case api.StepFinished:
+		// Folded too, so the state's step order and its tests stay coherent
+		// with the steps this check reports.
+		_ = g.state.Apply(e)
 		g.record(e)
 		// Not sent per step (rate limits); accumulated and sent with the
 		// run's completion.
@@ -125,7 +242,9 @@ func (g *GitHubChecksRequester) Request(e api.Event) (*Request, error) {
 // ReadResponse learns the check run's id from the create; GitHub assigns it
 // and it appears only in the create's response body.
 func (g *GitHubChecksRequester) ReadResponse(e api.Event, body []byte) {
-	if e.Type != api.RunStarted {
+	if e.Type != api.RunStarted || g.adopted {
+		// An adopted check's id was given; a PATCH response does not
+		// name a new one.
 		return
 	}
 	var res struct {
@@ -153,7 +272,7 @@ func (g *GitHubChecksRequester) create(e api.Event) (*Request, error) {
 		HeadSHA:    g.sha,
 		Status:     "in_progress",
 		StartedAt:  ghTime(e.TS),
-		DetailsURL: "",
+		DetailsURL: g.detailsURL(e.Run),
 		Output: &ghOutput{
 			Title:   "Running",
 			Summary: "senro run " + e.Run + " is running.",
@@ -165,6 +284,40 @@ func (g *GitHubChecksRequester) create(e api.Event) (*Request, error) {
 	return &Request{Method: "POST", URL: g.checkRunsURL(), Body: body}, nil
 }
 
+// update moves an adopted check run to in_progress. It carries no head_sha
+// or name: the check exists, and a PATCH only changes what it names.
+func (g *GitHubChecksRequester) update(e api.Event) (*Request, error) {
+	body, err := json.Marshal(struct {
+		Status     string   `json:"status"`
+		StartedAt  string   `json:"started_at,omitempty"`
+		DetailsURL string   `json:"details_url,omitempty"`
+		Output     ghOutput `json:"output"`
+	}{
+		Status:     "in_progress",
+		StartedAt:  ghTime(e.TS),
+		DetailsURL: g.detailsURL(e.Run),
+		Output: ghOutput{
+			Title:   "Running",
+			Summary: "senro run " + e.Run + " is running.",
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Request{
+		Method: "PATCH",
+		URL:    fmt.Sprintf("%s/%d", g.checkRunsURL(), g.id),
+		Body:   body,
+	}, nil
+}
+
+func (g *GitHubChecksRequester) detailsURL(run string) string {
+	if g.details == "" {
+		return ""
+	}
+	return strings.ReplaceAll(g.details, "{run}", url.PathEscape(run))
+}
+
 func (g *GitHubChecksRequester) complete(e api.Event) (*Request, error) {
 	var b api.RunFinishedBody
 	// Best-effort decode: a run.finished that will not decode is still a
@@ -172,19 +325,17 @@ func (g *GitHubChecksRequester) complete(e api.Event) (*Request, error) {
 	// check in progress forever would be worse.
 	_ = e.Decode(&b)
 
-	ann := g.annotations
-	if len(ann) > MaxAnnotations {
-		ann = ann[:MaxAnnotations]
-	}
+	ann, failedTests := g.annotations()
 	body, err := json.Marshal(ghCheckRun{
 		Name:        g.name,
 		HeadSHA:     g.sha,
 		Status:      "completed",
 		Conclusion:  conclusionFor(b.Status),
 		CompletedAt: ghTime(e.TS),
+		DetailsURL:  g.detailsURL(e.Run),
 		Output: &ghOutput{
-			Title:       titleFor(b.Status, g.failed),
-			Summary:     g.summary(b.Status),
+			Title:       titleFor(b.Status, g.failed, failedTests),
+			Summary:     g.summary(b.Status, failedTests),
 			Annotations: ann,
 		},
 	})
@@ -209,19 +360,102 @@ func (g *GitHubChecksRequester) record(e api.Event) {
 		return
 	}
 	g.failed++
-	if len(g.annotations) >= MaxAnnotations {
-		g.dropped++
-		return
-	}
 	// Path is required by the API and a step is not a line of source;
 	// ".senro" rather than a real path, so the failure is not read as being
 	// about some unrelated file.
-	g.annotations = append(g.annotations, ghAnnotation{
+	g.steps = append(g.steps, stepAnnotation{step: e.Step, ann: ghAnnotation{
 		Path: ".senro", StartLine: 1, EndLine: 1,
 		AnnotationLevel: "failure",
 		Title:           "step " + e.Step + " " + string(b.State),
 		Message:         annotationMessage(e.Step, b),
-	})
+	}})
+}
+
+// annotations builds the completion's annotation list and counts the failed
+// tests, spending the MaxAnnotations budget and setting dropped.
+//
+// Steps are walked in the fold's order, and each step's failed tests go
+// ahead of its own annotation: the test is the more specific location, and
+// the step's annotation only says the step went red. Only tests the fold
+// left failed are annotated. Recovered ones passed in the end, and passes and
+// skips would bury the failures in the budget. A step annotation the fold
+// never placed (its event refused) still goes out, last.
+func (g *GitHubChecksRequester) annotations() ([]ghAnnotation, int) {
+	var out []ghAnnotation
+	g.dropped = 0
+	add := func(a ghAnnotation) {
+		if len(out) >= MaxAnnotations {
+			g.dropped++
+			return
+		}
+		out = append(out, a)
+	}
+	byStep := make(map[string][]int, len(g.steps))
+	for i, s := range g.steps {
+		byStep[s.step] = append(byStep[s.step], i)
+	}
+	failedTests := 0
+	placed := make([]bool, len(g.steps))
+	for _, id := range g.state.Order {
+		if st := g.state.Steps[id]; st != nil {
+			for _, t := range st.Tests {
+				if t.Outcome == api.TestFailed {
+					failedTests++
+					add(testAnnotation(t))
+				}
+			}
+		}
+		for _, i := range byStep[id] {
+			placed[i] = true
+			add(g.steps[i].ann)
+		}
+	}
+	for i, s := range g.steps {
+		if !placed[i] {
+			add(s.ann)
+		}
+	}
+	return out, failedTests
+}
+
+// testAnnotation is one failed test's annotation.
+func testAnnotation(b *api.TestResult) ghAnnotation {
+	// A test without a source location is annotated on ".senro" for the
+	// same reason a step is: Path is required and must not point at an
+	// unrelated file.
+	path := b.File
+	if path == "" {
+		path = ".senro"
+	}
+	line := b.Line
+	if line <= 0 {
+		line = 1
+	}
+	name := b.Name
+	if b.Suite != "" {
+		name = b.Suite + "." + b.Name
+	}
+	title := "test " + name + " failed"
+	msg := b.Output
+	if len(msg) > MaxTestAnnotationMessage {
+		// Back the cut up to a rune start: a multi-byte character split by
+		// the byte count would reach GitHub as U+FFFD.
+		cut := MaxTestAnnotationMessage
+		for cut > 0 && !utf8.RuneStart(msg[cut]) {
+			cut--
+		}
+		msg = msg[:cut] + "\n[truncated]"
+	}
+	if msg == "" {
+		// GitHub rejects an annotation with no message.
+		msg = title
+	}
+	return ghAnnotation{
+		Path: path, StartLine: line, EndLine: line,
+		AnnotationLevel: "failure",
+		Title:           title,
+		Message:         msg,
+	}
 }
 
 func annotationMessage(step string, b api.StepFinishedBody) string {
@@ -240,11 +474,14 @@ func annotationMessage(step string, b api.StepFinishedBody) string {
 	return sb.String()
 }
 
-func (g *GitHubChecksRequester) summary(status api.RunStatus) string {
+func (g *GitHubChecksRequester) summary(status api.RunStatus, failedTests int) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "senro finished %s: %d step(s) completed", status, g.done)
 	if g.failed > 0 {
 		fmt.Fprintf(&sb, ", %d failed", g.failed)
+	}
+	if failedTests > 0 {
+		fmt.Fprintf(&sb, ", %d test(s) failed", failedTests)
 	}
 	sb.WriteString(".")
 	if g.dropped > 0 {
@@ -280,7 +517,17 @@ func conclusionFor(s api.RunStatus) string {
 	}
 }
 
-func titleFor(s api.RunStatus, failed int) string {
+// titleFor is the check's one-line headline. Failed tests lead because they
+// are the more specific news; failed steps are still named alongside them,
+// since a step can fail for reasons no test reports (a build error, a
+// timeout) and leaving it out would understate the run.
+func titleFor(s api.RunStatus, failed, failedTests int) string {
+	if failedTests > 0 && failed > 0 {
+		return fmt.Sprintf("%s, %d test(s) failed, %d step(s) failed", s, failedTests, failed)
+	}
+	if failedTests > 0 {
+		return fmt.Sprintf("%s, %d test(s) failed", s, failedTests)
+	}
 	if failed > 0 {
 		return fmt.Sprintf("%s, %d step(s) failed", s, failed)
 	}

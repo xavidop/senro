@@ -30,22 +30,24 @@ func TestShellRefusesPidAndRunTogether(t *testing.T) {
 	}
 }
 
-// TestShellOnAFinishedRunPointsAtWsPull: a session needs the running
-// engine that owns the workspaces, so somebody who just wants to see what
-// a failed step left must be told what to run instead.
-func TestShellOnAFinishedRunPointsAtWsPull(t *testing.T) {
+// TestShellOnARunNeitherLiveNorRecordedSaysSo: a --run with no live
+// registration falls back to the offline form, so one that names no
+// recorded run either must say both lookups came up empty, not only the
+// second.
+func TestShellOnARunNeitherLiveNorRecordedSaysSo(t *testing.T) {
 	// The registry the discovery below reads, isolated from the developer's
 	// own live runs the same way discover_test.go isolates it.
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	t.Setenv("XDG_RUNTIME_DIR", dir)
+	t.Chdir(dir)
 	var out, errb bytes.Buffer
 	code := cmdShell([]string{"--run", "no-such-run", "--step", "build"}, &out, &errb, strings.NewReader(""))
 	if code != exitUsage {
 		t.Errorf("exit = %d, want %d", code, exitUsage)
 	}
-	if !strings.Contains(errb.String(), "ws pull") {
-		t.Errorf("stderr = %q, want it to point at senro ws pull", errb.String())
+	if !strings.Contains(errb.String(), `no live run named "no-such-run", and no recorded one either`) {
+		t.Errorf("stderr = %q, want it to say the run is neither live nor recorded", errb.String())
 	}
 }
 

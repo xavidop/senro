@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,9 @@ import (
 // pipeline that is a script the test writes.
 func newDispatcher(t *testing.T, script string) *dispatcher {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake pipeline is a /bin/sh script")
+	}
 	dir := t.TempDir()
 
 	pipeline := filepath.Join(dir, "pipeline")

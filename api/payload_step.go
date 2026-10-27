@@ -14,6 +14,14 @@ type StepCreatedBody struct {
 	Kind  string   `json:"kind"` // "exec" or "func"
 	Group string   `json:"group,omitempty"`
 	Needs []string `json:"needs,omitempty"`
+	// Service marks a long-running step that is ready on a probe rather than on
+	// exit. Announced here, not inferred from a later service.ready, because a
+	// renderer must show a service as "starting" from the moment the plan
+	// resolves and a service that never becomes ready would never say it was one.
+	//
+	// omitempty, so a plan with no services puts exactly the bytes on the wire
+	// it always did.
+	Service bool `json:"service,omitempty"`
 }
 
 // StepStartedBody is the payload of a step.started event.
@@ -97,6 +105,22 @@ type StepFinishedBody struct {
 	// its Duration.
 	ParentSpanID  string   `json:"parent_span_id,omitempty"`
 	LinkedSpanIDs []string `json:"linked_span_ids,omitempty"`
+
+	// Usage is the CPU and memory the concluding attempt consumed, when its
+	// executor can measure them. Nil when it cannot (k8s, ssh), and for a
+	// step that never ran. Additive and omitempty.
+	Usage *ResourceUsage `json:"usage,omitempty"`
+}
+
+// ResourceUsage is what one attempt of a step consumed. CPU is split into
+// user and system time, summed over the workload's processes; MaxRSS is the
+// peak resident memory in bytes. For a container it is the peak cgroup
+// memory less the inactive page cache, so a step that only read files is not
+// charged for the kernel's cache of them.
+type ResourceUsage struct {
+	CPUUser   time.Duration `json:"cpu_user_ns"`
+	CPUSystem time.Duration `json:"cpu_system_ns"`
+	MaxRSS    int64         `json:"max_rss_bytes"`
 }
 
 // StepRetriedBody is the payload of a step.retried event.

@@ -367,4 +367,140 @@ func TestNothingPanicsBeforeTheFirstSnapshot(t *testing.T) {
 	if got := present.StepBadge(nil); got.Label == "" {
 		t.Error("StepBadge(nil) has no label")
 	}
+	if got := present.Tests(nil, "x"); got != nil {
+		t.Errorf("Tests(nil) = %v, want nil", got)
+	}
+}
+
+// testEvent is one test.finished for step "test", in the shape the engine
+// emits it.
+func testEvent(t *testing.T, attempt int, body string) api.Event {
+	t.Helper()
+	return api.Event{Type: api.TestFinished, Step: "test", Attempt: attempt, Payload: payload(t, body)}
+}
+
+// The summary names every outcome that occurred and none that did not: "0
+// skipped" on every passing step is noise that buries the clause that matters.
+func TestDetailSummarisesTests(t *testing.T) {
+	field := func(fields []present.Field) (string, bool) {
+		for _, f := range fields {
+			if f.Label == "tests" {
+				return f.Value, true
+			}
+		}
+		return "", false
+	}
+
+	all := fold(t,
+		api.Event{Type: api.StepCreated, Step: "test", Payload: payload(t, `{"kind":"exec"}`)},
+		api.Event{Type: api.StepStarted, Step: "test", Attempt: 1},
+		testEvent(t, 1, `{"suite":"pkg/a","name":"TestFlaky","outcome":"failed"}`),
+		testEvent(t, 1, `{"suite":"pkg/a","name":"TestPass","outcome":"passed"}`),
+		testEvent(t, 1, `{"suite":"pkg/a","name":"TestBroken","outcome":"failed"}`),
+		testEvent(t, 1, `{"suite":"pkg/a","name":"TestLater","outcome":"skipped"}`),
+		api.Event{Type: api.StepStarted, Step: "test", Attempt: 2},
+		testEvent(t, 2, `{"suite":"pkg/a","name":"TestFlaky","outcome":"passed"}`),
+	)
+	got, ok := field(present.Detail(all, "test", now))
+	if !ok {
+		t.Fatal("a step with tests has no tests field in its detail")
+	}
+	if want := "1 passed, 1 failed, 1 skipped, 1 recovered"; got != want {
+		t.Errorf("tests = %q, want %q", got, want)
+	}
+
+	some := fold(t,
+		api.Event{Type: api.StepCreated, Step: "test", Payload: payload(t, `{"kind":"exec"}`)},
+		api.Event{Type: api.StepStarted, Step: "test", Attempt: 1},
+		testEvent(t, 1, `{"suite":"pkg/a","name":"TestX","outcome":"failed"}`),
+		testEvent(t, 1, `{"suite":"pkg/a","name":"TestY","outcome":"passed"}`),
+		api.Event{Type: api.StepStarted, Step: "test", Attempt: 2},
+		testEvent(t, 2, `{"suite":"pkg/a","name":"TestX","outcome":"passed"}`),
+	)
+	if got, _ := field(present.Detail(some, "test", now)); got != "1 passed, 1 recovered" {
+		t.Errorf("tests = %q, want the zero clauses omitted", got)
+	}
+}
+
+// A step that reported no tests says nothing about tests: "0 passed" would
+// claim a test run that never happened.
+func TestDetailHasNoTestsFieldWithoutTests(t *testing.T) {
+	st := fold(t,
+		api.Event{Type: api.StepCreated, Step: "build", Payload: payload(t, `{"kind":"exec"}`)},
+		api.Event{Type: api.StepStarted, Step: "build", Attempt: 1},
+	)
+	for _, f := range present.Detail(st, "build", now) {
+		if f.Label == "tests" {
+			t.Fatalf("a step without tests has a tests field: %+v", f)
+		}
+	}
+	if rows := present.Tests(st, "build"); len(rows) != 0 {
+		t.Errorf("a step without tests has test rows: %+v", rows)
+	}
+}
+
+// What somebody opens a step's tests to find is the failure, so failures lead,
+// then the flakes that recovered, then what was skipped, then the passes.
+// Within a group the fold's own order holds.
+func TestTestsPutFailuresFirst(t *testing.T) {
+	st := fold(t,
+		api.Event{Type: api.StepCreated, Step: "test", Payload: payload(t, `{"kind":"exec"}`)},
+		api.Event{Type: api.StepStarted, Step: "test", Attempt: 1},
+		testEvent(t, 1, `{"suite":"pkg/a","name":"TestA","outcome":"passed","duration_ns":1500000000}`),
+		testEvent(t, 1, `{"name":"TestB","outcome":"skipped"}`),
+		testEvent(t, 1, `{"suite":"pkg/a","name":"TestC","outcome":"failed","duration_ns":120000000,"output":"boom"}`),
+		testEvent(t, 1, `{"suite":"pkg/a","name":"TestD","outcome":"failed","output":"flaked"}`),
+		testEvent(t, 1, `{"suite":"pkg/b","name":"TestE","outcome":"failed","output":"bang"}`),
+		testEvent(t, 1, `{"suite":"pkg/b","name":"TestF","outcome":"passed","output":"chatter"}`),
+		api.Event{Type: api.StepStarted, Step: "test", Attempt: 2},
+		testEvent(t, 2, `{"suite":"pkg/a","name":"TestD","outcome":"passed"}`),
+	)
+	got := present.Tests(st, "test")
+	want := []present.TestRow{
+		{Name: "pkg/a.TestC", Badge: present.Badge{Label: "failed", Tone: present.ToneFailed}, Duration: "120ms", Output: "boom"},
+		{Name: "pkg/b.TestE", Badge: present.Badge{Label: "failed", Tone: present.ToneFailed}, Output: "bang"},
+		{Name: "pkg/a.TestD", Badge: present.Badge{Label: "recovered", Tone: present.ToneOK}},
+		{Name: "TestB", Badge: present.Badge{Label: "skipped", Tone: present.ToneNeutral}},
+		{Name: "pkg/a.TestA", Badge: present.Badge{Label: "passed", Tone: present.ToneOK}, Duration: "1.5s"},
+		{Name: "pkg/b.TestF", Badge: present.Badge{Label: "passed", Tone: present.ToneOK}},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("rows = %+v, want %d of them", got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("row %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// A test's tone follows the step palette: a recovered test is a pass that
+// took a retry, not a failure, the same call StateTone makes for a step.
+func TestTestToneFollowsTheStepPalette(t *testing.T) {
+	cases := map[api.TestOutcome]present.Tone{
+		api.TestFailed:    present.ToneFailed,
+		api.TestPassed:    present.ToneOK,
+		api.TestRecovered: present.ToneOK,
+		api.TestSkipped:   present.ToneNeutral,
+	}
+	for o, want := range cases {
+		if got := present.TestTone(o); got != want {
+			t.Errorf("TestTone(%s) = %s, want %s", o, got, want)
+		}
+	}
+}
+
+// A step held after failure is a failure an operator can still stand in:
+// failed in tone, so it reads as broken, and labelled held, so it does not
+// read as settled.
+func TestAStepHeldAfterFailureIsHeldAndFailed(t *testing.T) {
+	st := fold(t,
+		api.Event{Type: api.StepCreated, Step: "test", Payload: payload(t, `{"kind":"exec"}`)},
+		api.Event{Type: api.StepStarted, Step: "test", Attempt: 1, TS: now},
+		api.Event{Type: api.BreakpointHit, Step: "test", Attempt: 1, Payload: payload(t, `{"reason":"failure"}`)},
+	)
+	got := present.StepBadge(st.Steps["test"])
+	if got != (present.Badge{Label: "held", Tone: present.ToneFailed}) {
+		t.Fatalf("badge = %+v, want held in the failed tone", got)
+	}
 }

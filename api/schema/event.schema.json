@@ -24,7 +24,7 @@
       "examples": [
         "run.started", "run.finished",
         "plan.resolved", "plan.expanded", "plan.expansion_skipped", "plan.generated",
-        "step.created", "step.started", "step.finished", "step.retried", "step.log.appended",
+        "step.created", "step.started", "step.finished", "step.retried", "step.log.appended", "test.finished", "service.ready",
         "cache.hit", "cache.miss", "cache.saved", "cache.degraded",
         "ws.snapshot", "ws.restored", "ws.evicted",
         "binary.staged",

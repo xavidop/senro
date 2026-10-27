@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 )
 
 // ErrInfra marks a failure of the execution substrate rather than the
@@ -141,6 +142,21 @@ type SandboxSpec struct {
 	Secrets []SecretRef
 	Env     []string
 	WorkDir string
+
+	// Ports are the TCP ports a service step listens on, as declared. An
+	// executor that isolates the network publishes each one on the
+	// coordinator host (containerexec, to 127.0.0.1 on a port the daemon
+	// picks); one that shares the host's network has nothing to publish,
+	// since the process binds the declared port itself. Empty for every
+	// ordinary step. See Addressable.
+	Ports []int
+
+	// ExtraHosts are "name:address" entries the sandbox resolves, in the
+	// daemon's own spelling: "host.docker.internal:host-gateway" is what lets
+	// a consumer in a container reach a service published on the host, on
+	// Linux as well as Docker Desktop. Meaningful only to an executor with its
+	// own resolver; one that shares the host's ignores it.
+	ExtraHosts []string
 }
 
 // Executor creates sandboxes on one execution target.
@@ -314,6 +330,45 @@ type MountReader interface {
 	ReadMount(ctx context.Context, name, dest string) error
 }
 
+// WorkDirReporter is implemented by a sandbox that shares the coordinator's
+// filesystem and can say which host directory its command started in.
+//
+// The engine needs that directory to read a file a step left behind, a JUnit
+// report, from the coordinator side. It cannot compute it: the sandbox
+// decides where a command starts (its own attempt directory, or the
+// workspace realized at the step's WorkDir), and only the sandbox knows that
+// path. A separate interface for MountReader's reason: "is there a host
+// directory to read from" must be answerable, and an executor whose command
+// runs somewhere else says no by not implementing this.
+//
+// WorkDir must name the directory Run starts a command in when the command's
+// Dir is the step's declared WorkDir, which is how the engine always runs a
+// step.
+type WorkDirReporter interface {
+	WorkDir() string
+}
+
+// UsageReporter is an optional Sandbox capability: the CPU and memory the
+// most recent Run consumed. The engine asserts it on a sandbox after Run
+// returns, so the figures it reports are the attempt that just concluded.
+//
+// ok is false when nothing was measured: no Run yet, a platform without
+// rusage, or a container whose stats stream never produced a sample. A
+// killed workload still reports what it consumed before it died.
+//
+// Implemented by localexec and containerexec; k8s and ssh do not.
+type UsageReporter interface {
+	Usage() (ResourceUsage, bool)
+}
+
+// ResourceUsage is what one Run consumed: CPU split into user and system
+// time, and peak resident memory in bytes. It mirrors api.ResourceUsage
+// field for field; the executor package does not import api.
+type ResourceUsage struct {
+	CPUUser, CPUSystem time.Duration
+	MaxRSS             int64
+}
+
 // Interactive is an optional Sandbox capability: running one command with a
 // stdin attached, for as long as somebody is on the other end of it.
 //
@@ -378,4 +433,82 @@ type Terminal interface {
 		ctx context.Context, c Cmd, stdin io.Reader, out io.Writer,
 		initial WinSize, resize <-chan WinSize,
 	) (exit int, err error)
+}
+
+// Addressable is an optional Sandbox capability: reporting the address on the
+// coordinator host where a service's declared port can be reached, as
+// "127.0.0.1:54321".
+//
+// A separate interface for Interactive's reason: "can a step reach a service
+// in this sandbox" must be answerable, and an executor whose target the
+// coordinator cannot dial says no by not implementing this, so the engine
+// refuses a service there up front instead of probing an address that will
+// never answer.
+//
+// port is a declared port (SandboxSpec.Ports). The address is only
+// meaningful once StartService has returned: a container has no published
+// port before it exists.
+type Addressable interface {
+	HostAddress(ctx context.Context, port int) (string, error)
+}
+
+// ContainerAddressable is an optional Sandbox capability: reporting the
+// address ANOTHER CONTAINER on the same daemon reaches a service's declared
+// port at, as "172.17.0.3:5432" (the service container's bridge IP and the
+// port as declared, not as published).
+//
+// Separate from Addressable because the two audiences differ: the published
+// 127.0.0.1 port is for the coordinator (the probe, a local consumer, a
+// person), and on native Linux a container cannot reach the coordinator's
+// loopback at all, so a container consumer of a container service needs the
+// bridge address instead. Only the container executor implements it; a
+// service on any other executor is reached from a container through the
+// host gateway.
+//
+// Like Addressable, meaningful only once StartService has returned.
+type ContainerAddressable interface {
+	ContainerAddress(ctx context.Context, port int) (string, error)
+}
+
+// RunningService is one long-running process a ServiceRunner started.
+//
+// The contract, which both methods share:
+//
+//   - Wait may be called once. It returns when the process ends, for any
+//     reason, with Run's split: exit is the workload's verdict, err is
+//     infrastructure. A process killed by a signal reports the shell's
+//     128+signal (SIGKILL is 137), because that is what every executor's
+//     shell-backed sibling already reports.
+//   - Stop may be called at most once, before Wait or concurrently with it.
+//     It asks the process to end (SIGTERM, or `docker stop`), waits up to
+//     grace, then kills it. Stop returns only once the process is gone; a
+//     Wait in flight may return just before or just after it. Cancelling ctx
+//     cuts the grace short and kills at once, and a ctx already done skips
+//     the ask. Stopping a process that has already exited is not an error.
+//
+// Stop is a separate step from ctx cancellation, unlike Run, because a
+// service's normal end IS being stopped: an ordinary step that outlives its
+// context has failed, a service that outlives its consumers is done, and it
+// deserves the grace to shut down cleanly.
+type RunningService interface {
+	Wait() (exit int, err error)
+	Stop(ctx context.Context, grace time.Duration) error
+}
+
+// ServiceRunner is an optional Sandbox capability: starting a command that
+// runs until it is stopped, rather than until it exits.
+//
+// Beside Run rather than a flag on it because Run's whole shape is "start,
+// wait, verdict" and its cancellation is an immediate kill, which is right for
+// a step and wrong for a database that should flush on SIGTERM. A separate
+// interface for Interactive's reason too: "can this executor host a service"
+// must be answerable, so the engine refuses a service on an executor that
+// cannot instead of running it as a step that never finishes.
+//
+// ctx bounds starting the process only; the process outlives it, and ends
+// through RunningService.Stop. A program that cannot be started for the
+// pipeline's own reasons (not found, not executable) is not an error: the
+// returned service has already exited 127 or 126, exactly as Run reports it.
+type ServiceRunner interface {
+	StartService(ctx context.Context, c Cmd, stdout, stderr io.Writer) (RunningService, error)
 }

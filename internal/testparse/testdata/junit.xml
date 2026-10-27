@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+  <testsuite name="tests.test_math" tests="4">
+    <testcase classname="tests.test_math" name="test_add" time="0.001"></testcase>
+    <testcase classname="tests.test_math" name="test_sub" time="0.5" file="tests/test_math.py" line="7">
+      <failure message="assert 1 == 2">trace</failure>
+    </testcase>
+    <testcase classname="tests.test_math" name="test_div" time="0.002">
+      <error message="boom">stack</error>
+    </testcase>
+    <testcase name="test_skip" time="0">
+      <skipped/>
+    </testcase>
+  </testsuite>
+</testsuites>

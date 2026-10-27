@@ -48,6 +48,10 @@ const Version = 1
 type file struct {
 	Version    int                         `json:"version"`
 	Expansions map[string]map[string]int64 `json:"expansions"`
+	// CPU is user plus system nanoseconds per expansion and unit, recorded
+	// beside the wall-clock durations for a person reading the diff. The
+	// partition does not read it.
+	CPU map[string]map[string]int64 `json:"cpu,omitempty"`
 }
 
 // File is a history read from a JSON file. See FromFile.
@@ -141,9 +145,15 @@ func Record(runDir, path string) error {
 	if err != nil && len(events) == 0 {
 		return fmt.Errorf("duration: reading the run at %s: %w", runDir, err)
 	}
-	observed := observe(events)
+	observed, observedCPU := observe(events)
 
-	merged := file{Version: Version, Expansions: map[string]map[string]int64{}}
+	// Both maps start allocated: a cold start has no file to clone from, and
+	// mergeUnits writes into whatever it is given.
+	merged := file{
+		Version:    Version,
+		Expansions: map[string]map[string]int64{},
+		CPU:        map[string]map[string]int64{},
+	}
 	if b, readErr := os.ReadFile(path); readErr == nil {
 		var existing file
 		if err := json.Unmarshal(b, &existing); err != nil {
@@ -154,23 +164,15 @@ func Record(runDir, path string) error {
 				"duration: %s declares format version %d and this build writes version %d",
 				path, existing.Version, Version)
 		}
-		for expansion, units := range existing.Expansions {
-			copied := make(map[string]int64, len(units))
-			for id, ns := range units {
-				copied[id] = ns
-			}
-			merged.Expansions[expansion] = copied
-		}
+		merged.Expansions = cloneUnits(existing.Expansions)
+		merged.CPU = cloneUnits(existing.CPU)
 	} else if !errors.Is(readErr, fs.ErrNotExist) {
 		return fmt.Errorf("duration: reading %s: %w", path, readErr)
 	}
-	for expansion, units := range observed {
-		if merged.Expansions[expansion] == nil {
-			merged.Expansions[expansion] = make(map[string]int64, len(units))
-		}
-		for id, ns := range units {
-			merged.Expansions[expansion][id] = ns
-		}
+	mergeUnits(merged.Expansions, observed)
+	mergeUnits(merged.CPU, observedCPU)
+	if len(merged.CPU) == 0 {
+		merged.CPU = nil
 	}
 
 	// encoding/json sorts map keys on the way out, so the bytes are a
@@ -208,9 +210,36 @@ func Record(runDir, path string) error {
 	return nil
 }
 
-// observe is what one run's ledger says about its expansions' units.
-func observe(events []api.Event) map[string]map[string]int64 {
+func cloneUnits(in map[string]map[string]int64) map[string]map[string]int64 {
+	out := make(map[string]map[string]int64, len(in))
+	for expansion, units := range in {
+		copied := make(map[string]int64, len(units))
+		for id, ns := range units {
+			copied[id] = ns
+		}
+		out[expansion] = copied
+	}
+	return out
+}
+
+// mergeUnits lays what a run observed over dst: observed units win, the
+// rest of dst is untouched.
+func mergeUnits(dst, observed map[string]map[string]int64) {
+	for expansion, units := range observed {
+		if dst[expansion] == nil {
+			dst[expansion] = make(map[string]int64, len(units))
+		}
+		for id, ns := range units {
+			dst[expansion][id] = ns
+		}
+	}
+}
+
+// observe is what one run's ledger says about its expansions' units: the
+// wall-clock durations and, for those that reported usage, the CPU time.
+func observe(events []api.Event) (durations, cpu map[string]map[string]int64) {
 	out := map[string]map[string]int64{}
+	cpuOut := map[string]map[string]int64{}
 	for _, e := range events {
 		if e.Type != api.StepFinished || e.Group == "" {
 			continue
@@ -236,6 +265,12 @@ func observe(events []api.Event) map[string]map[string]int64 {
 			out[e.Group] = map[string]int64{}
 		}
 		out[e.Group][id] = int64(body.Duration)
+		if body.Usage != nil {
+			if cpuOut[e.Group] == nil {
+				cpuOut[e.Group] = map[string]int64{}
+			}
+			cpuOut[e.Group][id] = int64(body.Usage.CPUUser + body.Usage.CPUSystem)
+		}
 	}
-	return out
+	return out, cpuOut
 }

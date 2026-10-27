@@ -41,6 +41,10 @@
           <!-- Step-scoped controls for the selected step. -->
           <div class="actions" id="step-actions"></div>
           <dl class="detail" id="detail"></dl>
+          <!-- The selected step's tests, failures first. Hidden until the
+               step has reported any. -->
+          <h3 class="tests-head" id="tests-head" hidden>Tests</h3>
+          <ol class="tests" id="tests" hidden></ol>
           <div class="log-head">
             <span id="log-label">Output</span>
             <div class="log-tabs" id="log-tabs"></div>

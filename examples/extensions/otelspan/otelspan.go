@@ -207,6 +207,11 @@ func (e *Exporter) Emit(ev api.Event) {
 		if b.Reason != "" {
 			a["senro.reason"] = b.Reason
 		}
+		if u := b.Usage; u != nil {
+			a["senro.cpu_user_ns"] = strconv.FormatInt(int64(u.CPUUser), 10)
+			a["senro.cpu_system_ns"] = strconv.FormatInt(int64(u.CPUSystem), 10)
+			a["senro.max_rss_bytes"] = strconv.FormatInt(u.MaxRSS, 10)
+		}
 		// State.Failed(), not "the exit code was non-zero": a step retried
 		// into success is not an error, and one cancelled by a shutdown did
 		// not fail on its own account. senro publishes the terminal state so

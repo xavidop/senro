@@ -53,6 +53,8 @@ import (
 	"github.com/xavidop/senro/internal/stepid"
 	"github.com/xavidop/senro/internal/unit"
 	"github.com/xavidop/senro/retry"
+	"github.com/xavidop/senro/service"
+	"github.com/xavidop/senro/testreport"
 )
 
 // Action is what a step does.
@@ -209,6 +211,65 @@ func (w *WorkflowBuilder) Step(id string, a Action) *StepBuilder {
 	sb := &StepBuilder{id: id, action: a}
 	w.steps = append(w.steps, sb)
 	return sb
+}
+
+// Add adopts a builder made with NewStep as a step of this workflow under id,
+// and returns it so the caller can keep configuring it. It is how a preset
+// step (a kit) joins a workflow.
+//
+// A builder is adopted once: adding the same one again, here or in another
+// workflow, makes Build fail naming both ids, and when the two workflows
+// belong to different pipelines, both pipelines' Builds fail. A handler
+// (senro.Handler) and a nil builder are refused the same way, at Build.
+func (w *WorkflowBuilder) Add(id string, sb *StepBuilder) *StepBuilder {
+	switch {
+	case sb == nil:
+		sb = &StepBuilder{id: id}
+		sb.errs = append(sb.errs, fmt.Errorf("senro: Add %q: nil step", id))
+	case sb.handler:
+		sb.errs = append(sb.errs, fmt.Errorf("senro: Add %q: a handler (senro.Handler) cannot be a workflow step", id))
+	case sb.id != "":
+		// Already a step elsewhere. The error goes on sb, so the earlier
+		// entry's Build fails, and on a fresh builder appended here, so this
+		// workflow's Build fails too when it belongs to another pipeline
+		// (which never sees sb). sb is returned, as before, so a chain on
+		// it still configures the one real step.
+		err := fmt.Errorf("senro: step %q was already added as %q", id, sb.id)
+		sb.errs = append(sb.errs, err)
+		w.steps = append(w.steps, &StepBuilder{id: id, errs: []error{err}})
+		return sb
+	default:
+		sb.id = id
+	}
+	w.steps = append(w.steps, sb)
+	return sb
+}
+
+// Service adds a step that is a long-running service: a process that stays
+// up while other steps use it, such as a database, instead of a command that
+// runs to completion. The options declare the ports it listens on and how to
+// tell it is ready (see package service); at least one port is required, and
+// Build refuses a service without one.
+//
+// A service is an ordinary step in every other respect: Needs, Env, WorkDir,
+// Mount, Timeout and When all work on the returned builder. Retry, Pure,
+// Generates, OnFailure and Always do not, and Build says so, because each
+// assumes a step that finishes.
+func (w *WorkflowBuilder) Service(id string, a Action, opts ...service.Option) *StepBuilder {
+	sb := w.Step(id, a)
+	sb.service = toServiceSpec(service.Resolve(opts...))
+	return sb
+}
+
+// toServiceSpec lowers a resolved service.Spec into its plan form. It copies
+// Ports so the plan never aliases the caller's slice.
+func toServiceSpec(s service.Spec) *plan.ServiceSpec {
+	return &plan.ServiceSpec{
+		Ports:          append([]int(nil), s.Ports...),
+		Probe:          plan.ProbeSpec{Kind: s.Probe.Kind, Port: s.Probe.Port, Path: s.Probe.Path},
+		ReadyTimeoutMS: s.ReadyTimeout.Milliseconds(),
+		StopGraceMS:    s.StopGrace.Milliseconds(),
+	}
 }
 
 // Unit is what an expansion's Template is called with: one thing a unit
@@ -1378,8 +1439,19 @@ func toNode(sb *StepBuilder, path map[*StepBuilder]bool) (plan.Node, error) {
 	if sb.generate != nil {
 		n.Generate = &plan.GenerateSpec{Path: sb.generate.path}
 	}
+	if sb.tests != nil {
+		t := *sb.tests
+		t.Select = append([]string(nil), sb.tests.Select...)
+		n.Tests = &t
+	}
+	if sb.service != nil {
+		svc := *sb.service
+		svc.Ports = append([]int(nil), sb.service.Ports...)
+		n.Service = &svc
+	}
 	n.Pure = sb.pure
 	n.NoSnapshot = sb.noSnapshot
+	n.CheckGenerated = sb.checkGenerated
 	n.CacheEnv = append([]string(nil), sb.cacheEnv...)
 	for _, se := range sb.secretEnvs {
 		n.Secrets = append(n.Secrets, plan.SecretSpec{Name: se.field, Env: se.env})
@@ -1723,12 +1795,24 @@ type StepBuilder struct {
 	// lowers it into plan.Node.Generate.
 	generate *Generator
 
+	// tests is set by Tests and nil for every step that reports no
+	// individual results; toNode lowers it into plan.Node.Tests.
+	tests *plan.TestsSpec
+
+	// service is set by WorkflowBuilder.Service and nil for every ordinary
+	// step; toNode lowers it into plan.Node.Service.
+	service *plan.ServiceSpec
+
 	mounts     []Mount
 	pure       bool
 	inputs     []artifact.Selector
 	outputs    []artifact.Selector
 	cacheEnv   []string
 	noSnapshot bool
+
+	// checkGenerated is set by CheckGenerated and lowered into
+	// plan.Node.CheckGenerated.
+	checkGenerated bool
 
 	secretEnvs []secretEnv
 }
@@ -1996,6 +2080,47 @@ func (s *StepBuilder) CacheEnv(names ...string) *StepBuilder {
 // take when it settles. For a step whose filesystem output nobody consumes.
 func (s *StepBuilder) NoSnapshot() *StepBuilder {
 	s.noSnapshot = true
+	return s
+}
+
+// CheckGenerated fails this step when it exits 0 but leaves any read-write
+// workspace it mounts different from what it was given: for a step that
+// regenerates checked-in files (code generation, formatting, lock files),
+// where any difference means the committed copy is out of date. The step
+// settles failed with exit code 0 and an error naming each changed
+// workspace and up to ten changed paths. The drifted snapshot is kept, so
+// `senro ws diff` and `senro ws pull` show what the generator produced.
+//
+// A non-zero exit is the generator's own failure and the check does not
+// run.
+//
+// plan.Validate refuses it on a service, together with NoSnapshot, together
+// with Retry, and on a step with no snapshotted read-write workspace mount
+// (a step-scoped or claim-backed workspace is never snapshotted). Retry is
+// refused because the drifted attempt's snapshot becomes the workspace's
+// state, so a retry would compare against the drifted tree and pass: put
+// the generator in its own step, without a retry.
+func (s *StepBuilder) CheckGenerated() *StepBuilder {
+	s.checkGenerated = true
+	return s
+}
+
+// Tests declares that this step runs tests and how it reports them, so the
+// run records one result per test rather than one exit code for the step.
+// Build a spec with testreport.GoTestJSON, testreport.TAP or
+// testreport.JUnitXML.
+//
+// A bad declaration (a func step, an unknown format, a JUnit report off the
+// coordinator) is refused by plan.Validate at Build, not here: this method
+// returns a *StepBuilder so calls chain, and the one place that checks every
+// plan is the one place that must.
+func (s *StepBuilder) Tests(spec testreport.Spec) *StepBuilder {
+	s.tests = &plan.TestsSpec{
+		Format: spec.Format,
+		Path:   spec.Path,
+		Select: append([]string(nil), spec.Select...),
+		Join:   spec.Join,
+	}
 	return s
 }
 

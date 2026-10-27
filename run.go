@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,11 +20,14 @@ import (
 	"github.com/xavidop/senro/internal/executor/k8sexec"
 	"github.com/xavidop/senro/internal/executor/localexec"
 	"github.com/xavidop/senro/internal/executor/sshexec"
+	"github.com/xavidop/senro/internal/oci"
 	"github.com/xavidop/senro/internal/plan"
 	"github.com/xavidop/senro/internal/secrets"
 	"github.com/xavidop/senro/internal/sink"
 	"github.com/xavidop/senro/internal/stepchild"
 	"github.com/xavidop/senro/internal/storage"
+	"github.com/xavidop/senro/lock"
+	"github.com/xavidop/senro/testreport"
 	"github.com/xavidop/senro/trigger"
 )
 
@@ -61,6 +66,13 @@ type runConfig struct {
 	maxNodes     int
 	regenerate   bool
 	only         map[string]bool
+	testSelect   map[string][]string
+
+	holdServices   bool
+	breakOnFailure bool
+
+	// lockPath is WithLock's file; empty falls back to SENRO_LOCK.
+	lockPath string
 }
 
 // Params are a run's parameters: the small, flat, string-valued facts a run
@@ -168,6 +180,69 @@ func WithOnlySteps(ids ...string) Option {
 	}
 }
 
+// WithHoldServices keeps every service up once it is ready, until the run is
+// cancelled, instead of stopping it when its last consumer settles. It is
+// what `senro up` runs under (via SENRO_UP, see upEnv): there the services
+// are the point, and one with no consumers would otherwise stop the moment
+// it became ready.
+func WithHoldServices() Option {
+	return func(c *runConfig) { c.holdServices = true }
+}
+
+// WithBreakOnFailure makes a failed step hold the run open for inspection
+// instead of letting it settle. `senro run --break-on-failure` sets it via
+// SENRO_BREAK_ON_FAILURE (see breakOnFailureEnv).
+func WithBreakOnFailure() Option {
+	return func(c *runConfig) { c.breakOnFailure = true }
+}
+
+// WithLock applies the lock file at path: every container image the plan
+// names by tag must have an entry (Kubernetes steps already require a digest
+// at Build), and the executor pulls the locked digest instead of the tag.
+// The plan keeps the reference as written, so plan.json and the plan's
+// digest do not change; the executor's Class reports the locked digest,
+// which is what reaches the cache key.
+//
+// Read when RunPlan starts. Without this option RunPlan reads SENRO_LOCK,
+// which `senro run` and `senro up` set to <pkg>/senro.lock when that file
+// exists. An image with no entry refuses the run before anything touches
+// disk. `senro lock` writes the file.
+//
+// A locked run records the pins it applied, only the images its plan names
+// by tag, as RunLockFile in its run directory, and `senro rerun` passes that
+// file back through this option, so a rerun pulls the digests the run
+// pulled. A run directory without one reruns unlocked.
+func WithLock(path string) Option {
+	return func(c *runConfig) { c.lockPath = path }
+}
+
+// WithTestSelection narrows a step to the named tests: the step's declared
+// Tests.Select is appended to its command with "{tests}" replaced by the
+// names, so only those tests run.
+//
+// The command changes, and the command is a cache-key component
+// (cache.CommandComponent), so the narrowed step cannot be served from the
+// full run's cache entry. That is the point: a cache hit would replay the
+// complete run's output and the selection would silently do nothing.
+//
+// The step must declare a Tests spec with a Select; RunPlan refuses, naming
+// the step, when it does not, when the step is not in the plan, or when
+// WithOnlySteps leaves it out (a selection that can never run is a mistake,
+// not a no-op). Repeated calls for one step accumulate their names.
+//
+// For a go test step (testreport.GoTestJSON) each name is regexp-quoted and a
+// subtest "Parent/sub" selects its parent, since go test cannot select a
+// subtest inside the anchored group; see selectNames. For every other format
+// names are substituted verbatim and the Select argv owns quoting.
+func WithTestSelection(step string, names ...string) Option {
+	return func(c *runConfig) {
+		if c.testSelect == nil {
+			c.testSelect = make(map[string][]string)
+		}
+		c.testSelect[step] = append(c.testSelect[step], names...)
+	}
+}
+
 // WithMaxNodes bounds how many nodes the whole run may hold, the plan's own
 // included, and every splice is checked against it. Zero, the default, means
 // five thousand.
@@ -232,6 +307,39 @@ func WithTraceContext(traceparent, tracestate string) Option {
 // package it just built and sets this on the pipeline it execs. A CI job can
 // set it too.
 const funcPkgEnv = "SENRO_FUNC_PKG"
+
+// upEnv and breakOnFailureEnv carry `senro up` and `senro run
+// --break-on-failure` into the pipeline process, and "1" turns each on. They
+// are environment rather than argv because senro.Run never reads the
+// pipeline's argv: the pipeline binary owns its flags, and a flag senro
+// invented would collide with one it already has. They sit beside funcPkgEnv
+// for the same reason it does: the CLI that built the binary knows what the
+// binary cannot.
+//
+// SENRO_UP=1 is WithHoldServices plus a selection of every service and what
+// it needs, and it wins over an explicit WithOnlySteps: the selection is
+// replaced, not intersected, because "up" means "the services", whatever
+// else the pipeline's source selected.
+const (
+	upEnv             = "SENRO_UP"
+	breakOnFailureEnv = "SENRO_BREAK_ON_FAILURE"
+)
+
+// lockEnv, lockWriteEnv and lockCheckEnv carry the lock file `senro run`
+// found, and `senro lock` itself, into the pipeline process, for the same
+// reason upEnv does. Each holds a path:
+//
+//   - SENRO_LOCK applies the lock (see WithLock, which wins over it).
+//   - SENRO_LOCK_WRITE resolves every image the plan names by tag, writes the
+//     lock there, prints "<reference>  <digest>" per image and runs nothing.
+//   - SENRO_LOCK_CHECK resolves the same way, prints every difference from
+//     the file as "<reference>  <locked>  ->  <current>" ("missing" for an
+//     absent side), runs nothing, and fails when it printed any line.
+const (
+	lockEnv      = "SENRO_LOCK"
+	lockWriteEnv = "SENRO_LOCK_WRITE"
+	lockCheckEnv = "SENRO_LOCK_CHECK"
+)
 
 // envTraceContext reads an inbound trace context out of the process
 // environment, in both spellings (uppercase first): CI systems export
@@ -492,14 +600,80 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 		opt(&cfg)
 	}
 
+	// Writing or checking a lock runs nothing and leaves no run directory,
+	// and both are pure functions of the plan's images, not of one delivery:
+	// they come before the trigger, so an event no trigger matches cannot
+	// turn `senro lock` into an exit 78, and before SENRO_UP and the test
+	// selection, which narrow a run this never starts.
+	if path := os.Getenv(lockWriteEnv); path != "" {
+		return writeLockMode(ctx, p, path, cfg)
+	}
+	if path := os.Getenv(lockCheckEnv); path != "" {
+		return checkLockMode(ctx, p, path, cfg)
+	}
+
 	// Decided before anything touches disk, starts a goroutine or opens the
 	// cache: a no-match has to be genuinely inert, with no partial state for
-	// something to misread later as a run that died. Only Build, which is
-	// pure, runs ahead of this. The error is wrapped so it reads like every
-	// other error here; errors.Is(err, trigger.ErrNoMatch) still recovers it.
+	// something to misread later as a run that died. Only Build and the lock
+	// modes above, which never start a run, run ahead of this. The error is
+	// wrapped so it reads like every other error here; errors.Is(err,
+	// trigger.ErrNoMatch) still recovers it.
 	match, err := trigger.Select(cfg.triggerEvent, cfg.triggers...)
 	if err != nil {
 		return fmt.Errorf("senro: %w", err)
+	}
+
+	// SENRO_UP before the test selection and before anything touches disk:
+	// a pipeline with no services is refused with no run directory behind.
+	if os.Getenv(upEnv) == "1" {
+		ids, err := serviceClosure(p)
+		if err != nil {
+			return err
+		}
+		cfg.holdServices = true
+		cfg.only = make(map[string]bool, len(ids))
+		for _, id := range ids {
+			cfg.only[id] = true
+		}
+	}
+	if os.Getenv(breakOnFailureEnv) == "1" {
+		cfg.breakOnFailure = true
+	}
+
+	// An applied lock sits with the other up-front decisions: an image
+	// missing from it is refused before a run directory exists.
+	lockPath := cfg.lockPath
+	if lockPath == "" {
+		lockPath = os.Getenv(lockEnv)
+	}
+	var pins map[string]string
+	var applied *lock.File
+	if lockPath != "" {
+		f, err := lock.Read(lockPath)
+		if err != nil {
+			return fmt.Errorf("senro: %w", err)
+		}
+		if pins, err = applyLock(p, f, lockPath); err != nil {
+			return err
+		}
+		// What was applied, recorded beside the manifest once the run
+		// directory exists: the images this plan names by tag, nothing
+		// else the lock file holds. See RunLockFile.
+		used := lock.File{Version: lock.Version, Images: map[string]string{}}
+		for _, ref := range lockImages(p) {
+			used.Images[ref] = f.Images[ref]
+		}
+		applied = &used
+	}
+
+	// Refused here, with the other up-front checks, so a bad selection leaves
+	// no run directory or manifest behind.
+	if len(cfg.testSelect) > 0 {
+		narrowed, err := applyTestSelection(p, cfg.testSelect, cfg.only)
+		if err != nil {
+			return fmt.Errorf("senro: %w", err)
+		}
+		p = narrowed
 	}
 
 	dir, runID := cfg.dir, cfg.runID
@@ -578,7 +752,7 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 	folded := newFoldingSink(snk)
 
 	local := localexec.New(dir, store.Snapshotter, localexec.WithClass(cfg.localClass))
-	execs, err := buildExecutors(p, dir, runID, store, secretSet)
+	execs, err := buildExecutors(p, dir, runID, store, secretSet, pins)
 	if err != nil {
 		return fmt.Errorf("senro: %w", err)
 	}
@@ -616,6 +790,11 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 	}); err != nil {
 		return err
 	}
+	if applied != nil {
+		if err := lock.Write(filepath.Join(dir, RunLockFile), *applied); err != nil {
+			return fmt.Errorf("senro: recording the applied lock: %w", err)
+		}
+	}
 
 	traceParent, traceState := cfg.traceParent, cfg.traceState
 	if !cfg.hasTrace {
@@ -652,6 +831,9 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 
 		Regenerate: cfg.regenerate,
 		Only:       cfg.only,
+
+		HoldServices:   cfg.holdServices,
+		BreakOnFailure: cfg.breakOnFailure,
 
 		// Not validated here: engine.Options.TraceParent takes the raw
 		// header, so exactly one place in senro decides what a valid
@@ -701,8 +883,13 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 // secrets is the run's resolved set, needed because one target declares a
 // credential of its own: a container image in a private registry. It is nil
 // for a run with no WithSecrets, which is the empty set.
+//
+// pins is applyLock's result, keyed by the plan's own spec.Key(). The map
+// returned stays keyed by the plan's spec, which is what the engine looks an
+// executor up by; only the COPY handed to the constructor carries the pinned
+// image, so the plan is never edited.
 func buildExecutors(
-	p *Plan, dir, runID string, store *storage.Storage, secrets *secrets.Set,
+	p *Plan, dir, runID string, store *storage.Storage, secrets *secrets.Set, pins map[string]string,
 ) (map[string]executor.Executor, error) {
 	var out map[string]executor.Executor
 	for i := range p.Nodes {
@@ -714,7 +901,11 @@ func buildExecutors(
 		if _, done := out[key]; done {
 			continue
 		}
-		ex, err := newExecutorFor(*spec, p.Nodes[i].ID, runID, store, secrets)
+		built := *spec
+		if pinned, ok := pins[key]; ok {
+			built.Image = pinned
+		}
+		ex, err := newExecutor(built, p.Nodes[i].ID, runID, store, secrets)
 		if err != nil {
 			return nil, err
 		}
@@ -743,6 +934,10 @@ func closeExecutors(execs map[string]executor.Executor) {
 		}
 	}
 }
+
+// newExecutor is newExecutorFor behind a variable, so a test can see the spec
+// buildExecutors hands over without a container runtime to construct it.
+var newExecutor = newExecutorFor
 
 // newExecutorFor constructs the executor a single plan.ExecutorSpec names.
 // stepID is only for the error message: it names the first step that
@@ -812,4 +1007,349 @@ func registryAuthRefusal(stepID, image, field string, set *secrets.Set) error {
 			"struct passed to senro.WithSecrets does not provide (%s). container.RegistryAuth takes "+
 			"the registry account name and the NAME of a mamori-resolved field, never a password",
 		stepID, image, field, available)
+}
+
+// resolveTag asks a registry for the digest a tag points at. A variable so a
+// test can answer for the registry.
+var resolveTag = oci.ResolveTag
+
+// lockStdout and lockStderr are where the lock modes print, variables for
+// the same reason. `senro lock` forwards the pipeline's stdout verbatim.
+var (
+	lockStdout io.Writer = os.Stdout
+	lockStderr io.Writer = os.Stderr
+)
+
+// lockable reports whether spec names an image a lock can pin: a container
+// target whose image is not already a digest reference. Kubernetes targets
+// are not lockable because they never need it: validateK8s (internal/plan)
+// already refuses a k8s image that is not a digest reference at Build, so a
+// built plan's k8s images are pinned before a lock is consulted.
+func lockable(spec *plan.ExecutorSpec) bool {
+	if spec == nil || spec.Kind != plan.ExecutorContainer {
+		return false
+	}
+	return spec.Image != "" && !lock.IsDigestRef(spec.Image)
+}
+
+// lockImages returns every container image reference in p that is not
+// already a digest reference, sorted and without duplicates: exactly the set
+// a lock file for p holds.
+func lockImages(p *Plan) []string {
+	seen := map[string]bool{}
+	var out []string
+	for i := range p.Nodes {
+		spec := p.Nodes[i].Executor
+		if !lockable(spec) || seen[spec.Image] {
+			continue
+		}
+		seen[spec.Image] = true
+		out = append(out, spec.Image)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// applyLock returns, for every lockable spec in p, its Key() mapped to the
+// pinned reference f records ("golang@sha256:..."), and refuses an image f
+// has no entry for, naming path. p is not modified: the pins reach only the
+// executors' constructors (see buildExecutors), so plan.json and p.Digest()
+// are what they would be without a lock.
+func applyLock(p *Plan, f lock.File, path string) (map[string]string, error) {
+	var pins map[string]string
+	for i := range p.Nodes {
+		spec := p.Nodes[i].Executor
+		if !lockable(spec) {
+			continue
+		}
+		pinned, ok := f.Pinned(spec.Image)
+		if !ok {
+			return nil, fmt.Errorf("senro: image %q is not in %s; run senro lock", spec.Image, path)
+		}
+		if pins == nil {
+			pins = make(map[string]string)
+		}
+		pins[spec.Key()] = pinned
+	}
+	return pins, nil
+}
+
+// resolveLock resolves every image lockImages(p) names through resolve and
+// returns the lock file that records them. An image a registry cannot
+// resolve fails the whole lock: a partial lock would refuse the next run
+// anyway, and later than this.
+func resolveLock(
+	ctx context.Context, p *Plan, resolve func(ctx context.Context, ref string) (string, error),
+) (lock.File, error) {
+	f := lock.File{Version: lock.Version, Images: map[string]string{}}
+	for _, ref := range lockImages(p) {
+		digest, err := resolve(ctx, ref)
+		if err != nil {
+			return lock.File{}, fmt.Errorf("senro: resolve %s: %w", ref, err)
+		}
+		f.Images[ref] = digest
+	}
+	return f, nil
+}
+
+// registryResolver resolves a reference with the registry credential the
+// plan declares for it (container.RegistryAuth), from the run's secrets, so
+// a lock reaches every registry a pull would. The first spec naming a
+// credential for an image supplies it; a reference with none is resolved
+// anonymously.
+func registryResolver(p *Plan, secrets *secrets.Set) func(context.Context, string) (string, error) {
+	type cred struct {
+		stepID string
+		auth   *plan.RegistryAuthSpec
+	}
+	creds := map[string]cred{}
+	for i := range p.Nodes {
+		spec := p.Nodes[i].Executor
+		if !lockable(spec) || spec.RegistryAuth == nil {
+			continue
+		}
+		if _, ok := creds[spec.Image]; !ok {
+			creds[spec.Image] = cred{stepID: p.Nodes[i].ID, auth: spec.RegistryAuth}
+		}
+	}
+	return func(ctx context.Context, ref string) (string, error) {
+		var cfg oci.Config
+		if c, ok := creds[ref]; ok {
+			password, ok := secrets.Value(c.auth.Secret)
+			if !ok {
+				return "", registryAuthRefusal(c.stepID, ref, c.auth.Secret, secrets)
+			}
+			cfg.Username, cfg.Password = c.auth.Username, string(password)
+		}
+		return resolveTag(ctx, ref, cfg)
+	}
+}
+
+// lockSecrets resolves the run's secrets for the lock modes, which return
+// before runPlan resolves them for the run itself.
+func lockSecrets(cfg runConfig) (*secrets.Set, error) {
+	if !cfg.hasSecrets {
+		return nil, nil
+	}
+	set, err := secrets.FromConfig(cfg.secrets)
+	if err != nil {
+		return nil, fmt.Errorf("senro: %w", err)
+	}
+	return set, nil
+}
+
+// writeLockMode is SENRO_LOCK_WRITE: resolve, write, print, run nothing.
+func writeLockMode(ctx context.Context, p *Plan, path string, cfg runConfig) error {
+	set, err := lockSecrets(cfg)
+	if err != nil {
+		return err
+	}
+	f, err := resolveLock(ctx, p, registryResolver(p, set))
+	if err != nil {
+		return err
+	}
+	if err := lock.Write(path, f); err != nil {
+		return fmt.Errorf("senro: %w", err)
+	}
+	refs := make([]string, 0, len(f.Images))
+	for ref := range f.Images {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	for _, ref := range refs {
+		_, _ = fmt.Fprintf(lockStdout, "%s  %s\n", ref, f.Images[ref])
+	}
+	if len(refs) == 0 {
+		_, _ = fmt.Fprintf(lockStderr,
+			"senro: this pipeline names no container image by tag; wrote an empty %s\n", path)
+	}
+	return nil
+}
+
+// checkLockMode is SENRO_LOCK_CHECK: resolve, compare with the file at path,
+// print every difference, write nothing and run nothing. An entry the plan no
+// longer names is a difference too: `senro lock` would drop it.
+//
+// Drift returns an error wrapping lock.ErrDrift and prints lock.DriftDetected
+// to stderr as a line of its own. The line is the library's, not main's, so
+// `senro lock --check` can map drift to exit 1 whatever the pipeline's main
+// prints or exits with.
+func checkLockMode(ctx context.Context, p *Plan, path string, cfg runConfig) error {
+	locked, err := lock.Read(path)
+	if err != nil {
+		return fmt.Errorf("senro: %w", err)
+	}
+	set, err := lockSecrets(cfg)
+	if err != nil {
+		return err
+	}
+	current, err := resolveLock(ctx, p, registryResolver(p, set))
+	if err != nil {
+		return err
+	}
+	refs := make([]string, 0, len(locked.Images)+len(current.Images))
+	for ref := range locked.Images {
+		refs = append(refs, ref)
+	}
+	for ref := range current.Images {
+		if _, ok := locked.Images[ref]; !ok {
+			refs = append(refs, ref)
+		}
+	}
+	sort.Strings(refs)
+	differ := 0
+	for _, ref := range refs {
+		was, inFile := locked.Images[ref]
+		now, inPlan := current.Images[ref]
+		if inFile && inPlan && was == now {
+			continue
+		}
+		if !inFile {
+			was = "missing"
+		}
+		if !inPlan {
+			now = "missing"
+		}
+		differ++
+		_, _ = fmt.Fprintf(lockStdout, "%s  %s  ->  %s\n", ref, was, now)
+	}
+	if differ > 0 {
+		_, _ = fmt.Fprintln(lockStderr, lock.DriftDetected)
+		return fmt.Errorf("senro: %s: %w: %d image(s) differ; run senro lock", path, lock.ErrDrift, differ)
+	}
+	return nil
+}
+
+// serviceClosure returns the id of every service in p plus everything those
+// services transitively need, sorted: the set `senro up` runs. A service
+// cannot start without its needs, so selecting the service alone would skip
+// them and leave it unstartable. Consumers are left out on purpose.
+func serviceClosure(p *plan.Plan) ([]string, error) {
+	byID := make(map[string]*plan.Node, len(p.Nodes))
+	var stack []string
+	for i := range p.Nodes {
+		n := &p.Nodes[i]
+		byID[n.ID] = n
+		if n.IsService() {
+			stack = append(stack, n.ID)
+		}
+	}
+	if len(stack) == 0 {
+		return nil, fmt.Errorf("senro: this pipeline declares no services")
+	}
+	seen := make(map[string]bool)
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if n := byID[id]; n != nil {
+			stack = append(stack, n.Needs...)
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// applyTestSelection returns a plan in which each selected step's command has
+// its declared Tests.Select appended, and never mutates the caller's plan: it
+// is often a recorded plan the caller reads again, and editing it would make
+// a second call narrow an already narrowed command. Only p.Nodes and the
+// affected nodes' Cmd are cloned; everything else is shared.
+//
+// only is WithOnlySteps' set, empty for the whole plan. A selected step
+// outside it would be skipped, so the narrowing would silently do nothing.
+func applyTestSelection(p *plan.Plan, sel map[string][]string, only map[string]bool) (*plan.Plan, error) {
+	out := *p
+	out.Nodes = append([]plan.Node(nil), p.Nodes...)
+	// Sorted so that two bad selections always report the same one first.
+	steps := make([]string, 0, len(sel))
+	for step := range sel {
+		steps = append(steps, step)
+	}
+	sort.Strings(steps)
+	for _, step := range steps {
+		names := sel[step]
+		idx := -1
+		for i := range out.Nodes {
+			if out.Nodes[i].ID == step {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return nil, fmt.Errorf("test selection names step %q, which the plan does not have", step)
+		}
+		if len(only) > 0 && !only[step] {
+			return nil, fmt.Errorf("test selection names step %q, which WithOnlySteps leaves out, "+
+				"so its tests would never run", step)
+		}
+		n := &out.Nodes[idx]
+		if n.Tests == nil {
+			return nil, fmt.Errorf("step %q declares no Tests, so it cannot run a selection of them", step)
+		}
+		if len(n.Tests.Select) == 0 {
+			return nil, fmt.Errorf("step %q declares Tests but no Select, so it has no way to run only some tests. "+
+				"Selecting needs argv that takes {tests}", step)
+		}
+		names = selectNames(n.Tests.Format, names)
+		n.Cmd = append(append([]string(nil), n.Cmd...), expandSelect(n.Tests.Select, n.Tests.Join, names)...)
+	}
+	return &out, nil
+}
+
+// selectNames turns recorded test names into what the step's own Select
+// takes, which depends on the runner.
+//
+// For go test the Select is a -run regular expression, so each name is
+// regexp.QuoteMeta'd: a test name with a regexp metacharacter in it ("+",
+// "(", "." in a subtest's name) would otherwise match some other test or
+// nothing at all. A subtest "Parent/sub" collapses to "Parent" first,
+// because go test splits -run on "/" outside parentheses, so a subtest name
+// inside the anchored group matches nothing and the rerun would pass having
+// run no tests. Rerunning the parent reruns the subtest with it. Names are
+// deduped after the collapse, since several failed subtests share a parent.
+//
+// For every other format the names go into Select verbatim: senro does not
+// know the runner's selection syntax, so the Select argv owns any quoting.
+func selectNames(format string, names []string) []string {
+	if format != testreport.FormatGoTest {
+		return names
+	}
+	seen := make(map[string]bool, len(names))
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if parent, _, ok := strings.Cut(n, "/"); ok {
+			n = parent
+		}
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, regexp.QuoteMeta(n))
+	}
+	return out
+}
+
+// expandSelect replaces every "{tests}" in sel, including inside a longer
+// token such as "^({tests})$", with the names joined by join. An empty join
+// means "|", the spec's default, which is the alternation both go's -run and
+// most regexp-based selectors take. names arrive already shaped for the
+// runner by selectNames; expandSelect itself quotes nothing.
+func expandSelect(sel []string, join string, names []string) []string {
+	if join == "" {
+		join = "|"
+	}
+	joined := strings.Join(names, join)
+	out := make([]string, len(sel))
+	for i, a := range sel {
+		out[i] = strings.ReplaceAll(a, testreport.Placeholder, joined)
+	}
+	return out
 }

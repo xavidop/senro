@@ -122,6 +122,128 @@ type StepState struct {
 	// keys into RunState.Handlers, so a renderer can show a step's cleanup
 	// story without re-scanning the raw stream.
 	Handlers []string `json:"handlers,omitempty"`
+	// Tests is every test the step reported, in first-seen order. A slice, not
+	// a map keyed by test, so the JSON stays a plain array every client can
+	// walk; lookups go through Test.
+	//
+	// Survives step.retried on purpose: marking a test recovered needs the
+	// failed verdict from the earlier attempt to still be here.
+	//
+	// omitempty, so a snapshot of a run with no tests is byte-for-byte what it
+	// was before this field existed.
+	Tests []*TestResult `json:"tests,omitempty"`
+	// IsService is folded from step.created, not inferred from Service: a
+	// service that has not passed its probe yet has no Service, and a renderer
+	// must still show it as "starting" rather than as an ordinary running step.
+	//
+	// omitempty, so a snapshot of a run with no services is byte-for-byte what
+	// it was before this field existed.
+	IsService bool `json:"is_service,omitempty"`
+	// Service is the readiness of a service step, nil until service.ready. It
+	// survives the step finishing so a renderer can still say where the
+	// service listened; use Ready for whether it is up now.
+	Service *ServiceState `json:"service,omitempty"`
+	// Held says why Paused is set when it is not an armed breakpoint: today
+	// only HoldReasonFailure, a step kept after a failed attempt so a client
+	// can open a shell into it. Separate from Paused because the two call for
+	// different affordances: a plain breakpoint offers resume, a failure hold
+	// offers a shell and a retry.
+	//
+	// Cleared everywhere Paused is, so it never outlives the hold.
+	//
+	// omitempty, so a snapshot of a run with no holds is byte-for-byte what it
+	// was before this field existed.
+	Held string `json:"held,omitempty"`
+	// Usage is the CPU and memory of the attempt that concluded, from
+	// step.finished; nil while the step runs or when the executor could not
+	// measure it. Cleared by step.retried, so a new attempt never shows the
+	// previous one's figures.
+	//
+	// omitempty, so a snapshot of a run with no usage is byte-for-byte what
+	// it was before this field existed.
+	Usage *ResourceUsage `json:"usage,omitempty"`
+}
+
+// ServiceState is a service step's readiness: when its probe passed and where
+// it listens.
+type ServiceState struct {
+	// Ready is the timestamp of service.ready. omitzero, not omitempty, for the
+	// reason StepState.Started is: a zero time would otherwise ship as the year 1.
+	Ready time.Time `json:"ready,omitzero"`
+	// Endpoints is every address the service answers on, as reported by
+	// service.ready.
+	Endpoints []Endpoint `json:"endpoints,omitempty"`
+}
+
+// Ready reports whether the step is a service that has passed its probe and is
+// still up. False once the step reaches a terminal state, though Service is
+// kept: a stopped service is not ready, and a dependent must not be shown a
+// dead endpoint as live.
+func (s *StepState) Ready() bool {
+	return s.Service != nil && !s.Service.Ready.IsZero() && !s.State.Terminal()
+}
+
+// TestResult is one test's folded state: its latest verdict and the attempt
+// that produced it. Fields mirror TestFinishedBody, plus Attempt.
+type TestResult struct {
+	// Name is the test's name within its suite, as TestFinishedBody.Name.
+	Name string `json:"name"`
+	// Suite groups tests (a Go package path, a JUnit classname); empty for
+	// TAP. Suite and Name together are the fold's key.
+	Suite string `json:"suite,omitempty"`
+	// Outcome is the folded verdict, the only place TestRecovered appears: a
+	// test that failed on an earlier attempt and passed on a later one.
+	Outcome TestOutcome `json:"outcome"`
+	// Duration is the reported run time of the attempt that set Outcome.
+	Duration time.Duration `json:"duration_ns,omitempty"`
+	// Attempt is the step attempt that produced this verdict. For a recovered
+	// test it is the attempt that finally passed.
+	Attempt int `json:"attempt,omitempty"`
+	// Output is the redacted output tail of a failed test, at most
+	// MaxTestOutput bytes. Like every field here it comes from the event that
+	// set Outcome, so a recovered test carries the passing attempt's (empty)
+	// Output, not the earlier failure's.
+	Output string `json:"output,omitempty"`
+	// File and Line locate the failure in source when the report has them.
+	File string `json:"file,omitempty"`
+	Line int    `json:"line,omitempty"`
+}
+
+// TestCounts is a step's tests tallied by outcome. The outcome fields are
+// mutually exclusive but need not sum to Total: a test whose outcome this
+// build does not know (from a newer engine) is counted in Total only.
+// Aggregation lives here so every client reports identical numbers.
+type TestCounts struct{ Total, Passed, Failed, Skipped, Recovered int }
+
+// TestCounts tallies the step's tests by outcome.
+func (s *StepState) TestCounts() TestCounts {
+	c := TestCounts{Total: len(s.Tests)}
+	for _, t := range s.Tests {
+		switch t.Outcome {
+		case TestPassed:
+			c.Passed++
+		case TestFailed:
+			c.Failed++
+		case TestSkipped:
+			c.Skipped++
+		case TestRecovered:
+			c.Recovered++
+		}
+	}
+	return c
+}
+
+// Test returns the step's result for the named test, or nil when the step has
+// none. A test is identified by suite and name together. Linear on purpose:
+// an index map would add a second JSON shape for the same data, and a step's
+// tests are scanned once per event.
+func (s *StepState) Test(suite, name string) *TestResult {
+	for _, t := range s.Tests {
+		if t.Suite == suite && t.Name == name {
+			return t
+		}
+	}
+	return nil
 }
 
 // Running reports whether the step has started but not reached a terminal state.

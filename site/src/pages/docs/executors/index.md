@@ -36,6 +36,8 @@ today:
 | `Func` steps | in this process | yes, the binary is bind-mounted | yes, the binary is sent in per pod | yes, the binary is staged per host |
 | `senro shell` | yes | yes | yes, in a pod of its own | yes |
 | `senro shell --tty` | yes | yes | yes, a pty the runtime allocates | `executor_no_terminal` |
+| [Services](/docs/steps/services/) | yes, the process binds its declared port | yes, published to `127.0.0.1` on a free port | refused at `Build()` | refused at `Build()` |
+| Reaches a service at | `127.0.0.1`: the declared port of a local service, the published port of a container one | a container service's bridge IP on its declared port; a local service at `host.docker.internal` (a `host-gateway` entry), which on native Linux must listen beyond `127.0.0.1` | n/a | n/a |
 | stdout and stderr | kept apart | kept apart | merged into one stream | kept apart |
 | Private registries | nothing to pull | `container.RegistryAuth` | the node pulls, via an `imagePullSecret` you set | nothing to pull |
 | Cache class | `local/<os>/<arch>` | platform and resolved image digest | image digest and platform, never the namespace | `ssh/<os>/<arch>`, or your `ssh.CacheClass` |
@@ -87,6 +89,7 @@ falls back to running locally.
 | An executor on a handler | `Build()`. A handler runs where its parent ran |
 | `container.RegistryAuth` on any other executor | `Build()`. Only the container executor pulls an image itself |
 | `DOCKER_HOST` naming `tcp://` | Run start. Every container mount is a bind mount of a coordinator directory |
+| A `Service` on a Kubernetes or SSH workflow | `Build()`. A service's probe runs from the coordinator and its consumers reach it through a port there, which only the local and container executors provide. See [Services](/docs/steps/services/) |
 
 > The executor is set per workflow, not per step, because it decides what a mount, a secret, and a
 > shell actually mean on that machine. Steps that share a machine share an executor. Grouping steps

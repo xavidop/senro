@@ -234,6 +234,13 @@ type BreakpointHitBody struct {
 	// one that will clear it. Recorded for the same reason ControlAppliedBody
 	// carries one: a run that stopped needs to say who stopped it.
 	ClientID string `json:"client_id,omitempty"`
+	// Reason is why the step is held: empty for a breakpoint a client armed,
+	// HoldReasonFailure for a step the engine kept after a failed attempt so a
+	// client can open a shell into it.
+	//
+	// omitempty, so an ordinary breakpoint.hit is byte-for-byte what it was
+	// before this field existed.
+	Reason string `json:"reason,omitempty"`
 }
 
 // HandlerBody is the payload of handler.started, handler.succeeded and

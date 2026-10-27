@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	senroexec "github.com/xavidop/senro/internal/executor"
@@ -145,6 +147,26 @@ type sandbox struct {
 	// secrets is created by the first PutSecret and removed by Close; the
 	// zero value creates nothing until then.
 	secrets secretdir.Dir
+
+	// mu guards the usage of the most recent Run, which Usage reads after
+	// Run has returned, possibly from another goroutine.
+	mu      sync.Mutex
+	usage   senroexec.ResourceUsage
+	usageOK bool
+}
+
+// Usage implements senroexec.UsageReporter: what the most recent Run's
+// process consumed, ok false when no Run has produced a process yet.
+func (s *sandbox) Usage() (senroexec.ResourceUsage, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.usage, s.usageOK
+}
+
+func (s *sandbox) setUsage(u senroexec.ResourceUsage, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.usage, s.usageOK = u, ok
 }
 
 // realize makes every declared mount reachable from the sandbox.
@@ -289,6 +311,14 @@ func (s *sandbox) commandDir(c senroexec.Cmd) string {
 	return dir
 }
 
+// WorkDir implements senroexec.WorkDirReporter. It is commandDir applied to
+// the step's declared WorkDir, the Dir the engine runs every step with, so
+// the directory reported and the directory Run starts in come from one
+// resolution and cannot disagree (TestWorkDirIsWhereRunStarts).
+func (s *sandbox) WorkDir() string {
+	return s.commandDir(senroexec.Cmd{Dir: s.spec.WorkDir})
+}
+
 func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Writer) (int, error) {
 	if len(c.Args) == 0 {
 		return 0, fmt.Errorf("localexec: %w: empty command", senroexec.ErrInfra)
@@ -308,7 +338,12 @@ func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Wr
 	// orphan exits. See waitDelay.
 	cmd.WaitDelay = waitDelay
 
-	return s.classifyRunError(ctx, cmd, cmd.Run())
+	err := cmd.Run()
+	// Recorded on every path, a killed process included: ProcessState is
+	// set whenever the process was started and waited for, and nil (so ok
+	// false, never the previous Run's figures) when it never started.
+	s.setUsage(processUsage(cmd.ProcessState))
+	return s.classifyRunError(ctx, cmd, err)
 }
 
 // classifyRunError is the (exit, err) verdict for a finished command, shared
@@ -438,6 +473,13 @@ func (s *sandbox) RunInteractive(
 	return s.classifyRunError(ctx, cmd, cmd.Wait())
 }
 
+// HostAddress implements senroexec.Addressable. A local process shares the
+// coordinator's network and binds its declared port itself, so the declared
+// port IS the host port and there is nothing to look up.
+func (s *sandbox) HostAddress(_ context.Context, port int) (string, error) {
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nil
+}
+
 func (s *sandbox) Close(_ context.Context, keep bool) error {
 	// Secret files are removed on EVERY path, including keep: a kept sandbox
 	// holding a plaintext credential is that credential on disk for as long
@@ -454,4 +496,5 @@ func (s *sandbox) Close(_ context.Context, keep bool) error {
 var (
 	_ senroexec.Sandbox     = (*sandbox)(nil)
 	_ senroexec.Interactive = (*sandbox)(nil)
+	_ senroexec.Addressable = (*sandbox)(nil)
 )

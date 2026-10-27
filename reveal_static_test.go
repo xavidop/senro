@@ -90,7 +90,9 @@ func TestSetValueCallSitesAreAllowlisted(t *testing.T) {
 	// run.go is the fourth: buildExecutors reads the ONE credential a target
 	// itself declares (container.RegistryAuth) and hands it straight to the
 	// executor's constructor, keeping no copy of its own. The executor holds
-	// it only to send one X-Registry-Auth header on one pull.
+	// it only to send one X-Registry-Auth header on one pull. registryResolver
+	// reads the same credential for the same image, to resolve its tag for
+	// `senro lock`, and hands it to one registry request.
 	allowed := map[string]bool{
 		"internal/engine/attempt.go": true,
 		"internal/engine/handler.go": true,

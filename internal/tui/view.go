@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/xavidop/senro/api"
+	"github.com/xavidop/senro/internal/render"
 )
 
 // Layout: a step pane on the left with expansion groups collapsed, a log
@@ -42,7 +43,8 @@ const helpText = `senro attach: keys
                  settle as skipped_manual and never run
   b              set a breakpoint on the focused step: the run stops before
                  it and waits, making whatever other progress it can
-  B              clear that breakpoint, releasing the step
+  B              clear that breakpoint, releasing the step; also releases a
+                 step held after failure (senro run --break-on-failure)
   w              snapshot the focused step's workspaces now, for inspection
                  with senro ws pull. Answerable for a step that has not run,
                  so pair it with b; the capture is diagnostic and enters no
@@ -64,6 +66,8 @@ const helpText = `senro attach: keys
   q              detach, and the run keeps going
   /              filter the step list by substring (enter applies, esc cancels)
   pgup           load older log history for the focused step
+  t              show the focused step's tests in place of its log: failed
+                 first, with their output; press again for the log
   ?              toggle this help
 
 press ? or esc to close`
@@ -87,7 +91,18 @@ func (m *Model) View() string {
 	}
 
 	rows := filterRows(topLevelRows(st), m.filter)
-	body := lipgloss.JoinHorizontal(lipgloss.Top, m.renderSteps(st, rows), m.renderLog())
+	steps := m.renderSteps(st, rows)
+	right := m.renderLog()
+	if m.showTests && m.focused != "" {
+		// The pane's text width: what the steps pane leaves, less
+		// logPaneStyle's padding. 0 before the terminal size is known.
+		width := 0
+		if m.width > 0 {
+			width = max(m.width-lipgloss.Width(steps)-logPaneStyle.GetHorizontalPadding(), 1)
+		}
+		right = m.renderTests(st, width)
+	}
+	body := lipgloss.JoinHorizontal(lipgloss.Top, steps, right)
 	return lipgloss.JoinVertical(lipgloss.Left, body, m.renderFooter(st))
 }
 
@@ -106,12 +121,20 @@ func (m *Model) renderSteps(st *api.RunState, rows []string) string {
 		}
 		line := marker + id
 		if s := st.Steps[id]; s != nil {
-			line += " " + stepStatusLabel(s)
+			line += " " + stepStatusLabel(s) + testSuffix(s)
+			if u := render.FormatUsage(s.Usage); u != "" {
+				line += "  " + u
+			}
 		}
 		if _, isGroup := st.Expansions[id]; isGroup {
 			c := st.Group(id)
 			line += fmt.Sprintf(" (%d units · %d failed · %d cached · %d running)",
 				c.Total, c.Failed, c.Cached, c.Running)
+		}
+		// A row wider than the terminal would wrap or push the log pane off
+		// the screen; the usage text is last, so the cut takes it first.
+		if m.width > 0 {
+			line = clipLine(line, max(m.width-stepsPaneStyle.GetHorizontalPadding(), 1))
 		}
 		if i == m.cursor {
 			line = cursorStyle.Render(line)
@@ -127,6 +150,11 @@ func (m *Model) renderSteps(st *api.RunState, rows []string) string {
 // reads the same way whether a human is looking at a CI log or the TUI.
 func stepStatusLabel(s *api.StepState) string {
 	switch {
+	case s.Held == api.HoldReasonFailure:
+		// First: a step held after failure has no State yet (the hold comes
+		// before step.finished) and would otherwise read as "paused", which
+		// offers a resume where the useful next move is a shell.
+		return failedStyle.Render("failed") + ", held (s shell · B release)"
 	case s.State != "" && s.Error != "":
 		return string(s.State) + ": " + s.Error
 	case s.State.Failed():
@@ -135,6 +163,11 @@ func stepStatusLabel(s *api.StepState) string {
 		return successStyle.Render(string(s.State))
 	case s.State != "":
 		return string(s.State)
+	case s.Ready():
+		// Before paused and running: ready refines running for a service
+		// whose probe has passed. Ready is false once the step is terminal,
+		// so it never shadows a verdict.
+		return successStyle.Render("ready")
 	case s.Paused:
 		// Before the started case: a step held at a breakpoint has never
 		// started, so it would otherwise render blank, identical to one
@@ -159,19 +192,48 @@ func (m *Model) proposalLine() string {
 	return ""
 }
 
+// endpointsNote is the log header's suffix for a service that has reported
+// endpoints: where it listens, so the operator need not dig the address out
+// of its output. Empty for any other step, and for nil. A function of the
+// step alone, so what it says cannot depend on which step the model has
+// focused.
+func endpointsNote(s *api.StepState) string {
+	if s == nil || s.Service == nil || len(s.Service.Endpoints) == 0 {
+		return ""
+	}
+	// "ready" only while the service is up; a finished one is not ready, but
+	// where it ran is still worth showing.
+	verb := "ran"
+	if s.Ready() {
+		verb = "ready"
+	}
+	parts := make([]string, 0, len(s.Service.Endpoints))
+	for _, ep := range s.Service.Endpoints {
+		parts = append(parts, fmt.Sprintf("%s at %s (port %d)", verb, ep.Address, ep.Port))
+	}
+	return " " + strings.Join(parts, ", ")
+}
+
 func (m *Model) renderLog() string {
 	if m.focused == "" {
 		return logPaneStyle.Render("(press enter on a step to view its log)")
 	}
 	prop := m.proposalLine()
+	var focused *api.StepState
+	if m.state != nil {
+		focused = m.state.Steps[m.focused]
+	}
+	note := endpointsNote(focused)
 	r := m.logs[m.focused]
 	if r == nil || len(r.Lines()) == 0 {
-		return logPaneStyle.Render(prop + m.focused + ": (no log output yet)")
+		return logPaneStyle.Render(prop + m.focused + ":" + note + " (no log output yet)")
 	}
 	var b strings.Builder
 	b.WriteString(prop)
 	b.WriteString(m.focused)
-	b.WriteString(":\n")
+	b.WriteString(":")
+	b.WriteString(note)
+	b.WriteString("\n")
 	if r.StartOffset() > 0 {
 		// Scrollback exists but has not been pulled in: a pane that
 		// silently starts mid-file looks identical to one showing
@@ -180,6 +242,36 @@ func (m *Model) renderLog() string {
 	}
 	b.WriteString(strings.Join(r.Lines(), "\n"))
 	return logPaneStyle.Render(b.String())
+}
+
+// renderTests is the right pane in tests mode. The proposal line is kept
+// above it for the same reason renderLog shows it: 'a' approves something
+// and the operator must be able to read what first. A step with no tests
+// says so rather than falling back to the log, so the operator can tell
+// the mode is on.
+//
+// The pane is clipped to the terminal: a step with thousands of tests would
+// otherwise push its failures, and the footer, off the top of the screen.
+// The rows left are the height minus the footer, the step's header line and
+// the proposal line when there is one. width is the pane's text width; see
+// testLines.
+func (m *Model) renderTests(st *api.RunState, width int) string {
+	prop := m.proposalLine()
+	var lines []testLine
+	if s := st.Steps[m.focused]; s != nil {
+		lines = testLines(s, width)
+	}
+	if len(lines) == 0 {
+		return logPaneStyle.Render(prop + m.focused + ": (no tests reported)")
+	}
+	rows := 0
+	if m.height > 0 {
+		rows = m.height - 2
+		if prop != "" {
+			rows--
+		}
+	}
+	return logPaneStyle.Render(prop + m.focused + ":\n" + strings.Join(clipTestLines(lines, rows), "\n"))
 }
 
 func (m *Model) renderFooter(st *api.RunState) string {
@@ -194,7 +286,7 @@ func (m *Model) renderFooter(st *api.RunState) string {
 		// dependency. Same reasoning as stepStatusLabel's Paused case.
 		status = "paused"
 	}
-	line := fmt.Sprintf("run: %s | enter focus · r retry · R rerun-from · x skip · b/B breakpoint · w snapshot · p/P pause · s shell · a/A proposal · c/ctrl+c cancel · q detach · / filter · ? help", status)
+	line := fmt.Sprintf("run: %s | enter focus · r retry · R rerun-from · x skip · b/B breakpoint · w snapshot · p/P pause · s shell · a/A proposal · t tests · c/ctrl+c cancel · q detach · / filter · ? help", status)
 	if m.streamErr != nil {
 		// Sticky and distinctly styled: not an ordinary status line an
 		// operator can afford to miss. See Model.streamErr.

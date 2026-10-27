@@ -9,6 +9,9 @@ From nothing to a running, attachable pipeline. [Install](/docs/install/) first.
 
 ## 1. Write the pipeline
 
+Short on time? `senro init` writes a file like this one for you from the tools your repository
+already uses. See [senro init](/docs/cli/init/).
+
 A pipeline is a Go package with a `main` that builds a `senro.Pipeline`, adds a `Workflow` and its
 `Step`s, and calls `senro.Run`. Put this in `ci/main.go`:
 

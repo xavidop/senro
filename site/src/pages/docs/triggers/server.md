@@ -199,6 +199,20 @@ provider, event, ok := trigger.SourceOf(r.Header)   // from the delivery's heade
 file, err := trigger.Envelope(provider, event, body)
 ```
 
+**Reporting back as a GitHub App.** Give the dispatcher an App id and key and it creates a queued
+check run on the commit before the pipeline starts, hands the pipeline a token and the check's id,
+and closes the check itself when the pipeline can't:
+
+```sh
+dispatcher -addr :8080 -secret-file /etc/senro/webhook-secret \
+           -pipeline ./ci -group ci-main \
+           -github-app-id 123456 -github-private-key-file /etc/senro/app.pem \
+           [-github-api URL] [-check-name senro] [-details-url 'https://ci.example.com/runs/{run}']
+```
+
+The App flags come as a pair. See [GitHub App](/docs/triggers/github-app/) for the permissions, the
+sequence and who closes the check in each case.
+
 ### Which shape to pick
 
 | | A server | A dispatcher |
@@ -217,4 +231,5 @@ run should not take the endpoint with it.
 - **[Triggers](/docs/triggers/)**: the matchers and the three outcomes.
 - **[The event file](/docs/triggers/events/)**: the envelope, for the two-process shape.
 - **[Write your own](/docs/triggers/custom/)**: a source that is not one of the four.
+- **[GitHub App](/docs/triggers/github-app/)**: the dispatcher reporting as an App.
 - **[GitHub Checks](/docs/notifications/github-checks/)**: reporting the result back on the commit.

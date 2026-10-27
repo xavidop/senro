@@ -10,7 +10,8 @@ matched the event so there was nothing to run, `130` cancelled.
 ## `senro run`
 
 ```
-senro run <pkg> [--ui=auto|tui|plain|none] [--trigger-event PATH] [-- pipeline-args...]
+senro run <pkg> [--ui=auto|tui|plain|none] [--trigger-event PATH] [--break-on-failure]
+    [-- pipeline-args...]
 ```
 
 Builds the target package into a temp binary, execs it, and, if it registers
@@ -24,6 +25,97 @@ directly and its exit code propagates, with no socket and no TUI.
 itself whether the event is its business; `PATH` may be `-` for stdin. A
 pipeline that gates on it with `senro.WithTrigger` and matches nothing exits
 `78`.
+
+`--break-on-failure` reaches the pipeline as `SENRO_BREAK_ON_FAILURE=1` in its
+environment, not argv (library: `senro.WithBreakOnFailure()`). A `failed` or
+`timed_out` attempt is then held with its sandbox and workspaces intact:
+`breakpoint.hit` with `"reason":"failure"`, the TUI row
+`failed, held (s shell · B release)`. `s` opens a shell in the failed state;
+`B` (`breakpoint.clear`) releases it; `run.cancel` releases every hold. The
+outcome is unchanged: after release a retry policy continues, and holds again
+if the next attempt fails. The held step keeps its parallel slot, and a
+sibling's cache restore into a workspace it mounts waits for the release.
+
+## `senro up`
+
+```
+senro up <pkg> [--ui=auto|tui|plain|none] [-- pipeline-args...]
+```
+
+Builds and launches the pipeline as `senro run` does, with `SENRO_UP=1` in its
+environment: the run is every `Service` step and its transitive `Needs`, and
+nothing else (other steps settle `skipped_condition`, `not selected`), and the
+services are held up until Ctrl-C instead of stopping when their consumers
+settle. Under `--ui=plain` and `--ui=none` it prints one stdout line per
+endpoint as each service becomes ready: `<step>  <address>  (port <n>)`, the
+address being the published one on this machine. Exit `0` when the session
+ends (Ctrl-C included) with every service settled `succeeded`, `1` otherwise,
+`2` for usage errors, including a pipeline that declares no services
+(`this pipeline declares no services`). `--break-on-failure` is accepted and
+`--trigger-event` forwarded, as for `senro run`.
+
+## `senro init`
+
+```
+senro init [DIR] [--out ci] [--force] [--dry-run] [--no-tidy]
+```
+
+Writes `<out>/main.go` (default `ci/main.go`; `--out` is relative to DIR, default `.`, or absolute) from
+the kits that apply: `gotest` for a `go.mod`, `pytest`, `eslint`, `playwright`
+(rules in the Kits section of SKILL.md). One `verify.Add("<kit>", <kit>.Step(...))`
+per match, with `<kit>.Dir("<dir>")` off the root; several `gotest` matches
+become one `verify.Expand` over `gowork.Modules()` with `gotest.Template()`;
+several `pytest` matches become one `verify.Expand` over `pyproject.Packages()`
+with `pytest.Template()` only when every match is a distribution (pyproject
+with a name, setup.py or setup.cfg), else one `Add` each; repeated matches
+rendered as `Add`s get ids `<kit>-<last path segment>` (`eslint-web` for
+`apps/web`, `-2`, `-3` on a clash). Matches inside `--out` are skipped. No
+`Needs` between them.
+Then makes the package buildable: `DIR/go.mod` is joined only when `--out` is
+inside DIR; an `--out` elsewhere (absolute included) gets its own go.mod, used
+as is if it exists, else written (`module <DIR name>/<out name>`, the running
+toolchain's Go version). In the module's directory it runs
+`go get github.com/xavidop/senro@<version>` (`latest` for a development build)
+and `go mod tidy`; a failure there, or no `go` on PATH, is a warning (exit
+still 0), and `--no-tidy` prints the commands instead. The generated main
+prints the `senro.Run` error before `os.Exit(1)`. An existing `<out>/main.go` is refused without `--force`;
+`--dry-run` prints the file to stdout and writes nothing. Summary (stderr):
+`senro init: detected`, one `<kit> <dir> <reason>` line per match,
+`Wrote <out>/main.go`, `Wrote <out>/go.mod` (when it created the module file)
+or `Updated go.mod: go get github.com/xavidop/senro@<version>` (when it joined
+an existing module, printed once `go get` succeeds; `go mod tidy` runs after
+it), then `Next:`: `senro run
+./<out>` (bare path for an absolute `--out`), shell-quoted, prefixed with
+`cd <DIR> &&` whenever the process cwd is not DIR. Exit `0` written or printed, `1`
+detection or write failed, `2` usage error (unknown flag, DIR not a directory,
+nothing detected, `--out` exists and is not a directory, main.go exists
+without `--force`).
+
+## `senro lock`
+
+```
+senro lock <pkg> [--check] [--file PATH] [-- pipeline-args...]
+```
+
+Builds and launches the pipeline as `senro run` does, with `SENRO_LOCK_WRITE`
+(or, under `--check`, `SENRO_LOCK_CHECK`) set to the file, so the pipeline
+resolves every container image it names by tag and runs nothing. No run
+directory, and no trigger gate: it never exits `78`. The file is
+`<pkg>/senro.lock` unless `--file`. Stdout is one `<reference>  <digest>` line
+per image; under `--check`, one `<reference>  <locked>  ->  <current>` line per
+difference (`missing` for an absent side) and nothing is written.
+
+`senro run` and `senro up` set `SENRO_LOCK` to `<pkg>/senro.lock` when it
+exists, unless you set `SENRO_LOCK` yourself (an empty value counts as unset;
+move or delete the file to run unlocked); a locked run refuses an image the
+file does not list. A locked run writes the pins it applied to
+`<run>/lock.json`, and `senro rerun` reapplies them. Container images
+only (Kubernetes steps already require a digest), HTTPS registries only.
+
+Exit `0` written or current, `1` drift under `--check` (recognised by the
+`senro: drift detected` stderr line, whatever the pipeline's `main` exits),
+`2` a usage error or a pipeline that would not build, `130` cancelled, any
+other code the pipeline's own for a lock that could not be written or checked.
 
 ## `senro attach`
 
@@ -53,7 +145,9 @@ it (`POST /api/shell`, which is a route of its own and not a control
 operation), `a` and `A` approve and reject a failure analyzer's proposal for
 it (`analysis.accept` / `analysis.reject`, which take the proposal's `id`
 rather than a step), `c` / `Ctrl-C` cancel the run (`run.cancel`), `up`/`k`
-and `down`/`j` move the selection, `pgup` load older logs, `/` filter
+and `down`/`j` move the selection, `pgup` load older logs, `t` swap the
+focused step's log for its tests pane (failed first, with output; a view
+toggle with no wire operation behind it), `/` filter
 (`enter` applies it, `esc` cancels), `q` detach, `?` help. No key is reserved
 and inert any more: `a` was the last one, and the help screen's reserved list
 is now empty. A step held at a breakpoint renders as `paused`, and the
@@ -63,7 +157,8 @@ purpose is never mistaken for one that hung.
 A refused control operation comes back as `ok:false` with a stable
 machine-readable code, not prose: `unknown_op`, `run_finished`,
 `already_cancelled`, `run_not_active`, `missing_step`, `unknown_step`,
-`step_running`, `step_not_failed`, `step_settled`, `step_not_settled`,
+`step_running`, `step_not_failed`, `check_generated_drifted_tree`,
+`step_settled`, `step_not_settled`,
 `breakpoint_exists`, `no_breakpoint`, `missing_proposal`, `unknown_proposal`,
 `proposal_settled`, `no_remedy`, `no_workspace`, `snapshot_failed`.
 
@@ -109,7 +204,7 @@ senro runs [-n LIMIT]
 Lists what's under `./runs`, newest first: run ID, pipeline, status, when it
 started, and duration (`running` for a status still in progress). `-n` caps
 how many print (default 20). This is where a `RUN` argument comes from for
-every other command on this page when you don't already have an ID —
+every other command on this page when you don't already have an ID:
 `senro attach --run`, `senro ws ls`, `senro cache explain`. Answered from the
 same `events.jsonl` fold every other view of a run uses
 (`source.OpenFile(dir, false).State(ctx)`), so its status column can never
@@ -317,8 +412,8 @@ which `senro run` sets) is what names the package to cross-build.
 ## `senro shell`
 
 ```
-senro shell [--pid <pid> | --run <id> | --addr <host:port>] [--tls]
-    --step ID [-- cmd...]
+senro shell [--pid <pid> | --run <id> | --addr <host:port>] [--tls] [--tty]
+    [--offline] [--keep] [--cache-dir DIR] --step ID [--cmd ARG... | -- cmd...]
 ```
 
 Opens an interactive session inside a **live** run's step: that step's
@@ -326,7 +421,8 @@ workspaces, read-only, at the paths the step saw them, in the step's own
 working directory, on the step's own executor. `--step` is required, since a
 session stands in one step's workspaces and there is no default. Everything
 after `--` is the command to run instead of the default shell, and its exit
-code becomes the command's exit code.
+code becomes the command's exit code. `--cmd` takes the rest of the arguments
+as the command, the same as `--`.
 
 Pair it with a breakpoint: `b` in the TUI stops the run before a step, then
 `senro shell --step <id>` looks at what it was about to run against, then `B`
@@ -337,8 +433,66 @@ pipes: no prompt, no line editing, no job control. `--tty` runs it on a real
 terminal instead, which local, container and Kubernetes host and ssh does not
 (`executor_no_terminal`). It works on every executor: a Kubernetes session is a
 pod of its own, with the step's workspaces staged into it read-only. It is
-refused on a finished run (use `senro ws pull`) and against a read-only attach
-server. Other refusals: `unknown_step`, `run_not_active`, `sandbox_failed`.
+refused against a read-only attach server. Other refusals: `unknown_step`,
+`run_not_active`, `sandbox_failed`.
+
+Under `senro run --break-on-failure`, a failed step is held open and the same
+session stands in the failure; `B` releases it.
+
+**Offline form.** A `--run` that names no live run, or any `--run` with
+`--offline`, restores the step's latest workspace snapshots into a fresh
+temporary directory (printing
+`senro shell: offline, workspaces restored to <root>`) and runs this machine's
+own `$SHELL` (or the `--cmd` / `--` command) in the mount at the step's
+`WorkDir`, else the first mount. The environment is the step's declared one
+minus anything naming a secret, plus `PATH`, `HOME`, `TERM`, `SENRO_SHELL=1`,
+`SENRO_SHELL_RUN` and `SENRO_SHELL_STEP`. It is the coordinator's shell over
+restored files, not the step's image. Nothing is written back; the directory
+is removed on exit unless `--keep`. `--cache-dir DIR` names the content store
+to restore from. `--offline`, `--keep` and `--cache-dir` need `--run`. A step
+with no recorded snapshot is a usage error naming it.
+
+## `senro rerun`
+
+```
+senro rerun [--run RUN] [--step STEP [--test NAME ...] [--failed-tests]]
+    [--regenerate] [--dir DIR] [--cache-dir DIR] [--local-class CLASS]
+```
+
+Re-executes the plan a previous run recorded, read from `<run>/plan.json`
+rather than by rebuilding the pipeline package, so a pipeline edited since
+cannot change what the re-run means. `--run` defaults to the most recent run.
+A run that recorded `<run>/lock.json` is rerun with
+those pins, so it pulls the same image digests; without one it reruns unlocked.
+Unchanged steps are served from the action cache, and a generator replays the
+subgraph it recorded unless `--regenerate` asks for a fresh one (a Go
+`senro.Generate` closure cannot be regenerated from a plan and fails, naming
+the step).
+
+`--step STEP` re-executes that step, everything it transitively needs, and
+everything below it, all read from the recorded plan. The dependencies are in
+because a step cannot run without its inputs; the cache makes them cheap.
+
+`--test NAME` (repeatable) and `--failed-tests` narrow that step to some of
+its tests. Both need `--step`, they combine, and a name given twice runs once.
+`--failed-tests` takes every test whose folded verdict on that step in the
+recorded run's `events.jsonl` is `failed`. The step's declared
+`testreport.Spec.Select` is appended to its command with `{tests}` replaced
+by the names joined by `Join`, so `GoTestJSON()` adds
+`-run '^(TestA|TestB)$'`. For `GoTestJSON()` each name is
+`regexp.QuoteMeta`'d and a subtest `Parent/sub` collapses to `Parent` (go
+test splits `-run` on `/`), deduped; for other formats names are substituted
+verbatim and the `Select` argv owns quoting. Rerunning an already narrowed run
+appends a second `Select` (for go, the last `-run` wins). The command is a
+cache-key component, so the narrowed step is never served from the full run's
+entry. Refused up front as a usage error (exit `2`): either flag without
+`--step`, a step with no `Tests` declaration or an empty `Select` (`TAP()` and
+`JUnitXML` have none until `Selecting`), `--failed-tests` when nothing on that
+step failed, and a `--test` name the recorded run did not report on that step
+(bare `Name` or `suite.name` are accepted): `senro rerun: step "S" recorded no
+test "NAME"`. The library form is `senro.WithTestSelection(step, names...)`;
+`RunPlan` also refuses it on a step `senro.WithOnlySteps` leaves out, since
+that step would be skipped and its tests never run.
 
 ## `senro verify`
 

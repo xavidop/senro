@@ -131,3 +131,45 @@ func TestHostAddressReadsTheDaemonsOwnAssignment(t *testing.T) {
 		t.Errorf("hostAddress for an unpublished port = (ok %v, err %v), want (false, nil)", ok, err)
 	}
 }
+
+// TestCreateBodyCarriesExtraHosts: a consumer in a container reaches a
+// service through host.docker.internal, which exists on Linux only when the
+// container is created with that host mapped to the gateway. The daemon reads
+// it from HostConfig, not the top-level config, and an empty list must stay
+// absent so a step's create request is byte-identical to what it was.
+func TestCreateBodyCarriesExtraHosts(t *testing.T) {
+	b, err := json.Marshal(createBody(ContainerSpec{
+		Image:      "busybox:1.36",
+		ExtraHosts: []string{"host.docker.internal:host-gateway"},
+	}))
+	if err != nil {
+		t.Fatalf("marshalling the create body: %v", err)
+	}
+	var doc struct {
+		ExtraHosts []string `json:"ExtraHosts"`
+		HostConfig struct {
+			ExtraHosts []string `json:"ExtraHosts"`
+		} `json:"HostConfig"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("unmarshalling the create body: %v", err)
+	}
+	if len(doc.HostConfig.ExtraHosts) != 1 || doc.HostConfig.ExtraHosts[0] != "host.docker.internal:host-gateway" {
+		t.Errorf("HostConfig.ExtraHosts = %v, want [host.docker.internal:host-gateway]", doc.HostConfig.ExtraHosts)
+	}
+	if doc.ExtraHosts != nil {
+		t.Errorf("top-level ExtraHosts = %v, want none: the daemon ignores it there", doc.ExtraHosts)
+	}
+
+	b, err = json.Marshal(createBody(ContainerSpec{Image: "busybox:1.36"}))
+	if err != nil {
+		t.Fatalf("marshalling the create body: %v", err)
+	}
+	var bare map[string]any
+	if err := json.Unmarshal(b, &bare); err != nil {
+		t.Fatalf("unmarshalling the create body: %v", err)
+	}
+	if _, ok := bare["HostConfig"].(map[string]any)["ExtraHosts"]; ok {
+		t.Error("a container mapping no hosts sends an ExtraHosts field")
+	}
+}

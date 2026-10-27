@@ -35,6 +35,8 @@ type view struct {
 	stepActions js.Value
 	detailTitle js.Value
 	detail      js.Value
+	testsHead   js.Value
+	tests       js.Value
 	logTabs     js.Value
 	logLabel    js.Value
 	logPre      js.Value
@@ -82,6 +84,8 @@ func newView() *view {
 		stepActions: byID("step-actions"),
 		detailTitle: byID("detail-title"),
 		detail:      byID("detail"),
+		testsHead:   byID("tests-head"),
+		tests:       byID("tests"),
 		logTabs:     byID("log-tabs"),
 		logLabel:    byID("log-label"),
 		logPre:      byID("log"),
@@ -118,6 +122,7 @@ func (v *view) render(f frame) {
 	v.renderActions(f)
 	v.renderSteps(f)
 	v.renderDetail(f)
+	v.renderTests(f)
 	v.renderLog(f)
 	v.renderNotice(f)
 }
@@ -359,6 +364,60 @@ func (v *view) renderDetail(f frame) {
 	}
 }
 
+// renderTests draws the selected step's tests. The signature is the whole of
+// what is drawn, durations included: a test's duration is a reported fact
+// that changes only when a new verdict arrives, not a clock, so a running
+// step leaves the list alone until one of its tests finishes.
+func (v *view) renderTests(f frame) {
+	rows := present.Tests(f.state, f.selected)
+	var sig strings.Builder
+	// Fields are separated by NUL, which no test name or output carries in
+	// practice. A printable separator can occur inside a name or an output
+	// (":" and ";" both do), so two different lists could write the same
+	// signature and the second would never be drawn.
+	sig.WriteString(f.selected)
+	sig.WriteByte(0)
+	for _, r := range rows {
+		for _, field := range []string{r.Name, r.Badge.Label, r.Duration, r.Output} {
+			sig.WriteString(field)
+			sig.WriteByte(0)
+		}
+	}
+	if !v.changed("tests", sig.String()) {
+		return
+	}
+	clear(v.tests)
+	setHidden(v.testsHead, len(rows) == 0)
+	setHidden(v.tests, len(rows) == 0)
+	for _, r := range rows {
+		li := v.el("li")
+		setClass(li, "test")
+
+		pill := v.el("span")
+		setClass(pill, "pill pill-"+string(r.Badge.Tone))
+		setText(pill, r.Badge.Label)
+
+		name := v.el("span")
+		setClass(name, "id")
+		setText(name, r.Name)
+
+		d := v.el("span")
+		setClass(d, "dur")
+		setText(d, r.Duration)
+
+		li.Call("appendChild", pill)
+		li.Call("appendChild", name)
+		li.Call("appendChild", d)
+		if r.Output != "" {
+			out := v.el("pre")
+			setClass(out, "test-out")
+			setText(out, r.Output)
+			li.Call("appendChild", out)
+		}
+		v.tests.Call("appendChild", li)
+	}
+}
+
 func (v *view) renderLog(f frame) {
 	tabSig := f.stream + "|" + strings.Join(f.streams, ",")
 	if v.changed("log-tabs", tabSig) {
@@ -493,6 +552,15 @@ func setClass(node js.Value, s string) {
 		return
 	}
 	node.Set("className", s)
+}
+
+// setHidden sets or removes the hidden attribute, tolerating null the way
+// every helper here does.
+func setHidden(node js.Value, hidden bool) {
+	if node.IsNull() || node.IsUndefined() {
+		return
+	}
+	node.Set("hidden", hidden)
 }
 
 func clear(node js.Value) {

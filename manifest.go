@@ -14,6 +14,12 @@ import (
 // ManifestFile is the name of a run's manifest inside its run directory.
 const ManifestFile = "run.json"
 
+// RunLockFile is the name, inside a run directory, of the pins a locked run
+// applied: a lock file (see package lock) holding only the images that run's
+// plan named by tag. A run with no lock has none. `senro rerun` reapplies it
+// through WithLock, so a rerun pulls the digests the run pulled.
+const RunLockFile = "lock.json"
+
 // RunManifest is what runs/<id>/run.json holds: what this run is and, when
 // something triggered it, what.
 //

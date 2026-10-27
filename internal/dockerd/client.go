@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -467,6 +468,22 @@ type ContainerSpec struct {
 	// publishing is the only way in.
 	Ports []Port
 
+	// ExtraHosts are "name:address" entries added to the container's
+	// /etc/hosts, the daemon's HostConfig.ExtraHosts (`docker run
+	// --add-host`). The address may be the daemon's own "host-gateway",
+	// which is what makes host.docker.internal resolve on Linux as it
+	// already does on Docker Desktop: the one name a container uses to
+	// reach a service published on the host. Empty sends nothing.
+	ExtraHosts []string
+
+	// Init runs the daemon's init (tini) as PID 1, HostConfig.Init (`docker
+	// run --init`). A service sets it: a program that is PID 1 gets no
+	// default signal handlers, so a server that never installs its own
+	// ignores the SIGTERM of `docker stop` and only dies at the kill after
+	// the grace. The init forwards the signal and reaps. False sends
+	// nothing, so a step's create request is unchanged.
+	Init bool
+
 	// ConsoleSize is the pseudo-terminal's size in {rows, cols}, applied at
 	// CREATE. Meaningful only with Tty and ignored by the daemon otherwise.
 	//
@@ -559,6 +576,14 @@ func createBody(spec ContainerSpec) map[string]any {
 	if spec.ConsoleSize[0] > 0 && spec.ConsoleSize[1] > 0 {
 		hostConfig["ConsoleSize"] = []uint16{spec.ConsoleSize[0], spec.ConsoleSize[1]}
 	}
+	// Absent unless asked for, for the same reason.
+	if spec.Init {
+		hostConfig["Init"] = true
+	}
+	// Absent when empty, for the same reason.
+	if len(spec.ExtraHosts) > 0 {
+		hostConfig["ExtraHosts"] = spec.ExtraHosts
+	}
 	// Absent unless overridden, so a step's create request is byte-identical
 	// to what it was before this field existed.
 	if len(spec.Entrypoint) > 0 {
@@ -627,6 +652,53 @@ func hostAddress(inspect []byte, port int) (string, bool, error) {
 	return "", false, nil
 }
 
+// ContainerIPAddress reports a running container's address on its Docker
+// network: the bridge IP another container on the same daemon dials it by.
+//
+// NetworkSettings.IPAddress is the default bridge's; a container attached
+// only to user-defined networks leaves it empty and lists its address per
+// network, so the first non-empty one there (in name order, to be
+// deterministic) is the answer. A container with no address at all (network
+// mode none or host, or not running) is an error: no other container can
+// reach it by IP.
+func (c *Client) ContainerIPAddress(ctx context.Context, id string) (string, error) {
+	raw, err := c.ContainerInspectRaw(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return containerIP(raw)
+}
+
+// containerIP picks a container's network address out of an inspect
+// document. Split out so a test can feed it documents without a daemon.
+func containerIP(inspect []byte) (string, error) {
+	var doc struct {
+		NetworkSettings struct {
+			IPAddress string `json:"IPAddress"`
+			Networks  map[string]struct {
+				IPAddress string `json:"IPAddress"`
+			} `json:"Networks"`
+		} `json:"NetworkSettings"`
+	}
+	if err := json.Unmarshal(inspect, &doc); err != nil {
+		return "", fmt.Errorf("dockerd: decoding network settings: %w", err)
+	}
+	if ip := doc.NetworkSettings.IPAddress; ip != "" {
+		return ip, nil
+	}
+	names := make([]string, 0, len(doc.NetworkSettings.Networks))
+	for name := range doc.NetworkSettings.Networks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if ip := doc.NetworkSettings.Networks[name].IPAddress; ip != "" {
+			return ip, nil
+		}
+	}
+	return "", errors.New("dockerd: the container has no network address")
+}
+
 // ContainerStart starts a created container.
 func (c *Client) ContainerStart(ctx context.Context, id string) error {
 	resp, err := c.do(ctx, http.MethodPost, "/containers/"+ref(id)+"/start", nil, nil)
@@ -674,6 +746,69 @@ func (c *Client) ContainerLogs(ctx context.Context, id string, stdout, stderr io
 	return demux(resp.Body, stdout, stderr)
 }
 
+// StatsSample is the part of one stats-stream object senro reads: the
+// container's cumulative CPU time in nanoseconds and its current memory in
+// bytes. CPUUser and CPUKernel are zero on cgroup v2 daemons that do not
+// split the total. MemInactiveFile is inactive_file, else cgroup v1's
+// total_inactive_file, else zero.
+type StatsSample struct {
+	CPUTotal, CPUUser, CPUKernel uint64
+	MemUsage, MemInactiveFile    uint64
+}
+
+// ContainerStats follows GET /containers/{id}/stats?stream=true, calling
+// each with every sample in order until the stream ends (the daemon closes
+// it when the container stops), each returns false, or ctx ends. A stream
+// that ends normally is not an error.
+func (c *Client) ContainerStats(ctx context.Context, id string, each func(StatsSample) bool) error {
+	resp, err := c.do(ctx, http.MethodGet, "/containers/"+ref(id)+"/stats?stream=true", nil, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var doc struct {
+			CPU struct {
+				Usage struct {
+					Total  uint64 `json:"total_usage"`
+					User   uint64 `json:"usage_in_usermode"`
+					Kernel uint64 `json:"usage_in_kernelmode"`
+				} `json:"cpu_usage"`
+			} `json:"cpu_stats"`
+			Mem struct {
+				Usage uint64 `json:"usage"`
+				Stats struct {
+					InactiveFile      *uint64 `json:"inactive_file"`
+					TotalInactiveFile uint64  `json:"total_inactive_file"`
+				} `json:"stats"`
+			} `json:"memory_stats"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("dockerd: decoding stats for %s: %w", id, err)
+		}
+		// inactive_file when the daemon reports it (cgroup v2, and v1 for
+		// the container's own cgroup), else cgroup v1's
+		// total_inactive_file, which includes its descendants.
+		inactive := doc.Mem.Stats.TotalInactiveFile
+		if doc.Mem.Stats.InactiveFile != nil {
+			inactive = *doc.Mem.Stats.InactiveFile
+		}
+		if !each(StatsSample{
+			CPUTotal:        doc.CPU.Usage.Total,
+			CPUUser:         doc.CPU.Usage.User,
+			CPUKernel:       doc.CPU.Usage.Kernel,
+			MemUsage:        doc.Mem.Usage,
+			MemInactiveFile: inactive,
+		}) {
+			return nil
+		}
+	}
+}
+
 // ContainerWait blocks until the container is not running and reports its
 // status code.
 //
@@ -709,6 +844,35 @@ func (c *Client) ContainerKill(ctx context.Context, id string) error {
 	resp, err := c.do(ctx, http.MethodPost, "/containers/"+ref(id)+"/kill", nil, nil)
 	if err != nil {
 		if isNotRunning(err) || isNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return nil
+}
+
+// ContainerStop asks a container to end: the daemon sends its stop signal
+// (SIGTERM unless the image says otherwise), waits up to grace, then kills it,
+// and answers once the container is no longer running. The request blocks for
+// that whole time; ctx bounds it.
+//
+// The daemon takes the grace in whole seconds, so a fraction rounds UP: a
+// 200ms grace becoming t=0 would be an immediate kill nobody asked for.
+//
+// 304 (it was not running) and 404 (there is no such container) are success,
+// ContainerKill's rule: the caller is stopping it, and that outcome is
+// already true. A 304 needs no carve-out here, since do treats every status
+// below 400 as an answer.
+func (c *Client) ContainerStop(ctx context.Context, id string, grace time.Duration) error {
+	secs := int64((grace + time.Second - 1) / time.Second)
+	if secs < 0 {
+		secs = 0
+	}
+	path := "/containers/" + ref(id) + "/stop?t=" + strconv.FormatInt(secs, 10)
+	resp, err := c.do(ctx, http.MethodPost, path, nil, nil)
+	if err != nil {
+		if isNotFound(err) {
 			return nil
 		}
 		return err

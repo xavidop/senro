@@ -1,4 +1,5 @@
-// Command senro is the CLI companion to the senro pipeline engine: it builds
+// Command senro is the CLI companion to the senro pipeline engine: it writes
+// a first pipeline from what a repository already has (senro init), builds
 // and runs an embedded pipeline (senro run), attaches to one already running
 // or finished (senro attach), lists what's under ./runs (senro runs), opens
 // a session on a live step (senro shell), reads what a run left behind
@@ -20,6 +21,35 @@ Usage:
       Build the pipeline package and run it, attaching and rendering.
       --trigger-event is forwarded to the pipeline binary, which decides for
       itself whether the event is its business. PATH may be "-" for stdin.
+      --break-on-failure asks the pipeline to hold the run open when a step
+      fails; it reaches the pipeline as SENRO_BREAK_ON_FAILURE=1, not argv.
+
+  senro up <pkg> [--ui=auto|tui|plain|none] [-- pipeline-args...]
+      Run only the pipeline's services (and the steps they need) and hold
+      them until Ctrl-C. Prints one line per endpoint as it becomes ready:
+      <step>  <address>  (port <n>). Exits 0 when the session ends with every
+      service settled cleanly, 2 for a pipeline that declares no services.
+      --break-on-failure is accepted and --trigger-event is forwarded, both
+      exactly as for senro run.
+
+  senro init [DIR] [--out ci] [--force] [--dry-run] [--no-tidy]
+      Write a first pipeline to <out>/main.go from what DIR (default .)
+      already has: go test for each go.mod, pytest, ESLint and Playwright
+      where they are configured. Then makes the package buildable: writes
+      <out>/go.mod when DIR has none and runs go get and go mod tidy, which
+      --no-tidy prints instead. An existing main.go is refused without
+      --force; --dry-run prints the file and writes nothing. Exits 2 when it
+      detects nothing.
+
+  senro lock <pkg> [--check] [--file PATH] [-- pipeline-args...]
+      Resolve every container image the pipeline names by tag to a registry
+      digest and write PATH (default <pkg>/senro.lock), one stdout line per
+      image: <reference>  <digest> (Kubernetes steps already require a
+      digest at Build). Runs no step. senro run and senro up apply
+      <pkg>/senro.lock when it exists, unless SENRO_LOCK is set, and refuse
+      an image it lacks. --check writes nothing, prints each difference as
+      <reference>  <locked>  ->  <current>, and on drift prints the line
+      "senro: drift detected" to stderr and exits 1.
 
   senro attach [--pid <pid> | --run <id> | --addr <host:port>] [--follow]
       [--tls] [--ui=auto|tui|plain|none]
@@ -86,15 +116,18 @@ Usage:
       a different kind of thing. Exits 0 whether or not they differ.
 
   senro shell [--pid <pid> | --run <id> | --addr <host:port>] [--tls] [--tty]
-      --step ID [-- cmd...]
+      [--offline] [--keep] [--cache-dir DIR] --step ID [--cmd ARG... | -- cmd...]
       Open an interactive session on a LIVE run's step: the step's own
       workspaces, read-only, at the paths the step saw them, on the step's
       own executor. Pair it with a breakpoint to stop the run before a step
       and look at what it was about to run against. No secrets are delivered
       into a session. Without --tty there is no terminal: no prompt, no line
       editing, no job control. --tty runs the session on a real terminal;
-      local and container host one, ssh does not. A finished run has no
-      engine to host a session; use senro ws pull.
+      local and container host one, ssh does not. A --run that is not live,
+      or --offline, restores the step's recorded workspaces into a temporary
+      directory (removed on exit unless --keep) and runs this machine's own
+      $SHELL there, not the step's image; senro ws pull writes one workspace
+      out to keep. --cmd takes the rest of the arguments as the command.
 
   senro logs fetch [--force] RUN [DEST]
       Fetch a run archived in the shared cache, a bucket or an OCI registry,
@@ -135,6 +168,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	switch args[0] {
+	case "up":
+		return cmdUp(args[1:], stdout, stderr, stdoutIsTTY())
+	case "init":
+		return cmdInit(args[1:], stdout, stderr)
+	case "lock":
+		return cmdLock(args[1:], stdout, stderr)
 	case "run":
 		return cmdRun(args[1:], stdout, stderr, stdoutIsTTY())
 	case "attach":

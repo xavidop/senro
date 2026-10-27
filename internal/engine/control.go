@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,6 +52,12 @@ const (
 	reasonBreakpointExists = "breakpoint_exists"
 	reasonNoBreakpoint     = "no_breakpoint"
 
+	// reasonStepHeld refuses a breakpoint.set on a step held after a failed
+	// attempt (see holds): it is already stopped, and an armed breakpoint
+	// on top of the hold would need a second clear the operator has no way
+	// to tell apart from the first.
+	reasonStepHeld = "step_held"
+
 	// reasonAlreadyPaused and reasonNotPaused refuse a run.pause/run.resume
 	// that disagrees with what the run is already doing; refusals rather
 	// than silent no-ops for the same reason the breakpoint pair are.
@@ -60,6 +68,16 @@ const (
 	// run yet: it is already going to run, and ok:true would claim a change
 	// where nothing changed. The mirror image of reasonStepSettled.
 	reasonStepNotSettled = "step_not_settled"
+
+	// reasonCheckGeneratedDriftedTree refuses a step.retry of a step
+	// declaring CheckGenerated, and a run.rerun_from whose closure holds a
+	// settled one: its attempt already recorded the drifted tree into the
+	// run-scoped workspace, so either would remount that tree, regenerate
+	// the same bytes, compare against the drifted tree and settle
+	// recovered. `senro rerun --step` is unaffected: it
+	// starts a fresh run from the recorded snapshots of the step's
+	// dependencies, not from the drifted one.
+	reasonCheckGeneratedDriftedTree = "check_generated_drifted_tree"
 
 	// reasonMissingProposal, reasonUnknownProposal and reasonProposalSettled
 	// are the three ways an analysis decision can name nothing this run can
@@ -133,13 +151,24 @@ type schedHandle struct {
 	// request, and a copied bool would let a client pause a run that
 	// carried on regardless. Unlocked for the reason the breakpoints map
 	// is: one goroutine.
-	paused  *bool
-	wg      *sync.WaitGroup
-	acquire func(context.Context) error
-	release func()
-	signal  func()
-	logs    *eventlog.LogSet
-	opts    Options
+	paused *bool
+	// serviceStops is schedule's own map of service stop channels, shared
+	// rather than copied so a service retried through step.retry is
+	// registered where stopIdleServices looks. Unlocked for the reason
+	// breakpoints is: only schedule's loop touches it.
+	serviceStops map[string]chan struct{}
+	// pendingRevive is schedule's own map of services to restart once they
+	// have stopped, each naming the consumer that asked: a service still
+	// inside its StopGrace when a consumer went round again cannot be
+	// unsettled while its goroutine lives (see reviveServicesLocked).
+	// Unlocked for the reason serviceStops is.
+	pendingRevive map[string]string
+	wg            *sync.WaitGroup
+	acquire       func(context.Context) error
+	release       func()
+	signal        func()
+	logs          *eventlog.LogSet
+	opts          Options
 }
 
 // serveControl dispatches one request to its op-specific handler, or
@@ -365,12 +394,153 @@ func (rc *runCore) emitControlApplied(req sink.ControlRequest, args map[string]s
 func (rc *runCore) unsettleLocked(h schedHandle, id string) (nextAttempt int, anchor handlerAnchor, hadAnchor bool) {
 	delete(h.states, id)
 	delete(rc.oc.finished, id)
+	// A service going round again is a new process that has not passed its
+	// probe yet: a stale ready would dispatch its dependents against an
+	// address nothing is listening on.
+	delete(rc.oc.ready, id)
 	anchor, hadAnchor = rc.oc.handlerAnchors[id]
 	delete(rc.oc.handlerAnchors, id)
 	// attempts is deliberately NOT cleared: it is the high-water mark of
 	// every attempt's events and log files, and resetting it would point
 	// the next execution's output at a file the previous one is using.
 	return rc.oc.attempts[id] + 1, anchor, hadAnchor
+}
+
+// revivedService is a stopped service unsettled so a consumer going round
+// again has something to talk to.
+type revivedService struct {
+	id      string
+	attempt int
+}
+
+// reviveServicesLocked unsettles every service n needs DIRECTLY that has
+// already stopped, so the scheduler dispatches it again: a fresh stop
+// channel, a fresh probe, fresh endpoints. Without it, a consumer retried or
+// rerun after its last sibling consumer let the service stop would run with
+// no address for it (or, before withdraw existed, the dead one).
+//
+// Only a service that ran: one skipped by a condition or manually stays
+// skipped, since reviving it would run what the run decided not to, and one
+// still running needs nothing. A failed service is revived too: the retry
+// is the operator's request to try again, and refusing it would block the
+// analyzer-retry flow for exactly the consumer whose service died under it.
+//
+// A service still running but already told to stop (inside its StopGrace;
+// stopIdleServices has closed and forgotten its stop channel) is as good as
+// stopped, and is restarted too, but only once its goroutine has finished:
+// it is queued in h.pendingRevive, and revivePendingLocked unsettles it on
+// the first pass after it settles.
+//
+// The second result is what a consumer retried by hand must wait for
+// before it runs: every direct service need not ready right now, with the
+// generation (serviceTable.begin) of the execution that will answer for it.
+// That covers the services revived here, one queued behind its StopGrace,
+// one a sibling's retry revived a moment ago (unsettled, not yet
+// dispatched), and one still being probed. A ready service needs no wait,
+// and neither does one that never ran: the consumer meets it as readySet
+// left it.
+//
+// The caller must hold h.mu, and emits the step.retried events (see
+// emitRevived) after releasing it.
+func (rc *runCore) reviveServicesLocked(h schedHandle, n *plan.Node) ([]revivedService, []serviceNeed) {
+	if n == nil {
+		return nil, nil
+	}
+	var (
+		revived []revivedService
+		waits   []serviceNeed
+	)
+	for _, need := range n.Needs {
+		svc := h.byID[need]
+		if svc == nil || !svc.IsService() {
+			continue
+		}
+		_, live := h.serviceStops[need]
+		st, settled := h.states[need]
+		ran := serviceRan(st)
+		switch {
+		case h.running[need] && live && rc.oc.ready[need]:
+			// Up and answering.
+		case h.running[need] && live:
+			// Dispatched, not ready yet: this execution is the one to wait for.
+			waits = append(waits, serviceNeed{id: need, gen: rc.services.current(need)})
+		case h.running[need]:
+			// Stopping. The next execution answers.
+			if _, queued := h.pendingRevive[need]; !queued {
+				h.pendingRevive[need] = n.ID
+			}
+			waits = append(waits, serviceNeed{id: need, gen: rc.services.current(need) + 1})
+		case settled && ran:
+			attempt, _, _ := rc.unsettleLocked(h, need)
+			revived = append(revived, revivedService{id: need, attempt: attempt})
+			waits = append(waits, serviceNeed{id: need, gen: rc.services.current(need) + 1})
+		case !settled:
+			// Unsettled and not running: revived already (by a sibling's
+			// retry, or a rerun) and waiting for the scheduler's next pass.
+			waits = append(waits, serviceNeed{id: need, gen: rc.services.current(need) + 1})
+		}
+	}
+	return revived, waits
+}
+
+// serviceRan reports whether a service settled in st actually ran, and so is
+// one a consumer going round again may restart: stopped cleanly, recovered,
+// or failed. Skipped and cancelled are the run's decisions, not outcomes.
+func serviceRan(st api.State) bool {
+	return st == api.StateSucceeded || st == api.StateRecovered || st.Failed()
+}
+
+// serviceNeed is one direct service need a retried consumer waits on: the
+// generation of the execution it must see ready.
+type serviceNeed struct {
+	id  string
+	gen int
+}
+
+// serviceRestart is one consumer's revived services, for emitRevived.
+type serviceRestart struct {
+	consumer string
+	svcs     []revivedService
+}
+
+// revivePendingLocked unsettles every service queued in h.pendingRevive
+// whose goroutine has finished, so the readySet that follows in the same
+// critical section dispatches it again; before readySet, so no consumer is
+// dispatched against the stopped execution in between. A service unsettled
+// by something else meanwhile (a rerun) is dropped from the queue, and the
+// whole queue is dropped once the run is cancelled: nothing restarts during
+// teardown. The caller holds h.mu and emits the events after releasing it.
+func (rc *runCore) revivePendingLocked(h schedHandle) []serviceRestart {
+	if len(h.pendingRevive) == 0 {
+		return nil
+	}
+	var out []serviceRestart
+	for id, consumer := range h.pendingRevive {
+		if h.ctx.Err() != nil {
+			delete(h.pendingRevive, id)
+			continue
+		}
+		if h.running[id] {
+			continue
+		}
+		delete(h.pendingRevive, id)
+		if st, settled := h.states[id]; !settled || !serviceRan(st) {
+			continue
+		}
+		attempt, _, _ := rc.unsettleLocked(h, id)
+		out = append(out, serviceRestart{consumer: consumer, svcs: []revivedService{{id: id, attempt: attempt}}})
+	}
+	// Map order is random; the ledger is not.
+	slices.SortFunc(out, func(a, b serviceRestart) int { return strings.Compare(a.svcs[0].id, b.svcs[0].id) })
+	return out
+}
+
+// emitRevived announces each revived service's new execution. A service
+// has no handlers, so there is no handler.superseded to emit.
+func (rc *runCore) emitRevived(consumer string, revived []revivedService) {
+	for _, r := range revived {
+		rc.emitStepRetried(r.id, r.attempt, "restarted for "+consumer+", which needs it")
+	}
 }
 
 // emitHandlerSuperseded marks a completed OnFailure/Always pass as no longer
@@ -446,7 +616,9 @@ func dependentsClosure(nodes []*plan.Node, root string) []string {
 // (reasonStepRunning), checked across the WHOLE closure before anything is
 // modified, since unsettling a node whose goroutine is still alive would
 // put two executions of one step in flight; and the nominated step must
-// have settled (reasonStepNotSettled). Only nodes that actually settled are
+// have settled (reasonStepNotSettled); and no settled node in the closure
+// may declare CheckGenerated (reasonCheckGeneratedDriftedTree, as for
+// step.retry). Only nodes that actually settled are
 // unsettled: a dependent that never ran was already going to run, and a
 // step.retried for something never tried would be false.
 //
@@ -489,6 +661,17 @@ func (rc *runCore) handleRerunFrom(h schedHandle, req sink.ControlRequest) {
 		refuse(req, reasonStepNotSettled)
 		return
 	}
+	// A settled CheckGenerated step in the closure would re-execute inside
+	// this run against the tree its own attempt already recorded, exactly
+	// the step.retry case (see reasonCheckGeneratedDriftedTree). One that
+	// has not run yet has recorded nothing, so it does not count.
+	for _, id := range closure {
+		if _, settled := h.states[id]; settled && h.byID[id] != nil && h.byID[id].CheckGenerated {
+			h.mu.Unlock()
+			refuse(req, reasonCheckGeneratedDriftedTree)
+			return
+		}
+	}
 	revived := make([]reset, 0, len(closure))
 	for _, id := range closure {
 		if _, settled := h.states[id]; !settled {
@@ -500,9 +683,23 @@ func (rc *runCore) handleRerunFrom(h schedHandle, req sink.ControlRequest) {
 		attempt, anchor, hadAnchor := rc.unsettleLocked(h, id)
 		revived = append(revived, reset{id: id, attempt: attempt, anchor: anchor, hadAnchor: hadAnchor})
 	}
+	// After the closure, so a service inside it (already unsettled) is not
+	// revived twice: what is left is a stopped service OUTSIDE the closure
+	// that a rerun consumer needs. The scheduler then dispatches it, and the
+	// consumer waits for it to be ready as on a first run; readySet does that
+	// waiting, so the waits reviveServicesLocked reports are not needed here.
+	var restarts []serviceRestart
+	for _, r := range revived {
+		if svcs, _ := rc.reviveServicesLocked(h, h.byID[r.id]); len(svcs) > 0 {
+			restarts = append(restarts, serviceRestart{consumer: r.id, svcs: svcs})
+		}
+	}
 	h.mu.Unlock()
 
 	rc.emitControlApplied(req, map[string]string{"step": n.ID})
+	for _, r := range restarts {
+		rc.emitRevived(r.consumer, r.svcs)
+	}
 	reason := "rerun from " + n.ID + " requested via control by client " + req.ClientID
 	for _, r := range revived {
 		if r.hadAnchor {
@@ -534,26 +731,48 @@ func (rc *runCore) handleRerunFrom(h schedHandle, req sink.ControlRequest) {
 // A breakpoint may be armed on a step in any state, settled or running
 // included: it fires when, and only when, the scheduler next considers
 // dispatching the node. Refusing those cases would make "arm the breakpoint
-// first, then ask for the work" impossible.
+// first, then ask for the work" impossible. The one exception is a step
+// held after a failed attempt (reasonStepHeld).
+//
+// A clear also releases a failure hold (see holds), so --break-on-failure
+// needs no op or key of its own. A step both armed and held (armed while
+// it ran, then failed) takes one clear for each, the armed breakpoint
+// first. release does not block: it closes a channel the held step is
+// waiting on, and the step goroutine does the rest.
 func (rc *runCore) handleBreakpoint(h schedHandle, req sink.ControlRequest) {
 	n, ok := rc.resolveStep(h, req)
 	if !ok {
 		return
 	}
 	_, armed := h.breakpoints[n.ID]
+	// released says which of the two a clear let go of, in control.applied,
+	// so a client folding the ledger knows whether the step is still held
+	// (api.RunState.Apply clears Held only on "hold").
+	released := ""
 	switch {
 	case req.Op == api.OpBreakpointSet && armed:
 		refuse(req, reasonBreakpointExists)
 		return
-	case req.Op == api.OpBreakpointClear && !armed:
-		refuse(req, reasonNoBreakpoint)
+	case req.Op == api.OpBreakpointSet && rc.holds.held(n.ID):
+		refuse(req, reasonStepHeld)
 		return
 	case req.Op == api.OpBreakpointSet:
 		h.breakpoints[n.ID] = &breakpoint{clientID: req.ClientID}
-	default:
+	case armed:
 		delete(h.breakpoints, n.ID)
+		released = api.ReleasedBreakpoint
+	case !rc.holds.release(n.ID):
+		// Neither armed nor held after a failure: nothing to clear.
+		refuse(req, reasonNoBreakpoint)
+		return
+	default:
+		released = api.ReleasedHold
 	}
-	rc.emitControlApplied(req, map[string]string{"step": n.ID})
+	args := map[string]string{"step": n.ID}
+	if released != "" {
+		args["released"] = released
+	}
+	rc.emitControlApplied(req, args)
 	req.Reply <- sink.ControlResponse{ID: req.ID, OK: true}
 }
 
@@ -879,7 +1098,9 @@ func (rc *runCore) handleRunCancel(h schedHandle, req sink.ControlRequest) {
 // the step is not currently running (reasonStepRunning: two attempts of one
 // step alive at once could not say whose log lines and exit code are whose)
 // and its last recorded state is a FAILED one per api.State.Failed
-// (reasonStepNotFailed).
+// (reasonStepNotFailed), and it does not declare CheckGenerated
+// (reasonCheckGeneratedDriftedTree: a retry would compare against the
+// drifted tree its failed attempt left in the workspace).
 //
 // Accepted, it schedules exactly ONE new attempt: not attempt.go's full
 // backoff/predicate loop, and deliberately not another OnFailure/Always
@@ -889,6 +1110,11 @@ func (rc *runCore) handleRunCancel(h schedHandle, req sink.ControlRequest) {
 // log files are untouched: this only ADDS a fresh attempt number
 // (rc.oc.attempts[id]+1), it never rewrites what is on disk or in the
 // ledger.
+//
+// A service the step needs directly that has already stopped, or is
+// stopping, is restarted first (reviveServicesLocked), and the attempt waits
+// for every direct service need that is not ready right now: the step is
+// retried against a live address, never a dead one.
 //
 // The new attempt runs on its own goroutine, tracked by h.wg and respecting
 // h.acquire/h.release, exactly like an ordinary scheduled step. The bool
@@ -914,17 +1140,24 @@ func (rc *runCore) handleStepRetry(h schedHandle, req sink.ControlRequest) bool 
 		refuse(req, reasonStepNotFailed)
 		return false
 	}
+	if n.CheckGenerated {
+		h.mu.Unlock()
+		refuse(req, reasonCheckGeneratedDriftedTree)
+		return false
+	}
 	// Accepted: unsettle so the node can be scheduled again. running is set
 	// here, not inside unsettleLocked, because it is the one part
 	// rerun_from does NOT share: this function dispatches the new attempt
 	// immediately, so the node is busy from this instant.
 	h.running[stepID] = true
 	nextAttempt, anchor, hadAnchor := rc.unsettleLocked(h, stepID)
+	revivedSvcs, svcWaits := rc.reviveServicesLocked(h, n)
 	h.mu.Unlock()
 
 	// Args reconstructed from the validated stepID, never req.Args (see
 	// emitControlApplied).
 	rc.emitControlApplied(req, map[string]string{"step": stepID})
+	rc.emitRevived(stepID, revivedSvcs)
 
 	// hadAnchor is true only when a handler pass GENUINELY RAN against an
 	// earlier, not-yet-superseded attempt, taken from
@@ -943,20 +1176,82 @@ func (rc *runCore) handleStepRetry(h schedHandle, req sink.ControlRequest) bool 
 	rc.emitStepRetried(stepID, nextAttempt, "requested via control by client "+req.ClientID)
 	req.Reply <- sink.ControlResponse{ID: req.ID, OK: true}
 
+	// A service is retried as a service: runAttempt would run it as a
+	// command expected to exit, and a server never does, so the retry would
+	// never become ready and never stop. Its stop channel is registered here,
+	// on schedule's own loop (serveControl runs nowhere else), before the
+	// goroutine exists, exactly as a first dispatch registers one, so
+	// stopIdleServices stops it once its consumers settle.
+	var stop chan struct{}
+	var gen int
+	if n.IsService() {
+		stop = make(chan struct{})
+		h.serviceStops[stepID] = stop
+		gen = rc.services.begin(stepID)
+	}
+
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
+		// A revived service is dispatched by the scheduler on its next pass;
+		// this attempt waits for it to be ready (or to fail) BEFORE taking a
+		// slot, since the service needs one to start and with MaxParallel 1
+		// holding it here would deadlock the two. The same goes for every
+		// other direct service need that is not ready right now (see
+		// reviveServicesLocked): each is awaited by generation, so the
+		// withdraw of an execution on its way down does not pass for the
+		// restart. A service whose awaited execution stopped without becoming
+		// ready leaves this consumer what readySet would have made it:
+		// skipped_upstream_failed.
+		for _, w := range svcWaits {
+			select {
+			case <-rc.services.await(w.id, w.gen):
+			case <-h.ctx.Done():
+			}
+			if h.ctx.Err() == nil && !rc.services.readyAt(w.id, w.gen) {
+				// A retried service that never runs still has an outcome
+				// for whoever awaits its generation, as runService's
+				// withdraw would have given it.
+				if n.IsService() {
+					rc.services.withdraw(stepID, gen)
+				}
+				h.mu.Lock()
+				h.states[stepID] = api.StateSkippedUpstreamFailed
+				delete(h.running, stepID)
+				h.mu.Unlock()
+				rc.emitStepFinished(stepID, api.StateSkippedUpstreamFailed, "")
+				h.signal()
+				return
+			}
+		}
 		if err := h.acquire(h.ctx); err != nil {
 			// The run was cancelled while this retry waited for a slot:
 			// recorded exactly like a queued-but-never-dispatched step (see
 			// schedule's cancellation short-circuit), cancelled rather than
 			// failed, via emitStepFinished since nothing here opened a
-			// sandbox.
+			// sandbox. A service's generation is withdrawn for the reason
+			// the skip above withdraws it.
+			if n.IsService() {
+				rc.services.withdraw(stepID, gen)
+			}
 			h.mu.Lock()
 			h.states[stepID] = api.StateCancelled
 			delete(h.running, stepID)
 			h.mu.Unlock()
 			rc.emitStepFinished(stepID, api.StateCancelled, "")
+			h.signal()
+			return
+		}
+		if n.IsService() {
+			// runService owns the slot from here, as on a first dispatch, and
+			// settles through finishStep and offerAnalysis itself. retried, so
+			// a clean stop settles recovered, the rule below for a step: it
+			// failed once before it passed.
+			state := rc.runService(h.ctx, n, h.opts, h.logs, stop, gen, h.release, h.signal, true)
+			h.mu.Lock()
+			h.states[stepID] = state
+			delete(h.running, stepID)
+			h.mu.Unlock()
 			h.signal()
 			return
 		}
@@ -977,7 +1272,7 @@ func (rc *runCore) handleStepRetry(h schedHandle, req sink.ControlRequest) bool 
 		// cached is always false: this path bypasses runStep and never
 		// consults the cache. A manual retry is a request to actually run
 		// the step again.
-		state := rc.finishStep(n, start, nextAttempt, finalState, res.exitCode, errText(res), false)
+		state := rc.finishStep(n, start, nextAttempt, finalState, res.exitCode, errText(res), false, res.usage)
 
 		// A manually retried attempt that failed again is offered to the
 		// analyzer like any other failure; leaving it out would make the

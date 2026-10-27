@@ -63,6 +63,56 @@ A run status this build does not recognise becomes `neutral`, not `failure`. Blo
 a status GitHub's own UI cannot explain would be worse than saying nothing. See
 [Step states](/docs/steps/states/#the-runs-own-rollup) for the five statuses a run can end with.
 
+## Adopting a check run
+
+A [GitHub App dispatcher](/docs/triggers/github-app/) creates the check run itself, queued, before
+the pipeline starts, so the commit shows something at once. Tell the notifier to take that check
+over instead of creating a second one:
+
+```go
+notify.GitHubChecks(owner, repo, sha, token, "",
+	notify.ExistingCheckRun(checkID))
+```
+
+`run.started` then moves the check to in progress with a `PATCH`, and the completion `PATCH`es it as
+usual. The notifier still sends two requests per run, both `PATCH`es: the create is the
+dispatcher's, not the notifier's. An id of `0` is ignored, so the notifier creates a check as it
+always does.
+
+## Details URL
+
+```go
+notify.GitHubChecks(owner, repo, sha, token, "",
+	notify.DetailsURL("https://ci.example.com/runs/{run}"))
+```
+
+`{run}` is replaced by the run id, path-escaped, so an id with a `/` in it can't change the shape
+of the link. A template with no `{run}` is sent as given. The URL goes on every request the
+destination makes, and GitHub shows it as the check's link.
+
+## From the environment
+
+`notify.GitHubChecksFromEnv()` builds the destination from the variables the dispatcher sets, so
+one pipeline serves a dispatcher and a hand run alike:
+
+```go
+if dest, ok := notify.GitHubChecksFromEnv(); ok {
+	n := notify.New(dest)
+	defer func() { _ = n.Close() }()
+	opts = append(opts, senro.WithSink(n))
+}
+```
+
+| Variable | Becomes |
+|---|---|
+| `SENRO_GITHUB_TOKEN` | The token. Empty means `ok` is false |
+| `SENRO_GITHUB_REPO` | `owner/name`. Anything else means `ok` is false |
+| `SENRO_GITHUB_SHA` | The commit |
+| `SENRO_GITHUB_API` | `GitHubChecksAPI`, when set |
+| `SENRO_GITHUB_CHECK_RUN` | `ExistingCheckRun`. Empty creates a check; a value that is not a number makes `ok` false |
+| `SENRO_GITHUB_CHECK_NAME` | The check's name |
+| `SENRO_GITHUB_DETAILS_URL` | `DetailsURL`, when set |
+
 ## GitHub Enterprise
 
 ```go
@@ -89,6 +139,7 @@ nothing else. Keep it in an environment variable or a secret store, never in sou
 
 ## Where to go next
 
+- **[GitHub App](/docs/triggers/github-app/)**: a dispatcher that creates the check and hands it over.
 - **[Triggers](/docs/triggers/)**: the other half of the loop, where the SHA comes from.
 - **[Notifications](/docs/notifications/)**: retries, drops, and how a failed delivery is reported.
 - **[Write your own](/docs/notifications/custom/)**: `notify.Requester`, the seam GitHub Checks is

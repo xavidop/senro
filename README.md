@@ -98,6 +98,30 @@ debugger.
 - **Honest failure states.** A step ends in one of ten states, never a boolean; `recovered` (flaky
   but passed on retry) is not `succeeded`, and `retry.OnInfra()` retries broken infrastructure but
   never a failing test. See [Failure handling](site/src/pages/docs/steps/states.md).
+- **Per-test results.** A step declares that it speaks `go test -json`, TAP or JUnit XML, and every
+  client names the test that failed, with its output; `senro rerun --failed-tests` reruns just
+  those. See [Test results](site/src/pages/docs/steps/tests.md).
+- **Services and dev shells.** A step can be a database that stays up while the steps that need it
+  run, told to them through `SENRO_SERVICE_*`; `senro up` holds just the services for local work,
+  and `--break-on-failure` keeps a failed step open for a shell. See
+  [Services](site/src/pages/docs/steps/services.md).
+- **Kits and `senro init`.** Preset steps for `go test`, pytest, ESLint and Playwright, with per-test
+  results wired in, added with `Add`; `senro init` finds which apply to a repository and writes the
+  pipeline. See [Kits](site/src/pages/docs/steps/kits.md) and
+  [senro init](site/src/pages/docs/cli/init.md).
+- **Locked images.** `senro lock` pins every container image a pipeline names by tag to a digest in a
+  committed `senro.lock`; `senro run` applies it, `--check` reports drift, and the digest enters the
+  cache key. See [senro lock](site/src/pages/docs/cli/lock.md).
+- **Generated files that stay current.** `CheckGenerated` fails a step that regenerates files and
+  leaves its workspace different from what it was given, and keeps the result for `senro ws pull`.
+  See [Generated files](site/src/pages/docs/steps/check-generated.md).
+- **Resource usage per step.** Local and container steps report CPU time and peak memory on
+  `step.finished`; the UIs show `cpu 1.2s  rss 48 MB`, the history file records CPU, and the
+  OpenTelemetry example adds span attributes. See
+  [The event stream](site/src/pages/docs/run/event-stream.md).
+- **A GitHub App dispatcher.** `contrib/dispatcher` with an App id and key creates a queued check run
+  before the pipeline starts, hands it to the pipeline's notifier and closes it when the pipeline
+  can't. See [GitHub App](site/src/pages/docs/triggers/github-app.md).
 - **Embeddable.** senro is a library first: no global state, no `os.Exit`, no reading your argv;
   attach is one opt-in call. The wire contract lives in `github.com/xavidop/senro/api` with no
   dependency beyond the standard library. See [Embedding](site/src/pages/docs/reference/embedding.md).
@@ -126,6 +150,9 @@ Requires Go 1.26+ on Linux or macOS. Windows is deliberately unsupported; see
 [Platform support](#platform-support).
 
 ## Quick start
+
+Short on time? `senro init` writes a first pipeline like this one from the test and lint tools your
+repository already uses; see [senro init](site/src/pages/docs/cli/init.md).
 
 A pipeline is a Go package with a `main` that builds the pipeline and calls `senro.Run`. This one
 runs `go test` and, once that passes, `go build`, retrying only infrastructure failures, never a

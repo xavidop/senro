@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,8 +23,11 @@ import (
 	"github.com/xavidop/senro/executor/k8s"
 	"github.com/xavidop/senro/executor/ssh"
 	"github.com/xavidop/senro/internal/eventlog"
+	"github.com/xavidop/senro/internal/plan"
 	"github.com/xavidop/senro/internal/redact"
 	"github.com/xavidop/senro/retry"
+	"github.com/xavidop/senro/service"
+	"github.com/xavidop/senro/testreport"
 	"github.com/xavidop/senro/unit/glob"
 )
 
@@ -276,7 +280,7 @@ func TestBuildDoesNotAliasCallerSlices(t *testing.T) {
 
 	n, _ := p.Node("a")
 	if n.Cmd[1] != "test" {
-		t.Errorf("Cmd = %v — the built plan must not alias the caller's slice", n.Cmd)
+		t.Errorf("Cmd = %v: the built plan must not alias the caller's slice", n.Cmd)
 	}
 }
 
@@ -300,7 +304,7 @@ func TestBuildAddsNoDefaultPATH(t *testing.T) {
 
 	n, _ := p.Node("a")
 	if len(n.Env) != 0 {
-		t.Errorf("Env = %v, want empty — a step that declares no environment must "+
+		t.Errorf("Env = %v, want empty: a step that declares no environment must "+
 			"not pick up the build host's, or the plan digest varies by machine", n.Env)
 	}
 }
@@ -331,7 +335,7 @@ func TestDigestDoesNotDependOnTheBuildHost(t *testing.T) {
 	// must reach the digest. If Build were still injecting a default, this
 	// would silently be comparing two plans that both carry the host's PATH.
 	if plain, declared := build(), build([2]string{"PATH", "/custom/bin"}); plain == declared {
-		t.Error("declaring PATH did not change the digest — an explicitly declared " +
+		t.Error("declaring PATH did not change the digest: an explicitly declared " +
 			"variable is part of the plan and must be hashed")
 	}
 }
@@ -422,7 +426,7 @@ func TestHandlersDoNotAliasAfterBuild(t *testing.T) {
 
 	n, _ := p.Node("deploy")
 	if len(n.OnFailure[0].Env) != 0 {
-		t.Errorf("handler Env = %v — Build must snapshot handlers too", n.OnFailure[0].Env)
+		t.Errorf("handler Env = %v: Build must snapshot handlers too", n.OnFailure[0].Env)
 	}
 }
 
@@ -510,7 +514,7 @@ func TestRetryRejectsAFuncPredicate(t *testing.T) {
 	l.Step("deploy", exec.Command("true")).Retry(3, custom)
 
 	if _, err := pipe.Build(); err == nil {
-		t.Error("Build must reject a retry.Func predicate — it has no serialized form")
+		t.Error("Build must reject a retry.Func predicate: it has no serialized form")
 	}
 }
 
@@ -540,7 +544,7 @@ func TestRetryRejectsAnEmptyAny(t *testing.T) {
 	l.Step("deploy", exec.Command("true")).Retry(3, retry.Any())
 
 	if _, err := pipe.Build(); err == nil {
-		t.Error("Build must reject retry.Any() with no components — it has no serialized form")
+		t.Error("Build must reject retry.Any() with no components: it has no serialized form")
 	}
 }
 
@@ -907,6 +911,43 @@ func TestWorkspaceMountsReachThePlan(t *testing.T) {
 	}
 	if len(n.CacheEnv) != 1 || n.CacheEnv[0] != "CGO_ENABLED" {
 		t.Errorf("cache env = %v", n.CacheEnv)
+	}
+}
+
+func TestCheckGeneratedLowersIntoThePlan(t *testing.T) {
+	src := senro.Workspace("src", senro.Scope(senro.ScopeRun))
+	pipe := senro.New("ci")
+	l := pipe.Workflow("main")
+	l.Step("codegen", exec.Command("go", "generate", "./...")).
+		WorkDir("/src").Mount(src.At("/src", senro.RW)).CheckGenerated()
+	l.Step("plain", exec.Command("true")).Mount(src.At("/src", senro.RW))
+	p, err := pipe.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	n, ok := p.Node("codegen")
+	if !ok {
+		t.Fatal("codegen is missing from the plan")
+	}
+	if !n.CheckGenerated {
+		t.Error("CheckGenerated() did not reach the plan")
+	}
+	if plain, _ := p.Node("plain"); plain.CheckGenerated {
+		t.Error("a step that never called CheckGenerated() has it set")
+	}
+}
+
+func TestCheckGeneratedOnAStepWithOnlyReadOnlyMountsDoesNotBuild(t *testing.T) {
+	src := senro.Workspace("src", senro.Scope(senro.ScopeRun))
+	pipe := senro.New("ci")
+	l := pipe.Workflow("main")
+	l.Step("codegen", exec.Command("true")).Mount(src.At("/src", senro.RO)).CheckGenerated()
+	_, err := pipe.Build()
+	if err == nil {
+		t.Fatal("CheckGenerated on a step with no read-write mount built without complaint")
+	}
+	if !strings.Contains(err.Error(), "codegen") || !strings.Contains(err.Error(), "read-write") {
+		t.Errorf("err = %v, want it to name the step and the missing read-write mount", err)
 	}
 }
 
@@ -2681,4 +2722,138 @@ func pipelineOfRunStarted(t *testing.T, dir string) string {
 	}
 	t.Fatalf("no run.started in the ledger at %s", dir)
 	return ""
+}
+
+func TestTestsLowersIntoThePlan(t *testing.T) {
+	spec := testreport.GoTestJSON()
+	p := senro.New("p")
+	w := p.Workflow("w")
+	w.Step("t", exec.Command("go", "test", "-json", "./...")).Tests(spec)
+	spec.Select[0] = "mutated" // Build must not alias the caller's slice
+
+	pl, err := p.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	n, _ := pl.Node("t")
+	want := &plan.TestsSpec{Format: "gotest", Select: []string{"-run", "^({tests})$"}, Join: "|"}
+	if !reflect.DeepEqual(n.Tests, want) {
+		t.Fatalf("Tests = %+v, want %+v", n.Tests, want)
+	}
+}
+
+func TestServiceLowersIntoThePlan(t *testing.T) {
+	p := senro.New("p")
+	w := p.Workflow("w")
+	w.Service("db", exec.Command("postgres"), service.Ports(5432))
+
+	pl, err := p.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	n, _ := pl.Node("db")
+	want := &plan.ServiceSpec{
+		Ports: []int{5432}, Probe: plan.ProbeSpec{Kind: "tcp", Port: 5432},
+		ReadyTimeoutMS: 60000, StopGraceMS: 10000,
+	}
+	if !reflect.DeepEqual(n.Service, want) {
+		t.Fatalf("Service = %+v, want %+v", n.Service, want)
+	}
+	if !n.IsService() {
+		t.Fatal("IsService = false")
+	}
+}
+
+func TestServiceCopiesItsPorts(t *testing.T) {
+	ports := []int{5432}
+	p := senro.New("p")
+	w := p.Workflow("w")
+	w.Service("db", exec.Command("postgres"), service.Ports(ports...))
+	ports[0] = 1
+
+	pl, err := p.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	n, _ := pl.Node("db")
+	if n.Service.Ports[0] != 5432 {
+		t.Fatalf("plan ports = %v, the caller's slice was aliased", n.Service.Ports)
+	}
+}
+
+func TestAddAdoptsABuilderUnderAnID(t *testing.T) {
+	p := senro.New("p")
+	w := p.Workflow("w")
+	sb := senro.NewStep(exec.Command("go", "test", "-json", "./...")).Tests(testreport.GoTestJSON())
+	got := w.Add("test", sb)
+	if got != sb {
+		t.Fatal("Add must return the builder it was given")
+	}
+	pl, err := p.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, ok := pl.Node("test")
+	if !ok || n.Tests == nil || n.Tests.Format != "gotest" {
+		t.Fatalf("node = %+v", n)
+	}
+}
+
+func TestAddRefusesABuilderAddedTwice(t *testing.T) {
+	p := senro.New("p")
+	w1, w2 := p.Workflow("a"), p.Workflow("b")
+	sb := senro.NewStep(exec.Command("true"))
+	w1.Add("one", sb)
+	w2.Add("two", sb)
+	_, err := p.Build()
+	if err == nil || !strings.Contains(err.Error(), `"one"`) || !strings.Contains(err.Error(), `"two"`) {
+		t.Fatalf("err = %v, want both ids named", err)
+	}
+}
+
+func TestAddRefusesABuilderAddedToTwoPipelines(t *testing.T) {
+	sb := senro.NewStep(exec.Command("true"))
+	p1, p2 := senro.New("p1"), senro.New("p2")
+	p1.Workflow("a").Add("one", sb)
+	p2.Workflow("b").Add("two", sb)
+	for _, p := range []*senro.Pipeline{p1, p2} {
+		_, err := p.Build()
+		if err == nil || !strings.Contains(err.Error(), `"one"`) || !strings.Contains(err.Error(), `"two"`) {
+			t.Errorf("%s: err = %v, want both ids named", p.Name(), err)
+		}
+	}
+}
+
+func TestAddRefusesAHandlerAndNil(t *testing.T) {
+	p := senro.New("p")
+	w := p.Workflow("w")
+	w.Add("h", senro.Handler("x", exec.Command("true")))
+	if _, err := p.Build(); err == nil || !strings.Contains(err.Error(), "handler") {
+		t.Fatalf("handler: %v", err)
+	}
+	p2 := senro.New("p")
+	p2.Workflow("w").Add("n", nil)
+	if _, err := p2.Build(); err == nil || !strings.Contains(err.Error(), `"n"`) {
+		t.Fatalf("nil: %v", err)
+	}
+}
+
+func TestAddRefusesABuilderAddedTwiceInOneWorkflow(t *testing.T) {
+	p := senro.New("p")
+	w := p.Workflow("w")
+	sb := senro.NewStep(exec.Command("true"))
+	w.Add("one", sb)
+	w.Add("two", sb)
+	_, err := p.Build()
+	if err == nil || !strings.Contains(err.Error(), `"one"`) || !strings.Contains(err.Error(), `"two"`) {
+		t.Fatalf("err = %v, want both ids named", err)
+	}
+}
+
+func TestAddRefusesAnEmptyID(t *testing.T) {
+	p := senro.New("p")
+	p.Workflow("w").Add("", senro.NewStep(exec.Command("true")))
+	if _, err := p.Build(); err == nil {
+		t.Fatal("Build accepted a step with an empty id")
+	}
 }

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -270,9 +269,41 @@ func (rc *runCore) runShellSession(
 	// NOT held for the session's lifetime.
 	var mounts []executor.Mount
 	if rc.ws != nil {
-		unlock := rc.ws.lockMounts(workspaceMountNames(n))
-		mounts, err = rc.ws.handlerMounts(n)
-		unlock()
+		// A step held after failure already has a shared hold on these
+		// workspaces for the whole hold, which excludes any restore, so the
+		// read is safe without one of our own. Taking one anyway can hang:
+		// a sibling's cache-hit restore queued behind the held step blocks
+		// every NEW shared hold (Go's RWMutex favours a waiting writer), so
+		// the shell would wait for the release the operator has not given.
+		//
+		// The read is covered only if the SAME hold (not a later attempt's)
+		// was in place before and after it; otherwise the step may have
+		// let go mid-read, and it is redone under our own lock, which no
+		// longer has a held step to wait behind. Checked rather than
+		// pinned, so a breakpoint.clear never waits on this read.
+		//
+		// Twice before the fallback: a release followed at once by the next
+		// attempt's hold (a retry failing again inside the read) leaves the
+		// first token stale while a hold is in place again, and the lock
+		// would then queue behind that hold's restore exactly as above. A
+		// third consecutive hold inside two reads is a retry loop faster
+		// than a directory walk, and is left to the lock.
+		var covered bool
+		for range 2 {
+			tok, held := rc.holds.token(n.ID)
+			if !held {
+				break
+			}
+			mounts, err = rc.ws.handlerMounts(n)
+			if covered = rc.holds.stillHeld(n.ID, tok); covered {
+				break
+			}
+		}
+		if !covered {
+			unlock := rc.ws.lockMounts(workspaceMountNames(n))
+			mounts, err = rc.ws.handlerMounts(n)
+			unlock()
+		}
 		if err != nil {
 			refuseShell(req, reasonSandbox)
 			return
@@ -288,12 +319,26 @@ func (rc *runCore) runShellSession(
 		workDir = ""
 	}
 
-	env := shellEnv(n)
-	// Secrets is empty, deliberately and permanently. See this file's doc.
-	sb, err := ex.Sandbox(ctx, executor.SandboxSpec{
+	env := plan.ShellEnv(n)
+	// Where the services this step needs answer, as its own attempt was
+	// told: a consumer held after failing is exactly where someone wants to
+	// poke the database by hand. Only services still up (the table forgets
+	// a stopped one), so a session never names an address nothing answers
+	// on. Addresses carry host and port only, so this widens nothing the
+	// secret rule above guards.
+	spec := executor.SandboxSpec{
 		StepID: shellStepID(n.ID, session), Attempt: 1,
-		Env: env, WorkDir: workDir, Mounts: mounts,
-	})
+		WorkDir: workDir, Mounts: mounts,
+	}
+	if svcEnv := rc.serviceEnv(n); len(svcEnv) > 0 {
+		env = append(append([]string(nil), env...), svcEnv...)
+		if consumesFromContainer(n) {
+			spec.ExtraHosts = []string{dockerHostGateway}
+		}
+	}
+	spec.Env = env
+	// Secrets is empty, deliberately and permanently. See this file's doc.
+	sb, err := ex.Sandbox(ctx, spec)
 	if err != nil {
 		refuseShell(req, reasonSandbox)
 		return
@@ -388,38 +433,6 @@ func (rc *runCore) runShellSession(
 // sessions on one step with each other.
 func shellStepID(stepID, session string) string {
 	return stepID + shellPathSeparator + session
-}
-
-// shellEnv is the step's declared environment with every variable that
-// names a secret removed, plus a SENRO_SHELL marker. Removals are precise
-// where possible (the uniform SENRO_SECRET_<NAME> and any declared alias,
-// both known from the plan); the prefix sweep catches a hand-declared
-// SENRO_SECRET_-shaped variable. Removed rather than emptied: "" is still
-// testable, and a path that no longer exists is worse than none.
-//
-// No trace context is added, unlike a step's own attempt: a session has no
-// span (a person typing is not work the trace describes), and handing over
-// the STEP's span would file hand-typed commands inside an attempt that
-// usually finished before the session opened.
-func shellEnv(n *plan.Node) []string {
-	drop := map[string]bool{}
-	for _, sec := range n.Secrets {
-		drop[plan.SecretEnvVar(sec.Name)] = true
-		if sec.Env != "" {
-			drop[sec.Env] = true
-		}
-	}
-	out := make([]string, 0, len(n.Env)+1)
-	for _, kv := range n.Env {
-		key, _, _ := strings.Cut(kv, "=")
-		if drop[key] || strings.HasPrefix(key, "SENRO_SECRET_") {
-			continue
-		}
-		out = append(out, kv)
-	}
-	// So a shell profile, or a script somebody pastes in, can tell it is
-	// running in a session rather than in the step itself.
-	return append(out, "SENRO_SHELL=1")
 }
 
 // clientStdin is the client's stdin with one addition: it notices a

@@ -816,3 +816,68 @@ func TestAbsoluteCmdDirNotMatchingAMountIsAHostPath(t *testing.T) {
 		t.Errorf("an absolute Cmd.Dir with no matching mount must still be honoured as a host path: %q", out.String())
 	}
 }
+
+// TestWorkDirIsWhereRunStarts pins executor.WorkDirReporter for the local
+// sandbox: the directory WorkDir reports is the one a command run the way
+// the engine runs a step (Dir = executor.CmdDir of the declared WorkDir and
+// mounts) actually starts in, for every way a step can place itself. The
+// engine reads a JUnit report from that directory, so a disagreement would
+// fail a passing step over a file that is sitting right there.
+func TestWorkDirIsWhereRunStarts(t *testing.T) {
+	wsDir := t.TempDir()
+	absDir := t.TempDir()
+	cases := []struct {
+		name string
+		spec executor.SandboxSpec
+		// prepare runs in the sandbox's own directory before the check, to
+		// create a relative WorkDir that must exist for Run to start in it.
+		prepare string
+	}{
+		{name: "no workdir", spec: executor.SandboxSpec{}},
+		{name: "relative workdir", spec: executor.SandboxSpec{WorkDir: "sub"}, prepare: "mkdir -p sub"},
+		{name: "absolute workdir", spec: executor.SandboxSpec{WorkDir: absDir}},
+		{name: "workspace at workdir", spec: executor.SandboxSpec{
+			WorkDir: "/src", Mounts: []executor.Mount{{Name: "src", At: "/src", Path: wsDir}},
+		}},
+		{name: "workspace at root, no workdir", spec: executor.SandboxSpec{
+			Mounts: []executor.Mount{{Name: "src", At: ".", Path: wsDir}},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := tc.spec
+			spec.StepID, spec.Attempt = "s", 1
+			sb, err := newLocal(t, t.TempDir()).Sandbox(context.Background(), spec)
+			if err != nil {
+				t.Fatalf("Sandbox: %v", err)
+			}
+			defer func() { _ = sb.Close(context.Background(), false) }()
+			wd, ok := sb.(executor.WorkDirReporter)
+			if !ok {
+				t.Fatal("the local sandbox does not implement executor.WorkDirReporter")
+			}
+			if tc.prepare != "" {
+				exit, err := sb.Run(context.Background(),
+					executor.Cmd{Args: []string{"sh", "-c", tc.prepare}}, io.Discard, io.Discard)
+				if err != nil || exit != 0 {
+					t.Fatalf("prepare = %d, %v", exit, err)
+				}
+			}
+
+			var out bytes.Buffer
+			exit, err := sb.Run(context.Background(), executor.Cmd{
+				Args: []string{"pwd", "-P"}, Dir: executor.CmdDir(spec.WorkDir, spec.Mounts),
+			}, &out, io.Discard)
+			if err != nil || exit != 0 {
+				t.Fatalf("Run = %d, %v", exit, err)
+			}
+			want, err := filepath.EvalSymlinks(wd.WorkDir())
+			if err != nil {
+				t.Fatalf("EvalSymlinks(%q): %v", wd.WorkDir(), err)
+			}
+			if got := strings.TrimSpace(out.String()); got != want {
+				t.Errorf("Run started in %q, WorkDir() reports %q", got, want)
+			}
+		})
+	}
+}

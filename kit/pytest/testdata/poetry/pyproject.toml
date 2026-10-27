@@ -1,0 +1,8 @@
+[tool.poetry]
+name = "x"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8"
