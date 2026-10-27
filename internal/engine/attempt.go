@@ -426,11 +426,22 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 	// non-zero exit is the generator's own failure and drift on top of it
 	// would only bury that. Replacing res here, before the hold and the
 	// scratch read-back, makes the drift an ordinary failed attempt to
-	// retries, --break-on-failure and the analyzer alike. The snapshot was
-	// already recorded above, so `senro ws diff` shows the drift.
+	// --break-on-failure and the analyzer alike (plan.Validate refuses a
+	// Retry here). The snapshot was already recorded above, under
+	// WithoutCancel, so `senro ws diff` shows the drift whatever happens
+	// next.
+	//
+	// The check itself only READS, so it runs under the run's own ctx: a
+	// cancellation stops an index rebuild from a large cache-restored body
+	// rather than holding the run open, and the attempt then settles
+	// cancelled, as classifyAttempt would have settled it.
 	if n.CheckGenerated && res.state == api.StateSucceeded {
-		if err := rc.checkGenerated(context.WithoutCancel(ctx), n, s.mounts, snaps); err != nil {
-			res = attemptResult{state: api.StateFailed, err: err, logTail: s.tail.String(), snapshots: snaps}
+		if err := rc.checkGenerated(ctx, n, s.mounts, snaps); err != nil {
+			state := api.StateFailed
+			if ctx.Err() != nil {
+				state = api.StateCancelled
+			}
+			res = attemptResult{state: state, err: err, logTail: s.tail.String(), snapshots: snaps}
 		}
 	}
 

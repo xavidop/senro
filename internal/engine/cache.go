@@ -155,7 +155,7 @@ func (rc *runCore) cacheLookup(ctx context.Context, n *plan.Node, opts Options) 
 		// them wrong would keep hitting the same stale entry forever. See
 		// cache.KeyVersion's doc for why this bumped it.
 		MountShape:   cache.MountShapeComponent(mountShapes),
-		StepShape:    cache.StepShapeComponent(n.NoSnapshot, n.Outputs),
+		StepShape:    cache.StepShapeComponent(n.NoSnapshot, n.CheckGenerated, n.Outputs),
 		FuncIdentity: funcIdentity,
 		ToolVersions: "", // no tool declarations in this build
 		Version:      cache.KeyVersion,

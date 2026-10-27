@@ -44,17 +44,15 @@ func (rc *runCore) checkGenerated(
 		}
 		before, err := rc.ws.mountedIndex(ctx, cas.Digest(mt.Digest))
 		if err != nil {
-			return fmt.Errorf("engine: step %q: CheckGenerated: read the index workspace %q was mounted from: %w",
-				n.ID, s.Name, err)
+			return checkGeneratedInfra(n.ID, s.Name, "read the file index of the snapshot it was mounted from", err)
 		}
 		if s.Index == "" {
-			return fmt.Errorf("engine: step %q: CheckGenerated: the snapshot of workspace %q carries no file index",
-				n.ID, s.Name)
+			return checkGeneratedInfra(n.ID, s.Name, "read the file index of the post-step snapshot",
+				errors.New("the snapshot carries no index"))
 		}
 		after, err := rc.ws.snap.LoadIndex(ctx, s.Index)
 		if err != nil {
-			return fmt.Errorf("engine: step %q: CheckGenerated: read the index of workspace %q after the step: %w",
-				n.ID, s.Name, err)
+			return checkGeneratedInfra(n.ID, s.Name, "read the file index of the post-step snapshot", err)
 		}
 		if drift := generatedDrift(before, after); len(drift) > 0 {
 			sentences = append(sentences, driftSentence(s.Name, drift))
@@ -64,6 +62,17 @@ func (rc *runCore) checkGenerated(
 		return nil
 	}
 	return errors.New(strings.Join(sentences, "; "))
+}
+
+// checkGeneratedInfra is the error for a check that could not read an
+// index. That is the storage's failure, neither the generator's nor drift,
+// so it wraps executor.ErrInfra and says so: the step's result is unknown,
+// not wrong.
+func checkGeneratedInfra(step, ws, what string, err error) error {
+	return fmt.Errorf(
+		"engine: %w: step %q: CheckGenerated could not %s for workspace %q, so whether the "+
+			"generated files are up to date is unknown (an infrastructure problem, not drift): %w",
+		executor.ErrInfra, step, what, ws, err)
 }
 
 // generatedDrift is every path that differs between before and after,

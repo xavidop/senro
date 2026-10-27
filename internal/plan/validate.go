@@ -191,6 +191,15 @@ func validateCheckGenerated(n Node) error {
 			"plan: step %q declares both CheckGenerated and NoSnapshot: the check compares the "+
 				"post-step snapshot with what was mounted, and NoSnapshot takes no snapshot", n.ID)
 	}
+	if n.Retry != nil {
+		// The drifted attempt's snapshot becomes the workspace's state, so
+		// the next attempt mounts it and regenerating it changes nothing:
+		// the retry would pass the check it exists to enforce.
+		return fmt.Errorf(
+			"plan: step %q declares both CheckGenerated and a Retry policy: a retry would compare "+
+				"against the drifted tree the failed attempt left, and pass; put the generator in its "+
+				"own step without a retry", n.ID)
+	}
 	for _, m := range n.Mounts {
 		if m.Workspace != "" && m.Mode != "ro" {
 			return nil
@@ -1008,6 +1017,43 @@ func ancestors(byID map[string]*Node, id string) map[string]bool {
 	return out
 }
 
+// validateCheckGeneratedStorage is the half of validateCheckGenerated that
+// needs the plan's workspace declarations: a read-write mount the engine
+// never snapshots gives the check nothing to compare. A step-scoped
+// workspace is skipped because no later step reads it, and a claim-backed
+// one because it has no coordinator-side copy to walk (see
+// engine.snapshotMounts). Mounts of undeclared workspaces were refused by
+// the caller already.
+func validateCheckGeneratedStorage(n *Node, ws map[string]WorkspaceSpec) error {
+	if !n.CheckGenerated {
+		return nil
+	}
+	var skipped []string
+	for _, m := range n.Mounts {
+		if m.Workspace == "" || m.Mode == "ro" {
+			continue
+		}
+		switch {
+		case ws[m.Workspace].Scope == "step":
+			skipped = append(skipped, fmt.Sprintf("%q is step-scoped", m.Workspace))
+		case n.Executor != nil && n.Executor.Claims[m.Workspace] != "":
+			skipped = append(skipped, fmt.Sprintf("%q is backed by the claim %q", m.Workspace, n.Executor.Claims[m.Workspace]))
+		default:
+			return nil
+		}
+	}
+	if len(skipped) == 0 {
+		// No read-write workspace mount at all: validateCheckGenerated's
+		// refusal, which runs before this one.
+		return nil
+	}
+	return fmt.Errorf(
+		"plan: step %q declares CheckGenerated but none of its read-write workspace mounts is "+
+			"snapshotted (%s): the check compares the post-step snapshot with what was mounted, and "+
+			"a step-scoped or claim-backed workspace is never snapshotted. Mount a run-scoped or "+
+			"persistent workspace read-write", n.ID, strings.Join(skipped, ", "))
+}
+
 func validateNodeStorage(n *Node, ws map[string]WorkspaceSpec, sc map[string]ScratchSpec) error {
 	at := make(map[string]bool, len(n.Mounts))
 	var workspaceMounts int
@@ -1042,6 +1088,10 @@ func validateNodeStorage(n *Node, ws map[string]WorkspaceSpec, sc map[string]Scr
 		if m.Mode != "" && m.Mode != "rw" {
 			return fmt.Errorf("plan: step %q mounts scratch cache %q read-only; a scratch cache is always writable", n.ID, m.Scratch)
 		}
+	}
+
+	if err := validateCheckGeneratedStorage(n, ws); err != nil {
+		return err
 	}
 
 	if !n.Pure {

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/xavidop/senro/internal/cas"
+	"github.com/xavidop/senro/internal/executor"
 	"github.com/xavidop/senro/internal/workspace"
 )
 
@@ -102,5 +104,35 @@ func TestMountedIndexRebuildsTheIndexOfABodyWithNoRecordedOne(t *testing.T) {
 	}
 	if got, err := m.mountedIndex(ctx, ""); err != nil || len(got.Entries) != 0 {
 		t.Errorf("mountedIndex of an empty body = %v, %v, want an empty index", got, err)
+	}
+
+	// The rebuild honours cancellation: it only reads, so a cancelled run
+	// abandons it rather than extracting a body nobody will look at.
+	fresh := &wsManager{snap: snap, runDir: runDir, indexOf: map[cas.Digest]cas.Digest{}}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := fresh.mountedIndex(cancelled, taken.Digest); !errors.Is(err, context.Canceled) {
+		t.Errorf("mountedIndex under a cancelled ctx = %v, want context.Canceled", err)
+	}
+	if left, _ := os.ReadDir(runDir); len(left) != 0 {
+		t.Errorf("a cancelled rebuild left %d entries in the run directory", len(left))
+	}
+}
+
+// An index that cannot be read says nothing about drift: the error is
+// infrastructure, so retry predicates and the analyzer read it as such.
+func TestCheckGeneratedIndexFailureIsInfrastructure(t *testing.T) {
+	err := checkGeneratedInfra("codegen", "gen", "read the file index of the post-step snapshot",
+		fmt.Errorf("cas: %w", cas.ErrNotFound))
+	if !executor.IsInfra(err) {
+		t.Errorf("err = %v, want it to wrap executor.ErrInfra", err)
+	}
+	if !errors.Is(err, cas.ErrNotFound) {
+		t.Errorf("err = %v, want it to keep the cause", err)
+	}
+	for _, s := range []string{`step "codegen"`, `workspace "gen"`, "infrastructure", "not drift"} {
+		if !strings.Contains(err.Error(), s) {
+			t.Errorf("err = %q, want it to contain %q", err, s)
+		}
 	}
 }

@@ -440,12 +440,23 @@ func MountShapeComponent(mounts []MountShape) string {
 // keyed by the pattern (always prefixed "glob:" or "file:" by
 // artifact.Selector, so it cannot collide with the label "no_snapshot")
 // with a fixed marker value, since only presence matters.
-func StepShapeComponent(noSnapshot bool, outputs []string) string {
+//
+// CheckGenerated gets a "check_generated true" record ONLY when it is set:
+// it decides whether a drifted workspace is a success, so a result saved
+// without it must not serve a step that has it, and writing nothing when it
+// is off keeps every existing key byte-identical (no KeyVersion bump).
+func StepShapeComponent(noSnapshot, checkGenerated bool, outputs []string) string {
 	var b strings.Builder
 	writeFramed(&b, "no_snapshot")
 	b.WriteByte(' ')
 	writeFramed(&b, strconv.FormatBool(noSnapshot))
 	b.WriteByte('\n')
+	if checkGenerated {
+		writeFramed(&b, "check_generated")
+		b.WriteByte(' ')
+		writeFramed(&b, "true")
+		b.WriteByte('\n')
+	}
 
 	sorted := append([]string(nil), outputs...)
 	sort.Strings(sorted)

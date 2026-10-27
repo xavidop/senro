@@ -766,7 +766,9 @@ func (m *wsManager) record(snaps []wsSnapshot) {
 // is rebuilt by extracting the body into a scratch directory under the run
 // and discarding the tree: slow for a large workspace, but only a
 // CheckGenerated step mounting a cache-restored workspace that then changed
-// ever pays it.
+// ever pays it. ctx is the run's own, not WithoutCancel: the rebuild only
+// reads a body that is already stored, so a cancelled run abandons it and
+// loses nothing.
 func (m *wsManager) mountedIndex(ctx context.Context, body cas.Digest) (workspace.Index, error) {
 	if body == "" {
 		return workspace.Index{Version: workspace.IndexVersion}, nil

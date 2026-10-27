@@ -125,3 +125,35 @@ func TestCheckGeneratedComparesAgainstAnEmptyWorkspace(t *testing.T) {
 		t.Errorf("Error = %q, want it to contain %q", body.Error, want)
 	}
 }
+
+// Two read-write workspaces drifting in one attempt: one sentence each, in
+// the order the step's mounts declare them, joined with "; ".
+func TestCheckGeneratedReportsEveryDriftedWorkspace(t *testing.T) {
+	apiWS := senro.Workspace("api", senro.Scope(senro.ScopeRun))
+	docs := senro.Workspace("docs", senro.Scope(senro.ScopeRun))
+	pipe := senro.New("ci")
+	l := pipe.Workflow("main")
+	// No WorkDir: the local executor runs in the sandbox root, where each
+	// mount is reachable at its At path, leading slash stripped.
+	l.Step("codegen", exec.Command("sh", "-c", "echo a > api/client.go; echo d > docs/ref.md")).
+		Mount(apiWS.At("/api", senro.RW), docs.At("/docs", senro.RW)).CheckGenerated()
+	p, err := pipe.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	status, events, _, _ := runWithStorage(t, p)
+	if status != api.RunFailed {
+		t.Fatalf("status = %s, want failed", status)
+	}
+	var body api.StepFinishedBody
+	for _, e := range events {
+		if e.Type == api.StepFinished && e.Step == "codegen" {
+			_ = e.Decode(&body)
+		}
+	}
+	want := "generated files are out of date in workspace api: 1 changed: client.go; " +
+		"generated files are out of date in workspace docs: 1 changed: ref.md"
+	if body.Error != want {
+		t.Errorf("Error =\n %q\nwant\n %q", body.Error, want)
+	}
+}

@@ -2092,11 +2092,14 @@ func (s *StepBuilder) NoSnapshot() *StepBuilder {
 // `senro ws diff` and `senro ws pull` show what the generator produced.
 //
 // A non-zero exit is the generator's own failure and the check does not
-// run. A Retry policy applies to the check's failure like any other, and is
-// pointless here: a generator that drifted once drifts again.
+// run.
 //
-// plan.Validate refuses it on a service, together with NoSnapshot, and on a
-// step with no read-write workspace mount.
+// plan.Validate refuses it on a service, together with NoSnapshot, together
+// with Retry, and on a step with no snapshotted read-write workspace mount
+// (a step-scoped or claim-backed workspace is never snapshotted). Retry is
+// refused because the drifted attempt's snapshot becomes the workspace's
+// state, so a retry would compare against the drifted tree and pass: put
+// the generator in its own step, without a retry.
 func (s *StepBuilder) CheckGenerated() *StepBuilder {
 	s.checkGenerated = true
 	return s

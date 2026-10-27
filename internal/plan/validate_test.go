@@ -63,6 +63,45 @@ func TestValidateRefusesCheckGeneratedWithNoSnapshot(t *testing.T) {
 		`step "codegen"`, "CheckGenerated", "NoSnapshot")
 }
 
+// A step-scoped workspace is never snapshotted (nobody reads it after the
+// step), so a step whose only read-write mount is one gives the check
+// nothing to compare.
+func TestValidateRefusesCheckGeneratedWhoseOnlyReadWriteMountIsStepScoped(t *testing.T) {
+	p := checkGenPlan(nil)
+	p.Workspaces[0].Scope = "step"
+	wantCheckGeneratedErr(t, p, `step "codegen"`, "CheckGenerated", "step-scoped")
+
+	// A run-scoped rw mount beside it is enough.
+	p = checkGenPlan(func(n *plan.Node) {
+		n.Mounts = append(n.Mounts, plan.MountSpec{Workspace: "repo", At: "/repo"})
+	})
+	p.Workspaces[0].Scope = "step"
+	p.Workspaces = append(p.Workspaces, plan.WorkspaceSpec{Name: "repo", Scope: "run"})
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate refused CheckGenerated with a run-scoped rw mount beside a step-scoped one: %v", err)
+	}
+}
+
+// A claim-backed workspace lives in the cluster and has no coordinator-side
+// copy to snapshot, so it gives the check nothing to compare either.
+func TestValidateRefusesCheckGeneratedWhoseOnlyReadWriteMountIsClaimBacked(t *testing.T) {
+	wantCheckGeneratedErr(t, checkGenPlan(func(n *plan.Node) {
+		n.Executor = &plan.ExecutorSpec{
+			Kind:      plan.ExecutorK8s,
+			Image:     "ghcr.io/acme/runner@sha256:" + strings.Repeat("a", 64),
+			Namespace: "ci",
+			Claims:    map[string]string{"gen": "gen-pvc"},
+		}
+	}), `step "codegen"`, "CheckGenerated", "claim")
+}
+
+// A retry would compare against the tree the drifted attempt left.
+func TestValidateRefusesCheckGeneratedWithRetry(t *testing.T) {
+	wantCheckGeneratedErr(t, checkGenPlan(func(n *plan.Node) {
+		n.Retry = &plan.RetrySpec{MaxAttempts: 3}
+	}), `step "codegen"`, "CheckGenerated", "Retry", "drifted tree", "own step")
+}
+
 func TestValidateRefusesCheckGeneratedWithOnlyReadOnlyMounts(t *testing.T) {
 	wantCheckGeneratedErr(t, checkGenPlan(func(n *plan.Node) { n.Mounts[0].Mode = "ro" }),
 		`step "codegen"`, "CheckGenerated", "read-write")
