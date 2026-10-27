@@ -460,10 +460,10 @@ type ContainerAddressable interface {
 //     shell-backed sibling already reports.
 //   - Stop may be called at most once, before Wait or concurrently with it.
 //     It asks the process to end (SIGTERM, or `docker stop`), waits up to
-//     grace, then kills it, and returns once the process is gone; a Wait in
-//     flight returns after Stop does. Cancelling ctx cuts the grace short and
-//     kills at once. Stopping a process that has already exited is not an
-//     error.
+//     grace, then kills it. Stop returns only once the process is gone; a
+//     Wait in flight may return just before or just after it. Cancelling ctx
+//     cuts the grace short and kills at once, and a ctx already done skips
+//     the ask. Stopping a process that has already exited is not an error.
 //
 // Stop is a separate step from ctx cancellation, unlike Run, because a
 // service's normal end IS being stopped: an ordinary step that outlives its

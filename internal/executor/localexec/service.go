@@ -80,28 +80,47 @@ func (s *sandbox) StartService(
 }
 
 // portsFree refuses a service whose declared port something on this host
-// already holds on 127.0.0.1.
+// already holds.
 //
 // A local service binds the declared port itself, and the probe dials it on
 // the loopback, so whatever already owns the port (a developer's own
 // database, a previous run's orphan) would pass the probe and be handed to
 // the consumers as this service, while the real one fails to bind and dies
-// in a log nobody reads. Listening and closing at once is the cheapest
-// honest check; the window between the close and the service's own bind is
-// a race only another process starting at that instant can lose.
+// in a log nobody reads.
+//
+// Three checks, because no one of them sees every squatter. A bind on
+// 127.0.0.1 catches a loopback listener. On macOS that bind succeeds while
+// another socket holds the wildcard (0.0.0.0 or [::]) on the same port, so a
+// wildcard bind is tried too. And a dial on 127.0.0.1 catches whatever
+// answers there that neither bind noticed (a listener bound with
+// SO_REUSEPORT, a port forwarder), bounded by portProbeTimeout so a port a
+// firewall drops costs a fraction of a second rather than a connect timeout.
+// The window between these checks and the service's own bind is a race only
+// another process starting at that instant can lose.
 //
 // Not ErrInfra: the host's state is the pipeline's to fix, so the service
 // settles failed with this message, like a typo in its command.
 func portsFree(ports []int) error {
 	for _, p := range ports {
-		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p)))
-		if err != nil {
+		port := strconv.Itoa(p)
+		for _, host := range []string{"127.0.0.1", ""} {
+			ln, err := net.Listen("tcp", net.JoinHostPort(host, port))
+			if err != nil {
+				return fmt.Errorf("localexec: port %d is already in use", p)
+			}
+			_ = ln.Close()
+		}
+		if c, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", port), portProbeTimeout); err == nil {
+			_ = c.Close()
 			return fmt.Errorf("localexec: port %d is already in use", p)
 		}
-		_ = ln.Close()
 	}
 	return nil
 }
+
+// portProbeTimeout bounds portsFree's dial. A listener on the loopback
+// answers in microseconds; this only caps a port nothing answers on.
+const portProbeTimeout = 100 * time.Millisecond
 
 // serviceVerdict is the (exit, err) for a finished service process.
 //
@@ -163,25 +182,44 @@ func (l *localService) Wait() (int, error) {
 // sends the group one SIGKILL; an empty group is ESRCH, which is success.
 // pgid 0 is a program that never started, and kill(0) would signal senro's
 // own group.
+//
+// That SIGKILL goes to a group whose leader has been reaped, which is safe
+// while the group still has a member: a process group id is not handed out
+// again while any process in the group lives, so a survivor makes the id
+// still ours. The hazard is an EMPTY group whose id the kernel has since
+// given to a new group leader. kill(-pgid, 0) first rules out the empty
+// group that was never reused (ESRCH, nothing to do); what is left is the
+// reuse arriving between the reap and this call, which the engine keeps to
+// the moment it takes to notice the exit (it stops a service that exited
+// early at once), and which needs the pid space to wrap in that moment.
+//
+// A ctx already done skips the SIGTERM: the caller has run out of time for
+// a grace, so the group is killed at once, as the kill after an expired
+// grace would.
 func (l *localService) Stop(ctx context.Context, grace time.Duration) error {
 	select {
 	case <-l.done:
-		if l.pgid != 0 {
-			return signalGroup(l.pgid, syscall.SIGKILL)
+		if l.pgid == 0 {
+			return nil
 		}
-		return nil
+		if err := syscall.Kill(-l.pgid, 0); errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return signalGroup(l.pgid, syscall.SIGKILL)
 	default:
 	}
-	if err := signalGroup(l.pgid, syscall.SIGTERM); err != nil {
-		return err
-	}
-	timer := time.NewTimer(grace)
-	defer timer.Stop()
-	select {
-	case <-l.done:
-		return nil
-	case <-timer.C:
-	case <-ctx.Done():
+	if ctx.Err() == nil {
+		if err := signalGroup(l.pgid, syscall.SIGTERM); err != nil {
+			return err
+		}
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case <-l.done:
+			return nil
+		case <-timer.C:
+		case <-ctx.Done():
+		}
 	}
 	if err := signalGroup(l.pgid, syscall.SIGKILL); err != nil {
 		return err

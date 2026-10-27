@@ -82,15 +82,24 @@ func TestStartServicePublishesAPortAndStops(t *testing.T) {
 	if err := svc.Stop(ctx, time.Second); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	done := make(chan error, 1)
+	type waited struct {
+		code int
+		err  error
+	}
+	done := make(chan waited, 1)
 	go func() {
-		_, err := svc.Wait()
-		done <- err
+		code, err := svc.Wait()
+		done <- waited{code, err}
 	}()
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("Wait after Stop: %v", err)
+	case w := <-done:
+		if w.err != nil {
+			t.Errorf("Wait after Stop: %v", w.err)
+		}
+		// httpd as PID 1 under the init: SIGTERM ends it (143), or the kill
+		// after the grace does (137). Anything else is not a stop.
+		if w.code != 137 && w.code != 143 {
+			t.Errorf("exit code after Stop = %d, want 137 or 143", w.code)
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("Wait did not return after Stop")

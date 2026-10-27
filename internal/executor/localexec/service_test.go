@@ -200,6 +200,22 @@ func TestStopKillsAfterGrace(t *testing.T) {
 	}
 }
 
+// A Stop whose ctx is already done has no time for a grace: it kills at
+// once, without the SIGTERM a graceful helper would have exited 0 on.
+func TestStopOnACancelledContextKillsAtOnce(t *testing.T) {
+	svc := startHelper(t, "graceful", freePort(t))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := svc.Stop(ctx, time.Minute); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	exit, err := waitWithin(t, svc, 2*time.Second)
+	if err != nil || exit != 137 {
+		t.Errorf("Wait = (%d, %v), want (137, nil): a cancelled Stop kills rather than asks", exit, err)
+	}
+}
+
 // A process's address on this executor is the port it bound itself, on the
 // loopback: the declared port is the host port.
 func TestHostAddressIsLoopbackAndTheDeclaredPort(t *testing.T) {
@@ -303,6 +319,35 @@ func TestAServiceWhosePortIsTakenIsRefused(t *testing.T) {
 	}
 	if errors.Is(err, executor.ErrInfra) {
 		t.Error("a taken port reads as infrastructure; it is the pipeline's to fix")
+	}
+}
+
+// A socket on the wildcard address holds the port for the loopback too,
+// though on macOS a bind of 127.0.0.1 alone still succeeds beside it: the
+// service is refused all the same.
+func TestAServiceWhosePortIsTakenOnTheWildcardIsRefused(t *testing.T) {
+	for _, host := range []string{"0.0.0.0", "::"} {
+		ln, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+		if err != nil {
+			if host == "::" {
+				t.Logf("no IPv6 wildcard on this host: %v", err)
+				continue
+			}
+			t.Fatal(err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+
+		runner := serviceSandbox(t, port).(executor.ServiceRunner)
+		svc, err := runner.StartService(context.Background(),
+			executor.Cmd{Args: []string{"sleep", "60"}}, io.Discard, io.Discard)
+		_ = ln.Close()
+		if err == nil {
+			_ = svc.Stop(context.Background(), 0)
+			t.Fatalf("StartService on a port held on %s succeeded", host)
+		}
+		if want := "localexec: port " + strconv.Itoa(port) + " is already in use"; err.Error() != want {
+			t.Errorf("%s: err = %q, want %q", host, err, want)
+		}
 	}
 }
 

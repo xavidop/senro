@@ -119,7 +119,14 @@ func (c *containerService) Wait() (int, error) {
 // sends the image's stop signal, waits out grace and kills. A cancelled ctx
 // abandons that request and kills at once, on a context that survives the
 // cancellation, so a container is never left running because its caller gave
-// up.
+// up. A ctx already done skips the stop request and kills at once.
+//
+// A stop the daemon refused for any other reason still gets one kill,
+// best-effort, before the error is returned: the error says the stop went
+// wrong, and the container should not keep running because it did. Every
+// kill is bounded by killTimeout, on a context that ignores the caller's
+// cancellation, so a daemon that hangs cannot hold a run's teardown past the
+// engine's clamp.
 //
 // It returns once ContainerWait has seen the container exit, so a Wait in
 // flight is already on its way out.
@@ -129,9 +136,14 @@ func (c *containerService) Stop(ctx context.Context, grace time.Duration) error 
 		return nil
 	default:
 	}
-	err := c.cli.ContainerStop(ctx, c.id, grace)
+	var err error
+	if ctx.Err() == nil {
+		err = c.cli.ContainerStop(ctx, c.id, grace)
+	}
 	if ctx.Err() != nil {
-		err = c.cli.ContainerKill(context.WithoutCancel(ctx), c.id)
+		err = c.kill(ctx)
+	} else if err != nil {
+		_ = c.kill(ctx)
 	}
 	if err != nil {
 		return fmt.Errorf("containerexec: %w: stopping service container %s: %w",
@@ -141,13 +153,32 @@ func (c *containerService) Stop(ctx context.Context, grace time.Duration) error 
 	return nil
 }
 
+// killTimeout bounds each kill Stop sends: long enough for a busy daemon,
+// short enough that teardown never waits on a hung one for long.
+const killTimeout = 10 * time.Second
+
+// kill sends the container SIGKILL on a context that outlives ctx's
+// cancellation but not killTimeout.
+func (c *containerService) kill(ctx context.Context) error {
+	kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), killTimeout)
+	defer cancel()
+	return c.cli.ContainerKill(kctx, c.id)
+}
+
 // HostAddress implements senroexec.Addressable: where on the coordinator's
 // loopback the daemon published a declared port.
 //
 // Not published is an error naming the port rather than an empty address: a
 // caller asking for a port the step never declared has made a mistake, and
-// one asking before StartService has nothing to ask about yet.
+// one asking before StartService has nothing to ask about yet. A declared
+// port the daemon has not bound yet says so in its own words, since that
+// one is a moment early rather than a mistake.
 func (s *sandbox) HostAddress(ctx context.Context, port int) (string, error) {
+	if !slices.Contains(s.spec.Ports, port) {
+		return "", fmt.Errorf(
+			"containerexec: port %d of step %q is not published; a service publishes only the ports it declares",
+			port, s.spec.StepID)
+	}
 	id := s.ContainerID()
 	if id == "" {
 		return "", fmt.Errorf(
@@ -160,7 +191,7 @@ func (s *sandbox) HostAddress(ctx context.Context, port int) (string, error) {
 	}
 	if !ok {
 		return "", fmt.Errorf(
-			"containerexec: port %d of step %q is not published; a service publishes only the ports it declares",
+			"containerexec: port %d of step %q is published but the daemon has not bound it yet",
 			port, s.spec.StepID)
 	}
 	return addr, nil
