@@ -3,6 +3,7 @@
 package senro
 
 import (
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -35,7 +36,13 @@ func TestHelperServe(t *testing.T) {
 			if err != nil {
 				return
 			}
-			_ = c.Close()
+			// Held until the client hangs up, as a server waiting for a
+			// request does: the TCP probe reads a connection dropped at
+			// once as nothing listening.
+			go func() {
+				_, _ = io.Copy(io.Discard, c)
+				_ = c.Close()
+			}()
 		}
 	}()
 	<-term
