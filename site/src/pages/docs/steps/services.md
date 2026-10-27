@@ -263,12 +263,14 @@ The plain renderer prints `db ready at 127.0.0.1:54321 (port 5432)`, and the bro
   from the coordinator and one probe loop then serves every executor.
 - **No per-run network.** Containers reach a container service on the daemon's default bridge,
   and everything else goes through the coordinator. See the table above.
-- **A service reads its workspaces, it never produces them.** Its mounts are read-only, as a
-  handler's are, and are taken when it starts: senro holds a workspace for a service only until
-  its process is started, so a long-lived service can't block a sibling's cache restore into the
-  same workspace. That restore can replace files under a running service. A service takes no
-  snapshot when it stops, so nothing it writes reaches the ledger, a cache key or its consumers'
-  view of the workspace. Write scratch data to a temporary directory instead.
+- **A service reads its workspaces, it never produces them.** It sees a private, read-only copy
+  of each workspace as it was when the service started, not later changes: restored from the
+  workspace's latest snapshot (so the snapshot's default excludes, such as `node_modules`, are not
+  in it), or copied as it stands when the workspace has never been snapshotted. senro holds the
+  workspace only while it makes the copy, so a long-lived service never blocks a sibling's cache
+  restore, and that restore can't change what the running service sees. A write under a mount
+  fails, and a service takes no snapshot when it stops, so nothing it writes reaches the ledger, a
+  cache key or its consumers. Write scratch data to a temporary directory instead.
 - **No retries, `Pure`, `Generates` or handlers on a service.** See above.
 
 ## Where to go next

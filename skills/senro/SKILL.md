@@ -268,8 +268,10 @@ verify.Step("integration", exec.Command("go", "test", "./store/...")).Needs("db"
   200 ms. A local service's probe dials 127.0.0.1 (IPv4 only), and a local
   service whose port is already taken fails `port N is already in use`.
 - A consumer retried or rerun after its service stopped restarts it first.
-- A service mounts its workspaces read-only, holds them only until its
-  process starts, and never snapshots them.
+- A service mounts a private read-only copy of each workspace, taken when it
+  starts (from the latest snapshot, else the directory as it stands); later
+  changes, a sibling's cache restore included, never reach it. It never
+  snapshots them.
 - `Build` refuses: a func-kind service, no ports, a port outside 1..65535 or
   repeated, a probe on an undeclared port, an HTTP path without a leading
   `/`, a TCP probe with a path, a negative ReadyTimeout/StopGrace, `Retry`,

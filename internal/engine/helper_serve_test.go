@@ -24,6 +24,8 @@ const (
 	helperServeHTTP        = "SENRO_TEST_SERVE_HTTP"
 	helperServeStubborn    = "SENRO_TEST_SERVE_STUBBORN"
 	helperServeExitAfterMS = "SENRO_TEST_SERVE_EXIT_AFTER_MS"
+	// helperServeFile, with helperServeHTTP, also serves that file on /file.
+	helperServeFile = "SENRO_TEST_SERVE_FILE"
 )
 
 // TestHelperServe is not a test: it is the service the engine's service
@@ -65,6 +67,19 @@ func TestHelperServe(t *testing.T) {
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
+		// /file answers with the named file as it is NOW, read relative to
+		// the working directory on every request: what the service sees in
+		// its mount at the moment it is asked.
+		if name := os.Getenv(helperServeFile); name != "" {
+			mux.HandleFunc("/file", func(w http.ResponseWriter, _ *http.Request) {
+				b, err := os.ReadFile(name)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusNotFound)
+					return
+				}
+				_, _ = w.Write(b)
+			})
+		}
 		go func() { _ = http.Serve(ln, mux) }()
 	} else {
 		// Each connection is held until the client hangs up, as a real
@@ -86,4 +101,40 @@ func TestHelperServe(t *testing.T) {
 	}
 	<-term
 	os.Exit(0)
+}
+
+// helperFetchURL turns this test binary into a client: TestHelperFetch GETs
+// it, retrying for up to ten seconds until it answers 200, and writes the
+// body to helperFetchOut when that is set. Portable where curl or nc is not.
+const (
+	helperFetchURL = "SENRO_TEST_FETCH_URL"
+	helperFetchOut = "SENRO_TEST_FETCH_OUT"
+)
+
+// TestHelperFetch is not a test; see helperFetchURL.
+func TestHelperFetch(t *testing.T) {
+	url := os.Getenv(helperFetchURL)
+	if url == "" {
+		return
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		resp, err := http.Get(url) //nolint:gosec,noctx // a test helper dialling a URL its own test built
+		if err == nil {
+			body, rerr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if rerr == nil && resp.StatusCode == http.StatusOK {
+				if out := os.Getenv(helperFetchOut); out != "" {
+					if err := os.WriteFile(out, body, 0o644); err != nil {
+						os.Exit(2)
+					}
+				}
+				os.Exit(0)
+			}
+		}
+		if time.Now().After(deadline) {
+			os.Exit(1)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }

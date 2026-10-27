@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -506,6 +508,116 @@ func (m *wsManager) handlerMounts(parent *plan.Node) ([]executor.Mount, error) {
 		mounts[i].RO = true
 	}
 	return mounts, nil
+}
+
+// serviceMounts is what a service step mounts: handlerMounts (its own
+// mounts, read-only), each pointed at a PRIVATE copy of the workspace under
+// the run directory instead of the shared one. cleanup removes the copies.
+//
+// A service outlives the workspace hold that protects every other reader
+// (see prepareAttempt), so it must not be standing in the shared directory:
+// a sibling's cache hit restores into that directory by RemoveAll then
+// Rename, which would empty a bind mount under a running container and
+// change a local service's files mid-flight. A copy taken under the hold is
+// the workspace as it was when the service started, and stays that way.
+//
+// The copy is restored from the workspace's recorded digest when it has
+// one, through the same Snapshotter.RestoreTree a remote executor's staging
+// and `senro ws pull` use, so the service sees exactly the snapshot the
+// ledger names (the default excludes, node_modules and the like, are
+// therefore absent, as on any executor that is not given the coordinator's
+// directory). A workspace never snapshotted yet has no digest, and its
+// directory is copied as it stands.
+//
+// The caller must hold lockMounts for n's workspaces until this returns.
+func (m *wsManager) serviceMounts(ctx context.Context, n *plan.Node, attempt int) (
+	mounts []executor.Mount, cleanup func(), err error,
+) {
+	mounts, err = m.handlerMounts(n)
+	if err != nil || len(mounts) == 0 {
+		return mounts, func() {}, err
+	}
+	base := filepath.Join(m.runDir, "service-mounts", stepDirName(n.ID), "attempt-"+strconv.Itoa(attempt))
+	cleanup = func() { _ = os.RemoveAll(base) }
+	defer func() {
+		if err != nil {
+			cleanup()
+		}
+	}()
+	// One copy per workspace, however many paths mount it, so two mounts of
+	// one workspace still see one tree.
+	copies := make(map[string]string, len(mounts))
+	for i := range mounts {
+		mt := &mounts[i]
+		if dest, ok := copies[mt.Name]; ok {
+			mt.Path = dest
+			continue
+		}
+		dest := filepath.Join(base, stepDirName(mt.Name))
+		if d := cas.Digest(mt.Digest); d.Valid() {
+			if _, err := m.snap.RestoreTree(ctx, d, dest); err != nil {
+				return nil, nil, fmt.Errorf("engine: copy workspace %q for service %q: %w", mt.Name, n.ID, err)
+			}
+		} else if err := copyTree(mt.Path, dest); err != nil {
+			return nil, nil, fmt.Errorf("engine: copy workspace %q for service %q: %w", mt.Name, n.ID, err)
+		}
+		copies[mt.Name] = dest
+		mt.Path = dest
+	}
+	return mounts, cleanup, nil
+}
+
+// copyTree copies the directory src to dest, which must not exist:
+// directories, regular files (with their permission bits) and symlinks (as
+// links, never followed, so a link pointing outside the workspace is not a
+// way to copy the host into it). Anything else (a socket, a device) is
+// skipped: it is not workspace content.
+func copyTree(src, dest string) error {
+	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dest, rel)
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		switch {
+		case d.IsDir():
+			return os.MkdirAll(target, info.Mode().Perm()|0o700)
+		case info.Mode()&fs.ModeSymlink != 0:
+			link, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(link, target)
+		case info.Mode().IsRegular():
+			return copyFile(p, target, info.Mode().Perm())
+		default:
+			return nil
+		}
+	})
+}
+
+func copyFile(src, dest string, perm fs.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // capturableWorkspaces is every workspace name n mounts that this

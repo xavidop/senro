@@ -458,10 +458,6 @@ type attemptSetup struct {
 	tests       testparse.Stream
 	tail        *tailBuffer
 	close       func()
-	// unlockMounts releases the workspace hold early, idempotently (close
-	// calls it again harmlessly). Only runService calls it; nil when the
-	// run has no workspaces.
-	unlockMounts func()
 }
 
 // prepareAttempt opens one attempt of n: it emits step.started, takes the
@@ -525,11 +521,11 @@ func (rc *runCore) prepareAttempt(
 	// that long deadlocks against a sibling's cache restore into the same
 	// workspace (the restore waits for the hold, and with it every later
 	// mount, while the service waits for consumers that cannot mount). So
-	// it gets unlockMounts, and runService drops the hold as soon as the
-	// process has started.
+	// a service is given a private copy of each workspace (serviceMounts)
+	// and the hold is released the moment the copies exist.
+	var unlock func()
 	if rc.ws != nil {
-		unlock := sync.OnceFunc(rc.ws.lockMounts(workspaceMountNames(n)))
-		s.unlockMounts = unlock
+		unlock = sync.OnceFunc(rc.ws.lockMounts(workspaceMountNames(n)))
 		releases = append(releases, unlock)
 	}
 
@@ -537,14 +533,19 @@ func (rc *runCore) prepareAttempt(
 	// Run's upfront check (planNeedsStorage) guarantees a node with a
 	// workspace mount never reaches here with rc.ws == nil.
 	//
-	// A service mounts its workspaces the way a handler does
-	// (handlerMounts: what is there now, read-only) because it is never a
-	// producer: it takes no post-run snapshot, so nothing it wrote would
-	// reach the ledger or a cache key, and a write it expected a consumer
-	// to see would be a race with no evidence behind it.
+	// A service's mounts are a read-only copy, not the shared directory,
+	// because it is never a producer and outlives the hold: it takes no
+	// post-run snapshot, so nothing it wrote would reach the ledger or a
+	// cache key, and with its own copy a sibling's restore can swap the
+	// shared directory without the running service seeing it.
 	if rc.ws != nil {
 		if n.IsService() {
-			s.mounts, err = rc.ws.handlerMounts(n)
+			var cleanup func()
+			s.mounts, cleanup, err = rc.ws.serviceMounts(attemptCtx, n, attempt)
+			if err == nil {
+				releases = append(releases, cleanup)
+				unlock()
+			}
 		} else {
 			s.mounts, err = rc.ws.mounts(n)
 		}
