@@ -111,13 +111,17 @@ func TestRetryingAConsumerDuringItsServicesStopGraceWaitsForTheRestart(t *testin
 
 // Two consumers retried back to back both wait for the one service the
 // first retry revived: the second retry finds it unsettled and not yet
-// dispatched, which is not ready either.
+// dispatched, or dispatched and still being probed, neither of which is
+// ready. a lingers on its second run so the service stays up until b's
+// retry has landed whatever the scheduling: one restart, never two.
 func TestTwoConsumersRetriedBackToBackBothWaitForTheRevivedService(t *testing.T) {
 	marks := t.TempDir()
+	lingering := retriedConsumer(filepath.Join(marks, "a"))
+	lingering[2] = strings.Replace(lingering[2], "then exit 0", "then sleep 2; exit 0", 1)
 	p := &plan.Plan{Version: 1, Nodes: []plan.Node{
 		serveNode(t, "db", freePort(t), false),
-		{ID: "keep", Kind: "exec", Cmd: []string{"sleep", "5"}},
-		{ID: "a", Kind: "exec", Needs: []string{"db"}, Cmd: retriedConsumer(filepath.Join(marks, "a"))},
+		{ID: "keep", Kind: "exec", Cmd: []string{"sleep", "6"}},
+		{ID: "a", Kind: "exec", Needs: []string{"db"}, Cmd: lingering},
 		{ID: "b", Kind: "exec", Needs: []string{"db"}, Cmd: retriedConsumer(filepath.Join(marks, "b"))},
 	}}
 	dir := t.TempDir()
