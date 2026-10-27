@@ -73,9 +73,10 @@ writes, and a [scratch cache](/docs/data/scratch/) is never snapshotted.
 
 **`Retry` and `CheckGenerated` do not mix.** A retry would compare against the tree the first
 attempt already drifted, not the tree the step was given, so `Build` refuses the combination. A
-manual retry is refused for the same reason: the Retry key in `senro ui` and the browser, and a
-`step.retry` after a `--break-on-failure` hold, are answered `check_generated_drifted_tree` and the
-step stays `failed`. Fix the generator and start a new run, or use
+manual retry is refused for the same reason: the Retry key in `senro ui` and the browser, a
+`step.retry` after a `--break-on-failure` hold, and a `run.rerun_from` that would re-execute the step
+(naming it or a step above it) are answered `check_generated_drifted_tree` and the step stays
+`failed`. Fix the generator and start a new run, or use
 [`senro rerun --step`](/docs/cli/rerun/), which starts a fresh run from the recorded snapshots of
 what the step needs, not from the drifted tree.
 

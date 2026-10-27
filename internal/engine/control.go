@@ -70,10 +70,11 @@ const (
 	reasonStepNotSettled = "step_not_settled"
 
 	// reasonCheckGeneratedDriftedTree refuses a step.retry of a step
-	// declaring CheckGenerated: its failed attempt already recorded the
-	// drifted tree into the run-scoped workspace, so a retry would remount
-	// that tree, regenerate the same bytes, compare against the drifted
-	// tree and settle recovered. `senro rerun --step` is unaffected: it
+	// declaring CheckGenerated, and a run.rerun_from whose closure holds a
+	// settled one: its attempt already recorded the drifted tree into the
+	// run-scoped workspace, so either would remount that tree, regenerate
+	// the same bytes, compare against the drifted tree and settle
+	// recovered. `senro rerun --step` is unaffected: it
 	// starts a fresh run from the recorded snapshots of the step's
 	// dependencies, not from the drifted one.
 	reasonCheckGeneratedDriftedTree = "check_generated_drifted_tree"
@@ -615,7 +616,9 @@ func dependentsClosure(nodes []*plan.Node, root string) []string {
 // (reasonStepRunning), checked across the WHOLE closure before anything is
 // modified, since unsettling a node whose goroutine is still alive would
 // put two executions of one step in flight; and the nominated step must
-// have settled (reasonStepNotSettled). Only nodes that actually settled are
+// have settled (reasonStepNotSettled); and no settled node in the closure
+// may declare CheckGenerated (reasonCheckGeneratedDriftedTree, as for
+// step.retry). Only nodes that actually settled are
 // unsettled: a dependent that never ran was already going to run, and a
 // step.retried for something never tried would be false.
 //
@@ -657,6 +660,17 @@ func (rc *runCore) handleRerunFrom(h schedHandle, req sink.ControlRequest) {
 		h.mu.Unlock()
 		refuse(req, reasonStepNotSettled)
 		return
+	}
+	// A settled CheckGenerated step in the closure would re-execute inside
+	// this run against the tree its own attempt already recorded, exactly
+	// the step.retry case (see reasonCheckGeneratedDriftedTree). One that
+	// has not run yet has recorded nothing, so it does not count.
+	for _, id := range closure {
+		if _, settled := h.states[id]; settled && h.byID[id] != nil && h.byID[id].CheckGenerated {
+			h.mu.Unlock()
+			refuse(req, reasonCheckGeneratedDriftedTree)
+			return
+		}
 	}
 	revived := make([]reset, 0, len(closure))
 	for _, id := range closure {

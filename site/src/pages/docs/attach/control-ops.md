@@ -99,7 +99,7 @@ completely or is refused. There's no half-applied state.
 | `unknown_step` | No such step in this run's plan |
 | `step_running` | That step (or, for `run.rerun_from`, something in its closure) is mid-attempt |
 | `step_not_failed` | `step.retry` only applies to a step that failed |
-| `check_generated_drifted_tree` | `step.retry` of a [`CheckGenerated`](/docs/steps/check-generated/) step: a retry would compare against the drifted tree its failed attempt left in the workspace, and pass |
+| `check_generated_drifted_tree` | `step.retry` of a [`CheckGenerated`](/docs/steps/check-generated/) step, or `run.rerun_from` that would re-execute one: it would compare against the tree its earlier attempt left in the workspace, and pass |
 | `step_settled` | That step already ran: `step.skip` can't un-run it, and `ws.snapshot` would be a second, later answer to a question its own snapshot already answered |
 | `step_not_settled` | `run.rerun_from` has nothing to re-run: that step hasn't run yet |
 | `breakpoint_exists` | A breakpoint is already armed on that step |

@@ -328,7 +328,8 @@ verify.Step("generated", exec.Command("go", "generate", "./...")).
 - `Build` refuses it on a service, together with `NoSnapshot`, and on a step
   with no read-write workspace mount.
 - `Retry` together with `CheckGenerated` is refused at `Build`: a retry would compare against the
-  drifted tree. A manual `step.retry` (TUI, browser, after a `--break-on-failure` hold) is refused
+  drifted tree. A manual `step.retry` (TUI, browser, after a `--break-on-failure` hold), or a
+  `run.rerun_from` that would re-execute the step, is refused
   `check_generated_drifted_tree` for the same reason; `senro rerun --step` is a fresh run and works.
 - A step whose only read-write mounts are step-scoped or claim-backed is refused too: neither is
   snapshotted (no later step reads a step-scoped one; a claim has no coordinator-side copy). A
