@@ -431,6 +431,24 @@ type Addressable interface {
 	HostAddress(ctx context.Context, port int) (string, error)
 }
 
+// ContainerAddressable is an optional Sandbox capability: reporting the
+// address ANOTHER CONTAINER on the same daemon reaches a service's declared
+// port at, as "172.17.0.3:5432" (the service container's bridge IP and the
+// port as declared, not as published).
+//
+// Separate from Addressable because the two audiences differ: the published
+// 127.0.0.1 port is for the coordinator (the probe, a local consumer, a
+// person), and on native Linux a container cannot reach the coordinator's
+// loopback at all, so a container consumer of a container service needs the
+// bridge address instead. Only the container executor implements it; a
+// service on any other executor is reached from a container through the
+// host gateway.
+//
+// Like Addressable, meaningful only once StartService has returned.
+type ContainerAddressable interface {
+	ContainerAddress(ctx context.Context, port int) (string, error)
+}
+
 // RunningService is one long-running process a ServiceRunner started.
 //
 // The contract, which both methods share:

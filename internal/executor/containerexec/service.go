@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
+	"slices"
+	"strconv"
 	"time"
 
 	"github.com/xavidop/senro/internal/dockerd"
@@ -33,6 +36,10 @@ func (s *sandbox) StartService(
 	for _, p := range s.spec.Ports {
 		spec.Ports = append(spec.Ports, dockerd.Port{Container: p})
 	}
+	// An init as PID 1: a server that installs no SIGTERM handler would
+	// otherwise ignore Stop's `docker stop` (PID 1 gets no default handlers)
+	// and only end at the kill after the whole grace.
+	spec.Init = true
 	id, err := s.ex.cli.ContainerCreate(ctx, spec)
 	if err != nil {
 		return nil, fmt.Errorf("containerexec: %w: %w", senroexec.ErrInfra, err)
@@ -159,10 +166,36 @@ func (s *sandbox) HostAddress(ctx context.Context, port int) (string, error) {
 	return addr, nil
 }
 
-// The engine reaches both through interface assertions, so losing either
-// silently would turn every container service into a refusal with nothing
-// failing at build time.
+// ContainerAddress implements senroexec.ContainerAddressable: the service
+// container's bridge IP and the DECLARED port, which is where another
+// container on this daemon reaches it. The published port is a binding on the
+// coordinator's loopback, which on native Linux no container can dial.
+//
+// Only a declared port is answered, for HostAddress's reason.
+func (s *sandbox) ContainerAddress(ctx context.Context, port int) (string, error) {
+	id := s.ContainerID()
+	if id == "" {
+		return "", fmt.Errorf(
+			"containerexec: step %q has no container yet, so it has no address", s.spec.StepID)
+	}
+	if !slices.Contains(s.spec.Ports, port) {
+		return "", fmt.Errorf(
+			"containerexec: port %d of step %q is not declared; a service is reachable only on the ports it declares",
+			port, s.spec.StepID)
+	}
+	ip, err := s.ex.cli.ContainerIPAddress(ctx, id)
+	if err != nil {
+		return "", fmt.Errorf("containerexec: %w: %w", senroexec.ErrInfra, err)
+	}
+	return net.JoinHostPort(ip, strconv.Itoa(port)), nil
+}
+
+// The engine reaches all three through interface assertions, so losing one
+// silently would turn every container service into a refusal (or, for
+// ContainerAddressable, hand a container consumer an address it cannot
+// dial on Linux) with nothing failing at build time.
 var (
-	_ senroexec.ServiceRunner = (*sandbox)(nil)
-	_ senroexec.Addressable   = (*sandbox)(nil)
+	_ senroexec.ServiceRunner        = (*sandbox)(nil)
+	_ senroexec.Addressable          = (*sandbox)(nil)
+	_ senroexec.ContainerAddressable = (*sandbox)(nil)
 )

@@ -61,6 +61,19 @@ func TestStartServicePublishesAPortAndStops(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
+	// The address another container dials: the bridge IP and the declared
+	// port, not the published one.
+	inner, err := sb.(executor.ContainerAddressable).ContainerAddress(ctx, 8080)
+	if err != nil {
+		t.Fatalf("ContainerAddress(8080): %v", err)
+	}
+	if host, port, _ := net.SplitHostPort(inner); port != "8080" || net.ParseIP(host) == nil || host == "127.0.0.1" {
+		t.Errorf("ContainerAddress = %q, want the container's IP and the declared port 8080", inner)
+	}
+	if _, err := sb.(executor.ContainerAddressable).ContainerAddress(ctx, 9999); err == nil {
+		t.Error("ContainerAddress(9999) on an undeclared port succeeded")
+	}
+
 	if _, err := addrs.HostAddress(ctx, 9999); err == nil ||
 		!strings.Contains(err.Error(), "9999") {
 		t.Errorf("HostAddress(9999) on a port never published = %v, want an error naming 9999", err)

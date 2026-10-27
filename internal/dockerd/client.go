@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -475,6 +476,14 @@ type ContainerSpec struct {
 	// reach a service published on the host. Empty sends nothing.
 	ExtraHosts []string
 
+	// Init runs the daemon's init (tini) as PID 1, HostConfig.Init (`docker
+	// run --init`). A service sets it: a program that is PID 1 gets no
+	// default signal handlers, so a server that never installs its own
+	// ignores the SIGTERM of `docker stop` and only dies at the kill after
+	// the grace. The init forwards the signal and reaps. False sends
+	// nothing, so a step's create request is unchanged.
+	Init bool
+
 	// ConsoleSize is the pseudo-terminal's size in {rows, cols}, applied at
 	// CREATE. Meaningful only with Tty and ignored by the daemon otherwise.
 	//
@@ -567,6 +576,10 @@ func createBody(spec ContainerSpec) map[string]any {
 	if spec.ConsoleSize[0] > 0 && spec.ConsoleSize[1] > 0 {
 		hostConfig["ConsoleSize"] = []uint16{spec.ConsoleSize[0], spec.ConsoleSize[1]}
 	}
+	// Absent unless asked for, for the same reason.
+	if spec.Init {
+		hostConfig["Init"] = true
+	}
 	// Absent when empty, for the same reason.
 	if len(spec.ExtraHosts) > 0 {
 		hostConfig["ExtraHosts"] = spec.ExtraHosts
@@ -637,6 +650,53 @@ func hostAddress(inspect []byte, port int) (string, bool, error) {
 		return net.JoinHostPort(host, b.HostPort), true, nil
 	}
 	return "", false, nil
+}
+
+// ContainerIPAddress reports a running container's address on its Docker
+// network: the bridge IP another container on the same daemon dials it by.
+//
+// NetworkSettings.IPAddress is the default bridge's; a container attached
+// only to user-defined networks leaves it empty and lists its address per
+// network, so the first non-empty one there (in name order, to be
+// deterministic) is the answer. A container with no address at all (network
+// mode none or host, or not running) is an error: no other container can
+// reach it by IP.
+func (c *Client) ContainerIPAddress(ctx context.Context, id string) (string, error) {
+	raw, err := c.ContainerInspectRaw(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return containerIP(raw)
+}
+
+// containerIP picks a container's network address out of an inspect
+// document. Split out so a test can feed it documents without a daemon.
+func containerIP(inspect []byte) (string, error) {
+	var doc struct {
+		NetworkSettings struct {
+			IPAddress string `json:"IPAddress"`
+			Networks  map[string]struct {
+				IPAddress string `json:"IPAddress"`
+			} `json:"Networks"`
+		} `json:"NetworkSettings"`
+	}
+	if err := json.Unmarshal(inspect, &doc); err != nil {
+		return "", fmt.Errorf("dockerd: decoding network settings: %w", err)
+	}
+	if ip := doc.NetworkSettings.IPAddress; ip != "" {
+		return ip, nil
+	}
+	names := make([]string, 0, len(doc.NetworkSettings.Networks))
+	for name := range doc.NetworkSettings.Networks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if ip := doc.NetworkSettings.Networks[name].IPAddress; ip != "" {
+			return ip, nil
+		}
+	}
+	return "", errors.New("dockerd: the container has no network address")
 }
 
 // ContainerStart starts a created container.
