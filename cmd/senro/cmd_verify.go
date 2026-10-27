@@ -157,6 +157,9 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 	if step != "" {
 		steps = []string{step}
 	}
+	// No <run>/lock.json here, unlike `senro rerun`: a lock pins container
+	// images, and verify.Check re-runs local steps only (it refuses every
+	// other executor), so the recorded pins would reach nothing.
 	rep, err := verify.Check(context.Background(), verify.Options{
 		Plan: p, Records: recs, Storage: store,
 		WorkRoot: workRoot, LocalClass: localClass,

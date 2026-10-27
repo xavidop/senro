@@ -207,6 +207,11 @@ func WithBreakOnFailure() Option {
 // which `senro run` and `senro up` set to <pkg>/senro.lock when that file
 // exists. An image with no entry refuses the run before anything touches
 // disk. `senro lock` writes the file.
+//
+// A locked run records the pins it applied, only the images its plan names
+// by tag, as RunLockFile in its run directory, and `senro rerun` passes that
+// file back through this option, so a rerun pulls the digests the run
+// pulled. A run directory without one reruns unlocked.
 func WithLock(path string) Option {
 	return func(c *runConfig) { c.lockPath = path }
 }
@@ -642,6 +647,7 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 		lockPath = os.Getenv(lockEnv)
 	}
 	var pins map[string]string
+	var applied *lock.File
 	if lockPath != "" {
 		f, err := lock.Read(lockPath)
 		if err != nil {
@@ -650,6 +656,14 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 		if pins, err = applyLock(p, f, lockPath); err != nil {
 			return err
 		}
+		// What was applied, recorded beside the manifest once the run
+		// directory exists: the images this plan names by tag, nothing
+		// else the lock file holds. See RunLockFile.
+		used := lock.File{Version: lock.Version, Images: map[string]string{}}
+		for _, ref := range lockImages(p) {
+			used.Images[ref] = f.Images[ref]
+		}
+		applied = &used
 	}
 
 	// Refused here, with the other up-front checks, so a bad selection leaves
@@ -775,6 +789,11 @@ func runPlan(ctx context.Context, p *Plan, pipeline string, gens *generatorRegis
 		Trigger:   newTriggerRecord(match),
 	}); err != nil {
 		return err
+	}
+	if applied != nil {
+		if err := lock.Write(filepath.Join(dir, RunLockFile), *applied); err != nil {
+			return fmt.Errorf("senro: recording the applied lock: %w", err)
+		}
 	}
 
 	traceParent, traceState := cfg.traceParent, cfg.traceState

@@ -141,6 +141,13 @@ func (e *Executor) resolve(ctx context.Context) error {
 	}
 	repo, _ := dockerd.SplitRef(e.spec.Image)
 	e.img, e.digest = info, info.Digest(repo)
+	// An image named by digest IS that digest: a repository can list several
+	// RepoDigests (a manifest list and a platform manifest, two pulls), and
+	// the first is not necessarily the one asked for. A locked run names the
+	// pinned digest, so its class reports the pin by construction.
+	if _, d, ok := strings.Cut(e.spec.Image, "@"); ok && strings.HasPrefix(d, "sha256:") {
+		e.digest = d
+	}
 	e.resolved = true
 	return nil
 }

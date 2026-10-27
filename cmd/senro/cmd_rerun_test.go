@@ -12,6 +12,8 @@ import (
 	"github.com/xavidop/senro"
 	"github.com/xavidop/senro/api"
 	"github.com/xavidop/senro/exec"
+	"github.com/xavidop/senro/executor/container"
+	"github.com/xavidop/senro/lock"
 	"github.com/xavidop/senro/testreport"
 )
 
@@ -332,5 +334,62 @@ func TestRerunTestRefusesAStepWithTestsButNoSelect(t *testing.T) {
 	}
 	if _, err := os.Stat(again); err == nil {
 		t.Error("a run directory was created for a refused selection")
+	}
+}
+
+// seedLockedRun records, by hand, a run directory whose plan has one
+// container step on golang:1.26 and whose lock.json holds pins: no daemon is
+// needed, because each test below stops before an executor exists.
+func seedLockedRun(t *testing.T, pins map[string]string) string {
+	t.Helper()
+	runDir := filepath.Join(t.TempDir(), "run")
+	pipe := senro.New("ci")
+	w := pipe.Workflow("main", senro.On(container.Image("golang:1.26")))
+	w.Step("build", exec.Command("true"))
+	p, err := pipe.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := p.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "plan.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if pins != nil {
+		if err := lock.Write(filepath.Join(runDir, senro.RunLockFile), lock.File{Images: pins}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return runDir
+}
+
+// A rerun reapplies the pins the run recorded: a recorded lock.json without
+// the plan's image refuses the rerun by naming that file, which only happens
+// when the rerun applied it.
+func TestRerunReappliesTheRecordedPins(t *testing.T) {
+	t.Setenv("SENRO_LOCK", "")
+	runDir := seedLockedRun(t, map[string]string{"alpine:3": "sha256:" + strings.Repeat("b", 64)})
+	again := filepath.Join(t.TempDir(), "again")
+	var stdout, stderr bytes.Buffer
+	code := cmdRerun([]string{"--run", runDir, "--dir", again, "--cache-dir", t.TempDir()}, &stdout, &stderr)
+	want := `image "golang:1.26" is not in ` + filepath.Join(runDir, senro.RunLockFile)
+	if code != exitRunFailed || !strings.Contains(stderr.String(), want) {
+		t.Fatalf("exit = %d, stderr = %q; want %d and %q", code, stderr.String(), exitRunFailed, want)
+	}
+}
+
+func TestRecordedLockIsEmptyForAnUnlockedRun(t *testing.T) {
+	runDir := seedLockedRun(t, nil)
+	if got, err := recordedLock(runDir); err != nil || got != "" {
+		t.Errorf("recordedLock = %q, %v; want none for a run without %s", got, err, senro.RunLockFile)
+	}
+	locked := seedLockedRun(t, map[string]string{"golang:1.26": "sha256:" + strings.Repeat("a", 64)})
+	if got, err := recordedLock(locked); err != nil || got != filepath.Join(locked, senro.RunLockFile) {
+		t.Errorf("recordedLock = %q, %v; want the recorded file", got, err)
 	}
 }

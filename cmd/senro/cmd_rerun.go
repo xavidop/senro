@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sort"
 
 	"github.com/xavidop/senro"
@@ -28,6 +32,10 @@ const rerunUsage = `Usage:
       an unchanged re-run is fast and a generator REPLAYS the subgraph it
       recorded rather than being asked again. That is what makes a re-run
       reproduce a run instead of re-discovering one.
+
+      A run that applied a lock recorded the pins it used as <run>/lock.json,
+      and a re-run reapplies them, so it pulls the digests the run pulled. A
+      run without one re-runs unlocked.
 
   Flags:
     --run RUN            the run to re-execute (default: the most recent one)
@@ -116,6 +124,14 @@ func cmdRerun(args []string, stdout, stderr io.Writer) int {
 	}
 
 	opts := []senro.Option{}
+	locked, err := recordedLock(runDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "senro rerun: %v\n", err)
+		return exitUsage
+	}
+	if locked != "" {
+		opts = append(opts, senro.WithLock(locked))
+	}
 	if dir != "" {
 		opts = append(opts, senro.WithDir(dir))
 	}
@@ -172,6 +188,21 @@ func cmdRerun(args []string, stdout, stderr io.Writer) int {
 		return exitRunFailed
 	}
 	return exitSuccess
+}
+
+// recordedLock is the path of the pins the run applied (senro.RunLockFile),
+// or "" when the run was not locked. A rerun reapplies them, so it pulls the
+// digests the run pulled rather than whatever the tags point at now, and
+// whatever <pkg>/senro.lock says today does not enter into it.
+func recordedLock(runDir string) (string, error) {
+	path := filepath.Join(runDir, senro.RunLockFile)
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	return path, nil
 }
 
 // selectFrom is step, everything it transitively needs, and everything that

@@ -226,6 +226,30 @@ func TestTheCredentialReachesOneHeaderOfOneRequest(t *testing.T) {
 	}
 }
 
+// An image named by digest reports THAT digest in its class, not whichever
+// RepoDigest the daemon lists first for the repository: a locked run names
+// the pinned digest, so its executor_class is the pin by construction. Lives
+// here for fakeDaemon; no daemon is needed.
+func TestADigestReferenceReportsItsOwnDigestInTheClass(t *testing.T) {
+	pinned := "sha256:" + strings.Repeat("c", 64)
+	other := "sha256:" + strings.Repeat("d", 64)
+	c := fakeDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"Id":          "sha256:" + strings.Repeat("e", 64),
+			"RepoDigests": []string{"golang@" + other, "golang@" + pinned},
+			"Os":          "linux", "Architecture": "amd64",
+		})
+	})
+	ex := newExecutorWith(t, c, "golang@"+pinned)
+	class, err := ex.Class(t.Context())
+	if err != nil {
+		t.Fatalf("Class: %v", err)
+	}
+	if want := "container/linux/amd64/" + pinned; class != want {
+		t.Errorf("class = %q, want %q", class, want)
+	}
+}
+
 // A credential is not part of the cache equivalence class, deliberately: the
 // class already carries the resolved image DIGEST, which is the content
 // address of the exact bytes the credential fetched. Without this, rotating

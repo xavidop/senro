@@ -12,6 +12,7 @@ import (
 	"github.com/xavidop/senro/exec"
 	"github.com/xavidop/senro/executor/container"
 	"github.com/xavidop/senro/internal/executor"
+	"github.com/xavidop/senro/internal/executor/localexec"
 	"github.com/xavidop/senro/internal/oci"
 	"github.com/xavidop/senro/internal/plan"
 	"github.com/xavidop/senro/internal/secrets"
@@ -331,5 +332,71 @@ func TestLockModesIgnoreTheTrigger(t *testing.T) {
 	if err := RunPlan(context.Background(), p, noMatch,
 		WithDir(t.TempDir()), WithCacheDir(t.TempDir())); err != nil {
 		t.Fatalf("check mode under a non-matching event: %v", err)
+	}
+}
+
+// fakeExecutors swaps the executor factory for one that runs every target on
+// the host, so a locked plan can run to completion without a daemon. The
+// specs the factory saw are returned.
+func fakeExecutors(t *testing.T, dir string) *[]plan.ExecutorSpec {
+	t.Helper()
+	var seen []plan.ExecutorSpec
+	old := newExecutor
+	newExecutor = func(spec plan.ExecutorSpec, stepID, runID string, store *storage.Storage,
+		set *secrets.Set,
+	) (executor.Executor, error) {
+		seen = append(seen, spec)
+		return localexec.New(dir, store.Snapshotter), nil
+	}
+	t.Cleanup(func() { newExecutor = old })
+	return &seen
+}
+
+// A locked run records the pins it applied, and only those, as
+// runs/<id>/lock.json; a rerun handed that file pins the executor spec the
+// same way.
+func TestALockedRunRecordsTheAppliedPinsAndARerunReappliesThem(t *testing.T) {
+	t.Setenv(lockEnv, "")
+	p := lockPlan(t, "golang:1.26")
+	path := writeLockFile(t, map[string]string{"golang:1.26": lockDigestA, "alpine:3": lockDigestB})
+	dir := filepath.Join(t.TempDir(), "run")
+	fakeExecutors(t, dir)
+
+	if err := RunPlan(context.Background(), p, WithLock(path), WithDir(dir), WithCacheDir(t.TempDir())); err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	recorded := filepath.Join(dir, RunLockFile)
+	got, err := lock.Read(recorded)
+	if err != nil {
+		t.Fatalf("the locked run recorded no pins: %v", err)
+	}
+	if len(got.Images) != 1 || got.Images["golang:1.26"] != lockDigestA {
+		t.Errorf("recorded pins = %v, want only the image the plan used", got.Images)
+	}
+
+	again := filepath.Join(t.TempDir(), "again")
+	seen := fakeExecutors(t, again)
+	if err := RunPlan(context.Background(), p, WithLock(recorded), WithDir(again), WithCacheDir(t.TempDir())); err != nil {
+		t.Fatalf("rerun: %v", err)
+	}
+	if len(*seen) != 1 || (*seen)[0].Image != "golang@"+lockDigestA {
+		t.Fatalf("the rerun's factory saw %+v, want the recorded pin", *seen)
+	}
+	if _, err := os.Stat(filepath.Join(again, RunLockFile)); err != nil {
+		t.Errorf("the rerun applied a lock and recorded no pins: %v", err)
+	}
+}
+
+// An unlocked run writes no lock.json, so its rerun is unlocked too.
+func TestAnUnlockedRunRecordsNoPins(t *testing.T) {
+	t.Setenv(lockEnv, "")
+	p := lockPlan(t, "golang:1.26")
+	dir := filepath.Join(t.TempDir(), "run")
+	fakeExecutors(t, dir)
+	if err := RunPlan(context.Background(), p, WithDir(dir), WithCacheDir(t.TempDir())); err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, RunLockFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("an unlocked run left %s: %v", RunLockFile, err)
 	}
 }
