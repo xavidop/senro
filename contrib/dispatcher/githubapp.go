@@ -37,9 +37,17 @@ import (
 	"github.com/xavidop/senro/notify"
 )
 
-// githubCallTimeout bounds each GitHub API call, so a slow API delays a
-// delivery's 202 by at most a few calls' worth.
-const githubCallTimeout = 10 * time.Second
+const (
+	// githubCallTimeout bounds each GitHub API call; a caller's shorter
+	// deadline wins.
+	githubCallTimeout = 10 * time.Second
+	// startCallTimeout bounds each call made before the 202 (token, create),
+	// so two of them stay inside GitHub's ten-second webhook timeout.
+	startCallTimeout = 4 * time.Second
+	// tokenRefreshAfter is when finish mints a new token rather than trust
+	// one that lives an hour.
+	tokenRefreshAfter = 50 * time.Minute
+)
 
 type githubApp struct {
 	appID                      string
@@ -288,15 +296,17 @@ func (a *githubApp) env(token string, d delivery, id int64) []string {
 // appCheck is one delivery's check: what serve created and run closes. A nil
 // *appCheck is a delivery outside App mode, and every method is a no-op on it.
 type appCheck struct {
-	app   *githubApp
-	token string
-	d     delivery
-	id    int64 // 0 when the check could not be created
+	app     *githubApp
+	token   string
+	d       delivery
+	id      int64     // 0 when the check could not be created
+	started time.Time // when token was minted
 }
 
 // startCheck is spec steps 1 and 2. Failures are logged and give a nil (no
 // token) or an id-less check (token, no check): a dead run is worse than a
-// missing check.
+// missing check. Both calls happen before the 202, so they get the shorter
+// startCallTimeout: GitHub gives a webhook ten seconds to answer.
 func (d *dispatcher) startCheck(provider, event string, body []byte) *appCheck {
 	if d.app == nil || provider != "github" {
 		return nil
@@ -305,13 +315,16 @@ func (d *dispatcher) startCheck(provider, event string, body []byte) *appCheck {
 	if !ok {
 		return nil
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), startCallTimeout)
 	token, err := d.app.installationToken(ctx, dl.installation)
+	cancel()
 	if err != nil {
 		log.Printf("dispatcher: minting an installation token for %s failed, running without a check: %v", dl.repo, err)
 		return nil
 	}
-	c := &appCheck{app: d.app, token: token, d: dl}
+	c := &appCheck{app: d.app, token: token, d: dl, started: time.Now()}
+	ctx, cancel = context.WithTimeout(context.Background(), startCallTimeout)
+	defer cancel()
 	if c.id, err = d.app.createCheck(ctx, token, dl, d.group); err != nil {
 		log.Printf("dispatcher: creating the check run on %s failed, running without one: %v", dl.repo, err)
 	}
@@ -336,11 +349,14 @@ func (c *appCheck) notRun(group string, err error) {
 	c.complete("failure", "Not run", "the dispatcher could not take its concurrency group "+group)
 }
 
-// finish is spec step 5, given what cmd.Run returned.
+// finish is spec step 5, given what cmd.Run returned. Any error that is not
+// an *exec.ExitError (a start failure, or staging the delivery failing before
+// the exec) means the pipeline never ran.
 func (c *appCheck) finish(runErr error) {
 	if c == nil || c.id == 0 {
 		return
 	}
+	c.refreshToken()
 	var ee *exec.ExitError
 	switch {
 	case errors.As(runErr, &ee) && ee.ExitCode() == 78:
@@ -350,6 +366,14 @@ func (c *appCheck) finish(runErr error) {
 		c.complete("failure", "Pipeline did not start", runErr.Error())
 		return
 	}
+
+	// Between this GET and the PATCH below, nothing else should be writing
+	// the check: the pipeline has exited, so its notifier is done. The one
+	// window is a notifier PATCH still in flight from a process that exited
+	// without waiting for it; GitHub's last write wins and the check could
+	// end with the dispatcher's conclusion instead. That needs a pipeline
+	// that does not flush its sink, and the result is still a completed
+	// check, so it is accepted rather than locked against.
 	ctx, cancel := context.WithTimeout(context.Background(), githubCallTimeout)
 	defer cancel()
 	status, err := c.app.checkStatus(ctx, c.token, c.d, c.id)
@@ -362,18 +386,41 @@ func (c *appCheck) finish(runErr error) {
 	if ee != nil {
 		code = ee.ExitCode()
 	}
-	title := fmt.Sprintf("Pipeline exited %d", code)
-	if code == -1 {
-		title = "Pipeline was terminated"
+	const unreported = "The pipeline did not report through this check."
+	switch code {
+	case 0:
+		c.complete("success", "Pipeline exited 0", unreported)
+	case -1:
+		// Killed by a signal: -timeout or -cancel-in-progress.
+		c.complete("cancelled", "Pipeline was terminated", "The pipeline was stopped before it finished. "+unreported)
+	default:
+		c.complete("failure", fmt.Sprintf("Pipeline exited %d", code), unreported)
 	}
-	c.complete("failure", title, "The pipeline ended without completing this check.")
+}
+
+// refreshToken replaces a token that is close to its one-hour expiry. On
+// failure the old token is kept and the close is attempted anyway.
+func (c *appCheck) refreshToken() {
+	if time.Since(c.started) < tokenRefreshAfter {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), githubCallTimeout)
+	defer cancel()
+	token, err := c.app.installationToken(ctx, c.d.installation)
+	if err != nil {
+		log.Printf("dispatcher: refreshing the installation token for %s: %v", c.d.repo, err)
+		return
+	}
+	c.token, c.started = token, time.Now()
 }
 
 func (c *appCheck) complete(conclusion, title, summary string) {
 	if c == nil || c.id == 0 {
 		return
 	}
-	if err := c.app.completeCheck(context.Background(), c.token, c.d, c.id, conclusion, title, summary); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), githubCallTimeout)
+	defer cancel()
+	if err := c.app.completeCheck(ctx, c.token, c.d, c.id, conclusion, title, summary); err != nil {
 		log.Printf("dispatcher: completing check run %d: %v", c.id, err)
 	}
 }

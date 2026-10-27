@@ -9,7 +9,9 @@
 // It is deliberately not a queue. Concurrency is a lock: one run at a time
 // per group, and a delivery arriving while another holds the lock is
 // REJECTED with a reason, not buffered. This file has a standing size limit
-// of roughly 300 lines so growing a queue is an obvious act. With
+// of roughly 400 lines so growing a queue is an obvious act; the GitHub App
+// code (check runs, installation tokens) lives in githubapp.go and does not
+// count against it. With
 // -cancel-in-progress a new delivery instead terminates the run in progress
 // and takes the lock; the displaced run is gone, not deferred.
 //
@@ -300,15 +302,18 @@ func (d *dispatcher) take() (persist.Unlocker, error) {
 func (d *dispatcher) run(body []byte, release persist.Unlocker, check *appCheck) {
 	defer func() { _ = release.Release(context.Background()) }()
 
+	// A check closes as "did not start" on the staging failures below.
 	f, err := os.CreateTemp("", "senro-delivery-*.json")
 	if err != nil {
 		log.Printf("dispatcher: staging the delivery: %v", err)
+		check.finish(fmt.Errorf("staging the delivery: %w", err))
 		return
 	}
 	defer func() { _ = os.Remove(f.Name()) }()
 	if _, err := f.Write(body); err != nil {
 		_ = f.Close()
 		log.Printf("dispatcher: staging the delivery: %v", err)
+		check.finish(fmt.Errorf("staging the delivery: %w", err))
 		return
 	}
 	_ = f.Close()

@@ -448,3 +448,98 @@ func TestAppFlagsMustComeTogether(t *testing.T) {
 		}
 	}
 }
+
+// A pipeline that exits 0 without reporting through the check closes it as a
+// success: the run worked, it just never said so.
+func TestExit0WithTheCheckOpenCompletesSuccess(t *testing.T) {
+	d, f := appDispatcher(t, "exit 0")
+	f.checkStatus = "in_progress"
+	if got := deliverEvent(t, d, "push", pushBody).Code; got != http.StatusAccepted {
+		t.Fatalf("delivery got %d", got)
+	}
+	waitFree(t, d)
+	patches := f.saw("PATCH /repos/acme/web/check-runs/42")
+	if len(patches) != 1 {
+		t.Fatalf("PATCHes = %d, want 1", len(patches))
+	}
+	for _, want := range []string{`"conclusion":"success"`, `"title":"Pipeline exited 0"`, "did not report"} {
+		if !strings.Contains(patches[0], want) {
+			t.Errorf("the PATCH lacks %s: %s", want, patches[0])
+		}
+	}
+}
+
+// A run killed by -timeout (or displaced by -cancel-in-progress) is
+// cancelled, not failed.
+func TestAKilledRunCompletesCancelled(t *testing.T) {
+	d, f := appDispatcher(t, "exec sleep 5")
+	d.timeout = 200 * time.Millisecond
+	f.checkStatus = "in_progress"
+	if got := deliverEvent(t, d, "push", pushBody).Code; got != http.StatusAccepted {
+		t.Fatalf("delivery got %d", got)
+	}
+	waitHeld(t, d)
+	waitFree(t, d)
+	patches := f.saw("PATCH /repos/acme/web/check-runs/42")
+	if len(patches) != 1 {
+		t.Fatalf("PATCHes = %d, want 1", len(patches))
+	}
+	for _, want := range []string{`"conclusion":"cancelled"`, `"title":"Pipeline was terminated"`} {
+		if !strings.Contains(patches[0], want) {
+			t.Errorf("the PATCH lacks %s: %s", want, patches[0])
+		}
+	}
+}
+
+// When the delivery cannot be staged the pipeline never starts, and the
+// check must not stay queued.
+func TestStagingFailureCompletesTheCheck(t *testing.T) {
+	d, f := appDispatcher(t, "exit 0")
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
+	if got := deliverEvent(t, d, "push", pushBody).Code; got != http.StatusAccepted {
+		t.Fatalf("delivery got %d", got)
+	}
+	waitFree(t, d)
+	patches := f.saw("PATCH /repos/acme/web/check-runs/42")
+	if len(patches) != 1 {
+		t.Fatalf("PATCHes = %d, want 1", len(patches))
+	}
+	for _, want := range []string{`"conclusion":"failure"`, `"title":"Pipeline did not start"`} {
+		if !strings.Contains(patches[0], want) {
+			t.Errorf("the PATCH lacks %s: %s", want, patches[0])
+		}
+	}
+}
+
+// A run past the token's useful life closes its check with a fresh token
+// rather than an expired one.
+func TestALongRunClosesWithAFreshToken(t *testing.T) {
+	f, srv := newFakeGitHub(t)
+	f.checkStatus = "in_progress"
+	c := &appCheck{
+		app:     testApp(srv.URL),
+		token:   "ghs_old",
+		d:       delivery{installation: 7, repo: "acme/web", sha: "abc123"},
+		id:      42,
+		started: time.Now().Add(-51 * time.Minute),
+	}
+	c.finish(nil)
+	if n := f.count("POST /app/installations/7/access_tokens"); n != 1 {
+		t.Errorf("token mints = %d, want 1", n)
+	}
+	f.mu.Lock()
+	got := f.auth["PATCH /repos/acme/web/check-runs/42"]
+	f.mu.Unlock()
+	if got != "Bearer ghs_x" {
+		t.Errorf("the PATCH was sent with %q, want the fresh token", got)
+	}
+
+	// A short run keeps the token it has.
+	f2, srv2 := newFakeGitHub(t)
+	f2.checkStatus = "in_progress"
+	c2 := &appCheck{app: testApp(srv2.URL), token: "ghs_old", d: c.d, id: 42, started: time.Now()}
+	c2.finish(nil)
+	if n := f2.count("POST /app/installations/7/access_tokens"); n != 0 {
+		t.Errorf("a short run minted %d tokens", n)
+	}
+}
