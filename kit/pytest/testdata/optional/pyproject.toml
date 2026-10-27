@@ -1,0 +1,6 @@
+[project]
+name = "x"
+dependencies = ["requests"]
+
+[project.optional-dependencies]
+dev = ["pytest[extra]>=7"]
