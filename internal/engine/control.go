@@ -420,7 +420,8 @@ func (rc *runCore) reviveServicesLocked(h schedHandle, n *plan.Node) []revivedSe
 			continue
 		}
 		st, settled := h.states[need]
-		if !settled || !(st == api.StateSucceeded || st == api.StateRecovered || st.Failed()) {
+		ran := st == api.StateSucceeded || st == api.StateRecovered || st.Failed()
+		if !settled || !ran {
 			continue
 		}
 		attempt, _, _ := rc.unsettleLocked(h, need)
