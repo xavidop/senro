@@ -106,6 +106,8 @@ an answer, not a failure.
 Besides a failed run, exit `1` also covers:
 
 - `func check` found cgo
+- `init` could not detect (a `package.json` or `pyproject.toml` that does not parse) or could not
+  write a file
 - `verify --fail-on-mismatch` found a step that did not reproduce its cached result
 - `cache gc` failed
 - `ws ls` could not load an index
@@ -127,6 +129,8 @@ Besides a usage error, exit `2` also covers:
 - `logs fetch` found no shared cache configured, no such run in the store, or credentials the
   store refused
 - `func check`'s own analysis failed to run
+- `init` detected nothing, found `<out>/main.go` already there without `--force`, or was given an
+  `--out` that is a file
 
 ### About `78`
 

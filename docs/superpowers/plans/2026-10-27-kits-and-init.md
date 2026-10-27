@@ -280,5 +280,5 @@ Check the exact field name for the node's argv in `internal/plan/plan.go` (`Cmd`
 - [ ] **Step 1: Write `steps/kits.md`:** what a kit is, the `Add` and `Template` forms, one section per kit with the exact argv, the report wired in, the re-run selection (or why none), options, detection rule, and how to make it `Pure()`.
 - [ ] **Step 2: Write `cli/init.md`:** synopsis, detection table (kit, what it looks for), what gets written, module handling, exit codes 0/2, `--dry-run`, `--force`, `--no-tidy`.
 - [ ] **Step 3: Update** quickstart (one line before step 1: `senro init` writes this file; link), `steps/index.md`, sidebar, SKILL.md, `references/cli.md`, README.
-- [ ] **Step 4: Verify.** `source ~/.nvm/nvm.sh && nvm use 22` then the site link check that `make all` runs (see the Makefile) passes; no em dashes: `grep -rn "—" site/src/pages/docs/steps/kits.md site/src/pages/docs/cli/init.md skills/ README.md` prints nothing.
+- [ ] **Step 4: Verify.** `source ~/.nvm/nvm.sh && nvm use 22` then the site link check that `make all` runs (see the Makefile) passes; no em dashes: `grep -rnP '\x{2014}' site/src/pages/docs/steps/kits.md site/src/pages/docs/cli/init.md skills/ README.md` prints nothing.
 - [ ] **Step 5: Commit** `docs: kits and senro init`.

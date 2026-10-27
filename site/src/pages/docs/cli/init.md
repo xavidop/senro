@@ -94,11 +94,21 @@ How matches become steps:
 
 - **One match** for a kit becomes one `verify.Add("<kit>", <kit>.Step(...))`, with
   `Dir("<dir>")` when the match is not the repository root. The step id is the kit's name.
-- **Several `gotest` or `pytest` matches** become one `verify.Expand` over the kit's graph
-  (`gowork.Modules()` or `pyproject.Packages()`) with the kit's `Template()`. A root module that
-  also has nested modules is still one `Expand`; the root is one of its units.
-- **Several `eslint` or `playwright` matches** become one `Add` each, with ids like
-  `eslint-apps-web`, each with its `Dir`.
+- **Several `gotest` matches** become one `verify.Expand` over `gowork.Modules()` with
+  `gotest.Template()`. A root module that also has nested modules is still one `Expand`; the root
+  is one of its units.
+- **Several `pytest` matches** become one `verify.Expand` over `pyproject.Packages()` with
+  `pytest.Template()`, but only when every match is a Python distribution (a `pyproject.toml` that
+  declares a name, a `setup.py` or a `setup.cfg`), since those are the graph's units. If any match
+  is not, a `pytest.ini` or `tox.ini` on its own say, each match becomes its own `Add` with its
+  `Dir`, named like the `eslint` steps below.
+- **Several `eslint` or `playwright` matches** become one `Add` each, each with its `Dir`. The id
+  is the kit's name and the last segment of the directory: `eslint-web` for `apps/web`. The root
+  match keeps the bare kit name, and a segment two directories share gets `-2`, `-3` and so on
+  (`eslint-web-2`).
+
+Matches inside `--out` itself are left out, so running `senro init --force` again does not pick up
+the `go.mod` it wrote in `ci/` as a Go module to test.
 
 ## The Go module
 
@@ -130,20 +140,30 @@ prints a warning and the two commands, and still exits `0`.
 
 ## Output
 
-On success, `senro init` prints to stderr what it found, the files it wrote, and what to do next:
+On success, `senro init` prints to stderr what it found, the files it wrote, and what to do next.
+Here it is with `--no-tidy` in a Go repository with a root module and a nested one in `svc`:
 
 ```
+$ senro init --no-tidy
 senro init: detected
   gotest     .          go.mod
-  eslint     web        package.json devDependencies
+  gotest     svc        go.mod
 Wrote ci/main.go
-Wrote ci/go.mod
+Run these in /work/gomono before senro run:
+  go get github.com/xavidop/senro@latest
+  go mod tidy
 Next: senro run ./ci
 ```
 
-- `Wrote <out>/go.mod` appears only when `senro init` created the module file.
-- When it used an existing module instead (`DIR`'s, or one already at `<out>`), and both commands
-  succeeded, a line `Updated go.mod: go get github.com/xavidop/senro@<version>` takes its place.
+- `Run these in` names the module's directory as an absolute path (`/work/gomono` here), and
+  `@latest` is what a development build of `senro` asks for; a release names its own version.
+- The pipeline joined the root `go.mod`, so no module file was written. In a repository without
+  one, a `Wrote ci/go.mod` line follows `Wrote ci/main.go`, and the commands run in `ci`.
+- Without `--no-tidy`, the two commands run instead of being printed, with their own output.
+  When `senro init` used an existing module (`DIR`'s, or one already at `<out>`), a line
+  `Updated go.mod: go get github.com/xavidop/senro@<version>` appears as soon as `go get`
+  succeeds. `go mod tidy` runs after it, so a failing tidy shows up as a warning below that line
+  rather than hiding that `go.mod` was edited.
 - `Next:` follows `--out`: `senro run ./<out>`, or the bare path for an absolute `--out`. The path is
   shell-quoted when it needs it. When the process is not running in `DIR`, it is prefixed with
   `cd <DIR> &&`.

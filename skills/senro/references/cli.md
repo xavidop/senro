@@ -62,11 +62,15 @@ senro init [DIR] [--out ci] [--force] [--dry-run] [--no-tidy]
 
 Writes `<out>/main.go` (default `ci/main.go`; `--out` is relative to DIR, default `.`, or absolute) from
 the kits that apply: `gotest` for a `go.mod`, `pytest`, `eslint`, `playwright`
-(rules in the Kits section of SKILL.md). One `verify.Add(kit, kit.Step(...))`
-per match, with `kit.Dir("<dir>")` off the root; several `gotest` or `pytest`
-matches become one `verify.Expand` over `gowork.Modules()` or
-`pyproject.Packages()` with the kit's `Template()`; several `eslint` or
-`playwright` matches get ids like `eslint-apps-web`. No `Needs` between them.
+(rules in the Kits section of SKILL.md). One `verify.Add("<kit>", <kit>.Step(...))`
+per match, with `<kit>.Dir("<dir>")` off the root; several `gotest` matches
+become one `verify.Expand` over `gowork.Modules()` with `gotest.Template()`;
+several `pytest` matches become one `verify.Expand` over `pyproject.Packages()`
+with `pytest.Template()` only when every match is a distribution (pyproject
+with a name, setup.py or setup.cfg), else one `Add` each; repeated matches
+rendered as `Add`s get ids `<kit>-<last path segment>` (`eslint-web` for
+`apps/web`, `-2`, `-3` on a clash). Matches inside `--out` are skipped. No
+`Needs` between them.
 Then makes the package buildable: `DIR/go.mod` is joined only when `--out` is
 inside DIR; an `--out` elsewhere (absolute included) gets its own go.mod, used
 as is if it exists, else written (`module <DIR name>/<out name>`, the running
@@ -79,7 +83,8 @@ prints the `senro.Run` error before `os.Exit(1)`. An existing `<out>/main.go` is
 `senro init: detected`, one `<kit> <dir> <reason>` line per match,
 `Wrote <out>/main.go`, `Wrote <out>/go.mod` (when it created the module file)
 or `Updated go.mod: go get github.com/xavidop/senro@<version>` (when it joined
-an existing module and both commands succeeded), then `Next:`: `senro run
+an existing module, printed once `go get` succeeds; `go mod tidy` runs after
+it), then `Next:`: `senro run
 ./<out>` (bare path for an absolute `--out`), shell-quoted, prefixed with
 `cd <DIR> &&` whenever the process cwd is not DIR. Exit `0` written or printed, `1`
 detection or write failed, `2` usage error (unknown flag, DIR not a directory,

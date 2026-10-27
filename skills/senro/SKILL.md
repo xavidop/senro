@@ -328,7 +328,9 @@ verify.Expand("test", gowork.Modules()).Template(gotest.Template())
   dependency.
 - playwright: `<pm> playwright test --reporter=list,junit [Args...]` with
   `PLAYWRIGHT_JUNIT_OUTPUT_NAME=.senro/playwright.xml`; report `JUnitXML` with
-  `Selecting("-g", "{tests}").JoinedBy("|")`. Applies on a
+  NO selection: per-test rerun is not available, because Playwright's JUnit
+  names join the title path with ` › ` while `--grep` matches it joined with
+  spaces, so a rerun runs the whole step. Applies on a
   `playwright.config.{ts,js,mjs,cjs,mts,cts}`.
 - Reports go under `.senro/` in the step's working directory
   (`kit.ReportDir`); detection skips `.`/`_`-prefixed directories,

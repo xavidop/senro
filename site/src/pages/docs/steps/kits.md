@@ -29,13 +29,14 @@ writes it.
 
 ## Two forms: `Step` and `Template`
 
-Every kit has the same surface.
+Every kit has the same surface. Below, `<kit>` stands for the kit's package (`gotest`, `pytest`,
+`eslint` or `playwright`); the shared `kit` package itself has no `Step` or `Template`.
 
 | Call | What it builds |
 |---|---|
-| `kit.Step(opts...)` | One step, run from the directory given by the `Dir` option (the pipeline's working directory by default) |
-| `kit.Template(opts...)` | A function for `Expand(...).Template(...)`: one step per [unit](/docs/monorepo/), run from the unit's directory |
-| `kit.Detect(root)` | The directories under `root` where the kit applies, as `[]kit.Match` |
+| `<kit>.Step(opts...)` | One step, run from the directory given by the `Dir` option (the pipeline's working directory by default) |
+| `<kit>.Template(opts...)` | A function for `Expand(...).Template(...)`: one step per [unit](/docs/monorepo/), run from the unit's directory |
+| `<kit>.Detect(root)` | The directories under `root` where the kit applies, as `[]kit.Match` |
 
 `Step` goes into a workflow with `Add`. `(*senro.WorkflowBuilder).Add(id, sb)` adopts a builder made
 elsewhere under `id` and returns it, so the rest of the chain works as it does after `Step`:
@@ -187,9 +188,11 @@ per match, each with its `Dir`.
 ```
 
 with `PLAYWRIGHT_JUNIT_OUTPUT_NAME=.senro/playwright.xml` set in the step's environment. The report
-is read with `testreport.JUnitXML(".senro/playwright.xml")` and a rerun selects tests with
-`-g "a|b"`: `Selecting("-g", "{tests}").JoinedBy("|")`. The runner is found the same way as for
-[eslint](#eslint).
+is read with `testreport.JUnitXML(".senro/playwright.xml")`, so a failing run names the tests that
+failed. Rerunning only those tests is not available for Playwright: its JUnit reporter joins a
+test's title path with ` › `, while `--grep` matches the title path joined with spaces, so a name
+from the report cannot be handed back to `-g`. This kit declares no selection, and a rerun of the
+step runs it whole. The runner is found the same way as for [eslint](#eslint).
 
 | Option | What it does |
 |---|---|
@@ -210,6 +213,21 @@ Detection walks the tree in sorted order and skips every directory whose name st
 `target` and `site-packages`. A directory that cannot be read is skipped rather than stopping the
 walk. `kit/all` is the one package that imports all four kits, so a pipeline that only wants
 `gotest` does not link the others.
+
+## Writing a kit
+
+A kit is an ordinary package, and nothing stops you writing one for another tool. The `kit` package
+holds the helpers the four built-in kits share, and they are public for that reason:
+
+- `kit.Walk(root, fn)` calls `fn` for `root` and every directory below it that detection does not
+  skip, in lexical order, with the path relative to `root` in forward slashes.
+- `kit.FirstFile(dir, names...)` returns the first of `names` that is a regular file in `dir`,
+  bare, ready for a `Match`'s `Reason`.
+- `kit.UnitDir(dir)` turns a unit's directory into a step's working directory: `""` for the root,
+  `dir` otherwise.
+- `kit.SortMatches(ms)` sorts matches by kit and then directory, so the same repository always
+  gives the same list.
+- `kit.ReportPath(name)` is where a kit called `name` writes its report: `.senro/<name>.xml`.
 
 ## What kits do not do
 
