@@ -1451,6 +1451,7 @@ func toNode(sb *StepBuilder, path map[*StepBuilder]bool) (plan.Node, error) {
 	}
 	n.Pure = sb.pure
 	n.NoSnapshot = sb.noSnapshot
+	n.CheckGenerated = sb.checkGenerated
 	n.CacheEnv = append([]string(nil), sb.cacheEnv...)
 	for _, se := range sb.secretEnvs {
 		n.Secrets = append(n.Secrets, plan.SecretSpec{Name: se.field, Env: se.env})
@@ -1809,6 +1810,10 @@ type StepBuilder struct {
 	cacheEnv   []string
 	noSnapshot bool
 
+	// checkGenerated is set by CheckGenerated and lowered into
+	// plan.Node.CheckGenerated.
+	checkGenerated bool
+
 	secretEnvs []secretEnv
 }
 
@@ -2075,6 +2080,25 @@ func (s *StepBuilder) CacheEnv(names ...string) *StepBuilder {
 // take when it settles. For a step whose filesystem output nobody consumes.
 func (s *StepBuilder) NoSnapshot() *StepBuilder {
 	s.noSnapshot = true
+	return s
+}
+
+// CheckGenerated fails this step when it exits 0 but leaves any read-write
+// workspace it mounts different from what it was given: for a step that
+// regenerates checked-in files (code generation, formatting, lock files),
+// where any difference means the committed copy is out of date. The step
+// settles failed with exit code 0 and an error naming each changed
+// workspace and up to ten changed paths. The drifted snapshot is kept, so
+// `senro ws diff` and `senro ws pull` show what the generator produced.
+//
+// A non-zero exit is the generator's own failure and the check does not
+// run. A Retry policy applies to the check's failure like any other, and is
+// pointless here: a generator that drifted once drifts again.
+//
+// plan.Validate refuses it on a service, together with NoSnapshot, and on a
+// step with no read-write workspace mount.
+func (s *StepBuilder) CheckGenerated() *StepBuilder {
+	s.checkGenerated = true
 	return s
 }
 

@@ -477,6 +477,11 @@ type Node struct {
 	// NoSnapshot suppresses the post-step workspace snapshot for a step
 	// whose output nobody consumes.
 	NoSnapshot bool `json:"no_snapshot,omitempty"`
+	// CheckGenerated fails an attempt that exits 0 but leaves any
+	// read-write workspace different from what it mounted: the post-step
+	// snapshot's index is compared with the index of the snapshot the mount
+	// was realised from. For a step that regenerates checked-in files.
+	CheckGenerated bool `json:"check_generated,omitempty"`
 
 	// Secrets are the credentials this node needs, by REFERENCE. A value is
 	// never here: a plan must be serializable, storable and re-runnable,

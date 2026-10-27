@@ -52,6 +52,12 @@ type wsManager struct {
 	mu    sync.Mutex
 	state map[string]cas.Digest
 
+	// indexOf maps every body digest record has seen to the index digest
+	// stored with it, so CheckGenerated can read the file list of the
+	// snapshot a mount was realised from. A body put back by a cache hit
+	// has no entry: cache.Result stores only bodies (see mountedIndex).
+	indexOf map[cas.Digest]cas.Digest
+
 	// wsLocks is one sync.RWMutex per workspace name, created lazily under
 	// mu and kept for the run. It guards a real race: a ScopeRun workspace
 	// is one directory shared by every step mounting it, and restoring a
@@ -155,6 +161,8 @@ func newWSManager(
 		specs:  make(map[string]plan.WorkspaceSpec, len(p.Workspaces)),
 		state:  make(map[string]cas.Digest, len(p.Workspaces)),
 		runDir: runDir,
+
+		indexOf: make(map[cas.Digest]cas.Digest),
 
 		scratchSpecs:  make(map[string]plan.ScratchSpec, len(p.Scratch)),
 		scratchKeys:   make(map[string]string, len(p.Scratch)),
@@ -742,7 +750,42 @@ func (m *wsManager) record(snaps []wsSnapshot) {
 	for _, s := range snaps {
 		m.state[s.Name] = s.Digest
 		m.produced = append(m.produced, s.Digest, s.Index)
+		if s.Index != "" {
+			m.indexOf[s.Digest] = s.Index
+		}
 	}
+}
+
+// mountedIndex returns the file index of the snapshot whose body is body:
+// what a mount carrying executor.Mount.Digest == body was realised from. An
+// empty body is a workspace that started from nothing, whose index is
+// empty.
+//
+// A body this run snapshotted has its index recorded. One put back by a
+// cache hit does not, since a cache entry stores only bodies, so the index
+// is rebuilt by extracting the body into a scratch directory under the run
+// and discarding the tree: slow for a large workspace, but only a
+// CheckGenerated step mounting a cache-restored workspace that then changed
+// ever pays it.
+func (m *wsManager) mountedIndex(ctx context.Context, body cas.Digest) (workspace.Index, error) {
+	if body == "" {
+		return workspace.Index{Version: workspace.IndexVersion}, nil
+	}
+	m.mu.Lock()
+	ix, ok := m.indexOf[body]
+	m.mu.Unlock()
+	if ok {
+		return m.snap.LoadIndex(ctx, ix)
+	}
+	if err := os.MkdirAll(m.runDir, 0o755); err != nil {
+		return workspace.Index{}, fmt.Errorf("engine: create %s: %w", m.runDir, err)
+	}
+	tmp, err := os.MkdirTemp(m.runDir, ".senro-index-*")
+	if err != nil {
+		return workspace.Index{}, fmt.Errorf("engine: stage index of %s: %w", body.Short(), err)
+	}
+	defer func() { _ = os.RemoveAll(tmp) }()
+	return m.snap.RestoreTree(ctx, body, filepath.Join(tmp, "tree"))
 }
 
 // allSnapshotDigests is every digest this run's snapshots produced, body

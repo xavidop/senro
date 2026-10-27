@@ -397,6 +397,18 @@ func (rc *runCore) runAttempt(ctx context.Context, n *plan.Node, opts Options, l
 		}
 	}
 
+	// CheckGenerated runs only on an attempt that otherwise succeeded: a
+	// non-zero exit is the generator's own failure and drift on top of it
+	// would only bury that. Replacing res here, before the hold and the
+	// scratch read-back, makes the drift an ordinary failed attempt to
+	// retries, --break-on-failure and the analyzer alike. The snapshot was
+	// already recorded above, so `senro ws diff` shows the drift.
+	if n.CheckGenerated && res.state == api.StateSucceeded {
+		if err := rc.checkGenerated(context.WithoutCancel(ctx), n, s.mounts, snaps); err != nil {
+			res = attemptResult{state: api.StateFailed, err: err, logTail: s.tail.String(), snapshots: snaps}
+		}
+	}
+
 	// --break-on-failure holds the attempt HERE, with the sandbox still open
 	// and the workspace mount locks still held by s.close's deferred
 	// release: a shell on this step mounts the workspaces as "whatever is in

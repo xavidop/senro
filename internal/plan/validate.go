@@ -163,10 +163,43 @@ func nodeShape(n Node) error {
 	if err := validateService(n); err != nil {
 		return err
 	}
+	if err := validateCheckGenerated(n); err != nil {
+		return err
+	}
 	if err := validateExecutor(n); err != nil {
 		return err
 	}
 	return validateSecrets(n)
+}
+
+// validateCheckGenerated refuses CheckGenerated wherever the check would
+// have nothing to compare. It compares the snapshot taken after the step
+// with the one its read-write mount was realised from, so it needs a step
+// that settles, is snapshotted, and can write to a workspace.
+func validateCheckGenerated(n Node) error {
+	if !n.CheckGenerated {
+		return nil
+	}
+	if n.IsService() {
+		return fmt.Errorf(
+			"plan: step %q is a service and declares CheckGenerated: a service is stopped rather "+
+				"than finishing, so there is no completed run whose workspace the check could compare "+
+				"with what was mounted", n.ID)
+	}
+	if n.NoSnapshot {
+		return fmt.Errorf(
+			"plan: step %q declares both CheckGenerated and NoSnapshot: the check compares the "+
+				"post-step snapshot with what was mounted, and NoSnapshot takes no snapshot", n.ID)
+	}
+	for _, m := range n.Mounts {
+		if m.Workspace != "" && m.Mode != "ro" {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		"plan: step %q declares CheckGenerated with no read-write workspace mount: the check "+
+			"compares the post-step snapshot of a read-write mount with what was mounted, and a "+
+			"read-only mount (or a scratch cache, which is never snapshotted) gives it nothing to compare", n.ID)
 }
 
 // validateService checks a node's service declaration. Each refusal is a

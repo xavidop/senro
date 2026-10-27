@@ -914,6 +914,43 @@ func TestWorkspaceMountsReachThePlan(t *testing.T) {
 	}
 }
 
+func TestCheckGeneratedLowersIntoThePlan(t *testing.T) {
+	src := senro.Workspace("src", senro.Scope(senro.ScopeRun))
+	pipe := senro.New("ci")
+	l := pipe.Workflow("main")
+	l.Step("codegen", exec.Command("go", "generate", "./...")).
+		WorkDir("/src").Mount(src.At("/src", senro.RW)).CheckGenerated()
+	l.Step("plain", exec.Command("true")).Mount(src.At("/src", senro.RW))
+	p, err := pipe.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	n, ok := p.Node("codegen")
+	if !ok {
+		t.Fatal("codegen is missing from the plan")
+	}
+	if !n.CheckGenerated {
+		t.Error("CheckGenerated() did not reach the plan")
+	}
+	if plain, _ := p.Node("plain"); plain.CheckGenerated {
+		t.Error("a step that never called CheckGenerated() has it set")
+	}
+}
+
+func TestCheckGeneratedOnAStepWithOnlyReadOnlyMountsDoesNotBuild(t *testing.T) {
+	src := senro.Workspace("src", senro.Scope(senro.ScopeRun))
+	pipe := senro.New("ci")
+	l := pipe.Workflow("main")
+	l.Step("codegen", exec.Command("true")).Mount(src.At("/src", senro.RO)).CheckGenerated()
+	_, err := pipe.Build()
+	if err == nil {
+		t.Fatal("CheckGenerated on a step with no read-write mount built without complaint")
+	}
+	if !strings.Contains(err.Error(), "codegen") || !strings.Contains(err.Error(), "read-write") {
+		t.Errorf("err = %v, want it to name the step and the missing read-write mount", err)
+	}
+}
+
 func TestAWorkspaceDeclaredOnceIsRecordedOnceHoweverManyStepsMountIt(t *testing.T) {
 	src := senro.Workspace("src", senro.Scope(senro.ScopeRun))
 	pipe := senro.New("ci")
