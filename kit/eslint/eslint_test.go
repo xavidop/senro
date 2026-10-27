@@ -1,6 +1,7 @@
 package eslint_test
 
 import (
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -98,7 +99,7 @@ func TestDetect(t *testing.T) {
 
 func TestDetectReportsABrokenPackageJSON(t *testing.T) {
 	_, err := eslint.Detect("testdata/broken")
-	if err == nil || !strings.Contains(err.Error(), "broken/package.json") {
+	if err == nil || !strings.Contains(err.Error(), filepath.Join("broken", "package.json")) {
 		t.Fatalf("err = %v", err)
 	}
 }

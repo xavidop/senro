@@ -12,6 +12,7 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"github.com/xavidop/senro/kit"
 	"github.com/xavidop/senro/kit/all"
 )
 
@@ -95,12 +96,18 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
+	outDir := opts.out
+	if !filepath.IsAbs(outDir) {
+		outDir = filepath.Join(dir, outDir)
+	}
+
 	ctx := context.Background()
 	matches, err := all.Detect(ctx, dir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "senro init: detect:", err)
 		return exitRunFailed
 	}
+	matches = outsideOut(matches, dir, outDir)
 	if len(matches) == 0 {
 		_, _ = fmt.Fprintf(stderr, "senro init: no kit applies to %s; it looked for:\n"+
 			"  gotest      a go.mod\n"+
@@ -112,7 +119,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	}
 
 	name := moduleSegment(filepath.Base(dir))
-	src, err := renderInit(name, matches)
+	src, err := renderInit(name, dir, matches)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "senro init:", err)
 		return exitRunFailed
@@ -122,10 +129,6 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		return exitSuccess
 	}
 
-	outDir := opts.out
-	if !filepath.IsAbs(outDir) {
-		outDir = filepath.Join(dir, outDir)
-	}
 	mainGo := filepath.Join(outDir, "main.go")
 	shownMain := filepath.Join(opts.out, "main.go")
 	if _, err := os.Stat(mainGo); err == nil && !opts.force {
@@ -169,6 +172,26 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	return exitSuccess
 }
 
+// outsideOut drops every match in out or below it, so a second senro init
+// --force does not detect the pipeline's own ci/go.mod as a Go module to
+// test. An out that is dir itself, or outside dir, drops nothing: the first
+// would drop the whole repository.
+func outsideOut(ms []kit.Match, dir, out string) []kit.Match {
+	rel, err := filepath.Rel(dir, out)
+	if err != nil || rel == "." || !within(out, dir) {
+		return ms
+	}
+	rel = filepath.ToSlash(rel)
+	kept := ms[:0:0]
+	for _, m := range ms {
+		if m.Dir == rel || strings.HasPrefix(m.Dir, rel+"/") {
+			continue
+		}
+		kept = append(kept, m)
+	}
+	return kept
+}
+
 // hostModule picks the directory whose go.mod the pipeline in out belongs
 // to, and whether senro init has to write that go.mod itself. dir's module
 // hosts it only when out is inside dir; an out elsewhere gets a module of its
@@ -199,7 +222,15 @@ func within(path, dir string) bool {
 // replace of the senro module. It then runs
 // `go get github.com/xavidop/senro@version` and `go mod tidy` in the
 // module's directory, or with noTidy prints them instead. It reports on
-// stderr the go.mod it wrote, or the existing one it updated.
+// stderr the go.mod it wrote, or the existing one it updated: the
+// "Updated <go.mod>: go get ..." line is printed as soon as go get
+// succeeds, before go mod tidy runs, so a failing tidy (its own warning,
+// below the line) never hides that the file was edited.
+//
+// With SENRO_INIT_REPLACE set, go get is skipped and only go mod tidy runs:
+// the replace already points the senro module at a directory, so there is
+// no version to fetch, and tidy adds the require on its own. That keeps this
+// repository's build test off the network.
 //
 // Only writing out/go.mod can fail it: a command that fails, or a missing go
 // binary, is a warning on stderr, since the pipeline file is already written
@@ -225,9 +256,10 @@ func initModule(ctx context.Context, dir, out, version string, noTidy bool, stde
 		_, _ = fmt.Fprintln(stderr, "Wrote", shownMod)
 	}
 
-	cmds := [][]string{
-		{"get", senroModule + "@" + version},
-		{"mod", "tidy"},
+	get := []string{"get", senroModule + "@" + version}
+	cmds := [][]string{get, {"mod", "tidy"}}
+	if os.Getenv(initReplaceEnv) != "" {
+		cmds = cmds[1:]
 	}
 	printCmds := func() {
 		_, _ = fmt.Fprintf(stderr, "Run these in %s before senro run:\n", modDir)
@@ -256,9 +288,9 @@ func initModule(ctx context.Context, dir, out, version string, noTidy bool, stde
 				strings.Join(c, " "), modDir, err)
 			return nil
 		}
-	}
-	if !write {
-		_, _ = fmt.Fprintf(stderr, "Updated %s: go get %s@%s\n", shownMod, senroModule, version)
+		if c[0] == get[0] && !write {
+			_, _ = fmt.Fprintf(stderr, "Updated %s: go get %s@%s\n", shownMod, senroModule, version)
+		}
 	}
 	return nil
 }

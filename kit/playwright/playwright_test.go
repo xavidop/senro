@@ -43,7 +43,7 @@ func TestStepRunsPlaywrightWithJUnit(t *testing.T) {
 	}
 	tr := n.Tests
 	if tr == nil || tr.Format != "junit" || tr.Path != ".senro/playwright.xml" ||
-		!reflect.DeepEqual(tr.Select, []string{"-g", "{tests}"}) || tr.Join != "|" {
+		tr.Select != nil || tr.Join != "" {
 		t.Fatalf("tests = %+v", tr)
 	}
 	y := node(t, playwright.Step(playwright.Dir("testdata/yarn"), playwright.Args("--workers=1")))

@@ -280,7 +280,7 @@ func TestBuildDoesNotAliasCallerSlices(t *testing.T) {
 
 	n, _ := p.Node("a")
 	if n.Cmd[1] != "test" {
-		t.Errorf("Cmd = %v — the built plan must not alias the caller's slice", n.Cmd)
+		t.Errorf("Cmd = %v: the built plan must not alias the caller's slice", n.Cmd)
 	}
 }
 
@@ -304,7 +304,7 @@ func TestBuildAddsNoDefaultPATH(t *testing.T) {
 
 	n, _ := p.Node("a")
 	if len(n.Env) != 0 {
-		t.Errorf("Env = %v, want empty — a step that declares no environment must "+
+		t.Errorf("Env = %v, want empty: a step that declares no environment must "+
 			"not pick up the build host's, or the plan digest varies by machine", n.Env)
 	}
 }
@@ -335,7 +335,7 @@ func TestDigestDoesNotDependOnTheBuildHost(t *testing.T) {
 	// must reach the digest. If Build were still injecting a default, this
 	// would silently be comparing two plans that both carry the host's PATH.
 	if plain, declared := build(), build([2]string{"PATH", "/custom/bin"}); plain == declared {
-		t.Error("declaring PATH did not change the digest — an explicitly declared " +
+		t.Error("declaring PATH did not change the digest: an explicitly declared " +
 			"variable is part of the plan and must be hashed")
 	}
 }
@@ -426,7 +426,7 @@ func TestHandlersDoNotAliasAfterBuild(t *testing.T) {
 
 	n, _ := p.Node("deploy")
 	if len(n.OnFailure[0].Env) != 0 {
-		t.Errorf("handler Env = %v — Build must snapshot handlers too", n.OnFailure[0].Env)
+		t.Errorf("handler Env = %v: Build must snapshot handlers too", n.OnFailure[0].Env)
 	}
 }
 
@@ -514,7 +514,7 @@ func TestRetryRejectsAFuncPredicate(t *testing.T) {
 	l.Step("deploy", exec.Command("true")).Retry(3, custom)
 
 	if _, err := pipe.Build(); err == nil {
-		t.Error("Build must reject a retry.Func predicate — it has no serialized form")
+		t.Error("Build must reject a retry.Func predicate: it has no serialized form")
 	}
 }
 
@@ -544,7 +544,7 @@ func TestRetryRejectsAnEmptyAny(t *testing.T) {
 	l.Step("deploy", exec.Command("true")).Retry(3, retry.Any())
 
 	if _, err := pipe.Build(); err == nil {
-		t.Error("Build must reject retry.Any() with no components — it has no serialized form")
+		t.Error("Build must reject retry.Any() with no components: it has no serialized form")
 	}
 }
 
@@ -2771,6 +2771,19 @@ func TestAddRefusesABuilderAddedTwice(t *testing.T) {
 	_, err := p.Build()
 	if err == nil || !strings.Contains(err.Error(), `"one"`) || !strings.Contains(err.Error(), `"two"`) {
 		t.Fatalf("err = %v, want both ids named", err)
+	}
+}
+
+func TestAddRefusesABuilderAddedToTwoPipelines(t *testing.T) {
+	sb := senro.NewStep(exec.Command("true"))
+	p1, p2 := senro.New("p1"), senro.New("p2")
+	p1.Workflow("a").Add("one", sb)
+	p2.Workflow("b").Add("two", sb)
+	for _, p := range []*senro.Pipeline{p1, p2} {
+		_, err := p.Build()
+		if err == nil || !strings.Contains(err.Error(), `"one"`) || !strings.Contains(err.Error(), `"two"`) {
+			t.Errorf("%s: err = %v, want both ids named", p.Name(), err)
+		}
 	}
 }
 

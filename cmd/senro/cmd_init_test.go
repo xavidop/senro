@@ -63,7 +63,7 @@ func renderFixture(t *testing.T, name string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := renderInit(name, ms)
+	out, err := renderInit(name, initFixture(t, name), ms)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,6 +83,39 @@ func TestInitRendersOneExpandForAGoMonorepo(t *testing.T) {
 		}
 	}
 	for _, bad := range []string{"verify.Add(", "kit/pytest"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("output contains %s:\n%s", bad, out)
+		}
+	}
+}
+
+func TestInitRendersOneExpandForPythonDistributions(t *testing.T) {
+	out := renderFixture(t, "pymulti")
+	for _, want := range []string{
+		`verify.Expand("pytest", pyproject.Packages()).Template(pytest.Template())`,
+		`"github.com/xavidop/senro/unit/pyproject"`,
+		`"github.com/xavidop/senro/kit/pytest"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %s:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "verify.Add(") {
+		t.Errorf("output adds a step per match:\n%s", out)
+	}
+}
+
+func TestInitRendersAddsWhenAPytestMatchIsNoDistribution(t *testing.T) {
+	out := renderFixture(t, "pymixed")
+	for _, want := range []string{
+		`verify.Add("pytest-a", pytest.Step(pytest.Dir("a")))`,
+		`verify.Add("pytest-b", pytest.Step(pytest.Dir("b")))`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %s:\n%s", want, out)
+		}
+	}
+	for _, bad := range []string{"verify.Expand(", "unit/pyproject"} {
 		if strings.Contains(out, bad) {
 			t.Errorf("output contains %s:\n%s", bad, out)
 		}
@@ -132,7 +165,7 @@ func TestInitDocCommentListsTheMatches(t *testing.T) {
 }
 
 func TestInitRenderedFileIsGofmtClean(t *testing.T) {
-	for _, name := range []string{"gomono", "single", "web", "py", "existing"} {
+	for _, name := range []string{"gomono", "single", "web", "py", "pymulti", "pymixed", "existing"} {
 		out := renderFixture(t, name)
 		formatted, err := format.Source([]byte(out))
 		if err != nil {
@@ -153,7 +186,7 @@ func TestInitRenderIsDeterministicAndOrdered(t *testing.T) {
 		{Kit: "eslint", Dir: "other/a", Reason: "eslint.config.js"},
 		{Kit: "pytest", Dir: ".", Reason: "pytest.ini"},
 	}
-	first, err := renderInit("x", ms)
+	first, err := renderInit("x", t.TempDir(), ms)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +214,7 @@ func TestInitRenderIsDeterministicAndOrdered(t *testing.T) {
 	for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
 		rev[i], rev[j] = rev[j], rev[i]
 	}
-	second, err := renderInit("x", rev)
+	second, err := renderInit("x", t.TempDir(), rev)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,29 +224,61 @@ func TestInitRenderIsDeterministicAndOrdered(t *testing.T) {
 }
 
 func TestInitRefusesAnExistingPipeline(t *testing.T) {
-	dir := copyInitFixture(t, "existing")
-	mainGo := filepath.Join(dir, "ci", "main.go")
-	before, err := os.ReadFile(mainGo)
+	// existing has a root go.mod, existingpy has none: the refusal must leave
+	// the first untouched and write no ci/go.mod for the second.
+	for _, name := range []string{"existing", "existingpy"} {
+		t.Run(name, func(t *testing.T) {
+			dir := copyInitFixture(t, name)
+			mainGo := filepath.Join(dir, "ci", "main.go")
+			before, err := os.ReadFile(mainGo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rootMod := filepath.Join(dir, "go.mod")
+			modBefore, modErr := os.ReadFile(rootMod)
+			var stdout, stderr bytes.Buffer
+			if code := cmdInit([]string{dir}, &stdout, &stderr); code != exitUsage {
+				t.Fatalf("exit %d, want %d; stderr:\n%s", code, exitUsage, stderr.String())
+			}
+			msg := stderr.String()
+			if !strings.Contains(msg, filepath.Join("ci", "main.go")) || !strings.Contains(msg, "--force") {
+				t.Errorf("stderr does not name ci/main.go and --force:\n%s", msg)
+			}
+			after, err := os.ReadFile(mainGo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Error("ci/main.go was rewritten")
+			}
+			modAfter, modAfterErr := os.ReadFile(rootMod)
+			if !bytes.Equal(modBefore, modAfter) || (modErr == nil) != (modAfterErr == nil) {
+				t.Errorf("root go.mod changed: %q (%v) -> %q (%v)", modBefore, modErr, modAfter, modAfterErr)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "ci", "go.mod")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("ci/go.mod exists (or stat failed: %v)", err)
+			}
+		})
+	}
+}
+
+func TestInitSkipsMatchesInsideOut(t *testing.T) {
+	dir := copyInitFixture(t, "py")
+	for i, args := range [][]string{{dir, "--no-tidy"}, {dir, "--no-tidy", "--force"}} {
+		var stdout, stderr bytes.Buffer
+		if code := cmdInit(args, &stdout, &stderr); code != exitSuccess {
+			t.Fatalf("run %d: exit %d; stderr:\n%s", i+1, code, stderr.String())
+		}
+		if strings.Contains(stderr.String(), "gotest") {
+			t.Errorf("run %d detected the pipeline's own ci/go.mod:\n%s", i+1, stderr.String())
+		}
+	}
+	src, err := os.ReadFile(filepath.Join(dir, "ci", "main.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var stdout, stderr bytes.Buffer
-	if code := cmdInit([]string{dir}, &stdout, &stderr); code != exitUsage {
-		t.Fatalf("exit %d, want %d; stderr:\n%s", code, exitUsage, stderr.String())
-	}
-	msg := stderr.String()
-	if !strings.Contains(msg, filepath.Join("ci", "main.go")) || !strings.Contains(msg, "--force") {
-		t.Errorf("stderr does not name ci/main.go and --force:\n%s", msg)
-	}
-	after, err := os.ReadFile(mainGo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(before, after) {
-		t.Error("ci/main.go was rewritten")
-	}
-	if _, err := os.Stat(filepath.Join(dir, "ci", "go.mod")); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("ci/go.mod exists (or stat failed: %v)", err)
+	if strings.Contains(string(src), "kit/gotest") {
+		t.Errorf("ci/main.go tests its own module:\n%s", src)
 	}
 }
 
@@ -299,6 +364,10 @@ func TestInitGeneratedPipelineBuilds(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SENRO_INIT_REPLACE", repo)
+	// Off the network: the replace points senro at this tree, and every other
+	// module must already be in the module cache.
+	t.Setenv("GOFLAGS", "-mod=mod")
+	t.Setenv("GOPROXY", "off")
 	dir := copyInitFixture(t, "py")
 	var stdout, stderr bytes.Buffer
 	if code := cmdInit([]string{dir}, &stdout, &stderr); code != exitSuccess {
@@ -389,18 +458,25 @@ func TestInitReportsUpdatingAnExistingModule(t *testing.T) {
 	}
 	bin := t.TempDir()
 	log := filepath.Join(bin, "calls")
-	script := "#!/bin/sh\necho \"$PWD: $*\" >> " + log + "\n"
+	// go get succeeds and go mod tidy fails: the edit go get made must
+	// still be reported, ahead of tidy's warning.
+	script := "#!/bin/sh\necho \"$PWD: $*\" >> " + log + "\n" +
+		"[ \"$1\" = mod ] && exit 1\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
+	t.Setenv(initReplaceEnv, "")
 	dir := copyInitFixture(t, "single")
 	var stdout, stderr bytes.Buffer
 	if code := cmdInit([]string{dir}, &stdout, &stderr); code != exitSuccess {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "Updated go.mod: go get github.com/xavidop/senro@") {
-		t.Errorf("no Updated line:\n%s", stderr.String())
+	msg := stderr.String()
+	updated := strings.Index(msg, "Updated go.mod: go get github.com/xavidop/senro@")
+	warned := strings.Index(msg, "warning: go mod tidy")
+	if updated < 0 || warned < 0 || updated > warned {
+		t.Errorf("want the Updated line, then the tidy warning:\n%s", msg)
 	}
 	calls, err := os.ReadFile(log)
 	if err != nil {

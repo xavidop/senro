@@ -218,8 +218,9 @@ func (w *WorkflowBuilder) Step(id string, a Action) *StepBuilder {
 // step (a kit) joins a workflow.
 //
 // A builder is adopted once: adding the same one again, here or in another
-// workflow, makes Build fail naming both ids. A handler (senro.Handler) and a
-// nil builder are refused the same way, at Build.
+// workflow, makes Build fail naming both ids, and when the two workflows
+// belong to different pipelines, both pipelines' Builds fail. A handler
+// (senro.Handler) and a nil builder are refused the same way, at Build.
 func (w *WorkflowBuilder) Add(id string, sb *StepBuilder) *StepBuilder {
 	switch {
 	case sb == nil:
@@ -228,9 +229,14 @@ func (w *WorkflowBuilder) Add(id string, sb *StepBuilder) *StepBuilder {
 	case sb.handler:
 		sb.errs = append(sb.errs, fmt.Errorf("senro: Add %q: a handler (senro.Handler) cannot be a workflow step", id))
 	case sb.id != "":
-		// Already a step elsewhere, which Build reports through that
-		// earlier entry; adding it again would only duplicate the id.
-		sb.errs = append(sb.errs, fmt.Errorf("senro: step %q was already added as %q", id, sb.id))
+		// Already a step elsewhere. The error goes on sb, so the earlier
+		// entry's Build fails, and on a fresh builder appended here, so this
+		// workflow's Build fails too when it belongs to another pipeline
+		// (which never sees sb). sb is returned, as before, so a chain on
+		// it still configures the one real step.
+		err := fmt.Errorf("senro: step %q was already added as %q", id, sb.id)
+		sb.errs = append(sb.errs, err)
+		w.steps = append(w.steps, &StepBuilder{id: id, errs: []error{err}})
 		return sb
 	default:
 		sb.id = id

@@ -267,6 +267,19 @@ func inspect(full, rel string) (*candidate, error) {
 	return c, nil
 }
 
+// IsDistribution reports whether dir itself is a distribution by the rule
+// Units applies to each directory it walks: a pyproject.toml declaring a
+// name, or a setup.py or setup.cfg. It does not walk, and it does not apply
+// the walk's pruning or a [tool.uv.workspace] exclude, which depend on where
+// the root is. An error is a manifest that exists and will not read or parse.
+func IsDistribution(dir string) (bool, error) {
+	c, err := inspect(dir, filepath.ToSlash(dir))
+	if err != nil {
+		return false, fmt.Errorf("pyproject: %w", err)
+	}
+	return c != nil && c.name != "", nil
+}
+
 // distributionName is the name from whichever of the two places a
 // pyproject.toml declares one: PEP 621's [project], and Poetry's own table,
 // which predates it and is still what a Poetry 1.x project writes.

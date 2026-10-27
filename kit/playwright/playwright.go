@@ -7,7 +7,12 @@
 //
 // with PLAYWRIGHT_JUNIT_OUTPUT_NAME=.senro/playwright.xml in its environment,
 // and hands the JUnit report to testreport.JUnitXML, so a failing run names
-// the tests that failed and a retry can rerun only those with -g.
+// the tests that failed.
+//
+// A retry reruns the whole step, not only the failed tests: Playwright's
+// JUnit reporter names a test by its title path joined with " › ", while
+// --grep matches the title path joined with spaces, so a name from the
+// report cannot be handed back to -g as it is.
 //
 // One step in a workflow:
 //
@@ -88,7 +93,7 @@ func build(c config) *senro.StepBuilder {
 	argv = append(argv, c.args...)
 	sb := senro.NewStep(exec.Command(argv...)).
 		Env("PLAYWRIGHT_JUNIT_OUTPUT_NAME", reportFile).
-		Tests(testreport.JUnitXML(reportFile).Selecting("-g", testreport.Placeholder).JoinedBy("|"))
+		Tests(testreport.JUnitXML(reportFile))
 	if dir != "" {
 		sb = sb.WorkDir(dir)
 	}

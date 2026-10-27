@@ -138,7 +138,7 @@ func TestStepWithDotDirLeavesWorkDirEmpty(t *testing.T) {
 
 func TestDetectReportsABrokenPyproject(t *testing.T) {
 	_, err := pytest.Detect("testdata/broken")
-	if err == nil || !strings.Contains(err.Error(), "broken/pyproject.toml") {
+	if err == nil || !strings.Contains(err.Error(), filepath.Join("broken", "pyproject.toml")) {
 		t.Fatalf("err = %v", err)
 	}
 }

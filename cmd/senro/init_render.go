@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/format"
 	"path"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/xavidop/senro/kit"
 	"github.com/xavidop/senro/kit/all"
+	"github.com/xavidop/senro/unit/pyproject"
 )
 
 const senroModule = "github.com/xavidop/senro"
@@ -20,9 +22,30 @@ const senroModule = "github.com/xavidop/senro"
 // fanOutGraph is, for a kit that renders an Expand when it matches more than
 // once, the unit graph's import path and the call that builds it. A kit
 // missing here renders one Add per match.
-var fanOutGraph = map[string]struct{ importPath, call string }{
-	"gotest": {senroModule + "/unit/gowork", "gowork.Modules()"},
-	"pytest": {senroModule + "/unit/pyproject", "pyproject.Packages()"},
+//
+// covers, when set, reports whether that graph's units include every match's
+// directory under root. When it does not, the Expand would test a different
+// set than the one detected (or fail at build when the graph finds no unit at
+// all), so the kit renders one Add per match instead.
+var fanOutGraph = map[string]struct {
+	importPath, call string
+	covers           func(root string, ms []kit.Match) (bool, error)
+}{
+	"gotest": {senroModule + "/unit/gowork", "gowork.Modules()", nil},
+	"pytest": {senroModule + "/unit/pyproject", "pyproject.Packages()", allDistributions},
+}
+
+// allDistributions reports whether every match's directory is a Python
+// distribution as unit/pyproject defines one. A pytest.ini or tox.ini match
+// is not: pytest is configured there, but nothing declares a package.
+func allDistributions(root string, ms []kit.Match) (bool, error) {
+	for _, m := range ms {
+		ok, err := pyproject.IsDistribution(filepath.Join(root, filepath.FromSlash(m.Dir)))
+		if err != nil || !ok {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 // initTemplate is the generated main.go before go/format. It is the
@@ -70,11 +93,11 @@ func matchLine(m kit.Match) string {
 	return fmt.Sprintf("%-10s %-10s %s", m.Kit, m.Dir, m.Reason)
 }
 
-// renderInit renders the pipeline senro init writes for matches, formatted
-// with go/format. name is the pipeline's name. The output depends only on the
-// set of matches, not their order: kits are rendered in all.Names order and
-// each kit's matches in kit.SortMatches order.
-func renderInit(name string, matches []kit.Match) ([]byte, error) {
+// renderInit renders the pipeline senro init writes for matches found under
+// root, formatted with go/format. name is the pipeline's name. The output
+// depends only on the set of matches, not their order: kits are rendered in
+// all.Names order and each kit's matches in kit.SortMatches order.
+func renderInit(name, root string, matches []kit.Match) ([]byte, error) {
 	ms := append([]kit.Match(nil), matches...)
 	kit.SortMatches(ms)
 	byKit := map[string][]kit.Match{}
@@ -100,7 +123,15 @@ func renderInit(name string, matches []kit.Match) ([]byte, error) {
 		for _, m := range km {
 			found = append(found, matchLine(m))
 		}
-		if g, ok := fanOutGraph[k]; ok && len(km) > 1 {
+		g, fan := fanOutGraph[k]
+		if fan && len(km) > 1 && g.covers != nil {
+			covered, err := g.covers(root, km)
+			if err != nil {
+				return nil, err
+			}
+			fan = covered
+		}
+		if fan && len(km) > 1 {
 			imports[g.importPath] = true
 			steps = append(steps, fmt.Sprintf("verify.Expand(%q, %s).Template(%s.Template())", uniqueID(k, used), g.call, k))
 			continue
