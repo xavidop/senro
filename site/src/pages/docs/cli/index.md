@@ -23,6 +23,7 @@ senro supports Linux and macOS. Windows is not supported; see
 |---|---|---|
 | `senro run <pkg>` | Build a pipeline package, exec it, attach and render | [Run and watch](/docs/cli/run/) |
 | `senro up <pkg>` | Run only the pipeline's services and hold them until Ctrl-C | [Run and watch](/docs/cli/run/#senro-up) |
+| `senro init` | Write a first pipeline from the test and lint tools a repository already uses | [init](/docs/cli/init/) |
 | `senro attach` | Watch a live run, or replay a finished one from disk | [Run and watch](/docs/cli/run/) |
 | `senro ui` | Serve a browser view of a live run on loopback | [Run and watch](/docs/cli/run/) |
 | `senro shell` | Open a session inside a live run's step, or a local shell over a finished one's workspaces | [Run and watch](/docs/cli/run/) |

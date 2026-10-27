@@ -1,6 +1,6 @@
 ---
 name: senro
-description: Use when defining, running, retrying, or attaching to a pipeline built with senro (github.com/xavidop/senro): writing a Pipeline of Workflows and Steps, wiring exec.Command actions or senro.Func Go functions, targeting a workflow at the local, container.Image, k8s.Pod or ssh.Host executor, Expand fan-out over a unit graph (glob, gowork, cargo, jswork, maven, gradle, pyproject, bazel, MaxParallel, MaxNodes), NeedsEach per-unit edges and Partition/TemplateShard duration-balanced shards, Affected monorepo fan-out with a change source, When/Branch/ParamIs/EnvIs conditions, retry.OnInfra policies, Service steps with service.Ports/TCP/HTTP readiness and SENRO_SERVICE_* addresses, Timeout, OnFailure/Always handlers, workspaces and scratch caches, Pure() action caching with Inputs/Outputs/CacheEnv, senro.WithSecrets credentials with SecretEnv, trigger gating with senro.WithTrigger, notifications through senro.WithSink and the notify package, failure analysis through senro.WithAnalyzer and contrib/genkitanalyzer, the shared cache over an S3 bucket or an OCI registry, attach.Listen live attach, or the senro CLI (run, run --break-on-failure, up, attach, shell including the offline form, verify, cache gc, cache explain, ws ls/pull/diff, logs fetch, func check). CI/CD is the familiar case, not the only one senro covers.
+description: Use when defining, running, retrying, or attaching to a pipeline built with senro (github.com/xavidop/senro): writing a Pipeline of Workflows and Steps, wiring exec.Command actions or senro.Func Go functions, targeting a workflow at the local, container.Image, k8s.Pod or ssh.Host executor, Expand fan-out over a unit graph (glob, gowork, cargo, jswork, maven, gradle, pyproject, bazel, MaxParallel, MaxNodes), NeedsEach per-unit edges and Partition/TemplateShard duration-balanced shards, Affected monorepo fan-out with a change source, When/Branch/ParamIs/EnvIs conditions, retry.OnInfra policies, Service steps with service.Ports/TCP/HTTP readiness and SENRO_SERVICE_* addresses, kit presets (kit/gotest, kit/pytest, kit/eslint, kit/playwright) added with WorkflowBuilder.Add, Timeout, OnFailure/Always handlers, workspaces and scratch caches, Pure() action caching with Inputs/Outputs/CacheEnv, senro.WithSecrets credentials with SecretEnv, trigger gating with senro.WithTrigger, notifications through senro.WithSink and the notify package, failure analysis through senro.WithAnalyzer and contrib/genkitanalyzer, the shared cache over an S3 bucket or an OCI registry, attach.Listen live attach, or the senro CLI (run, run --break-on-failure, up, init, attach, shell including the offline form, verify, cache gc, cache explain, ws ls/pull/diff, logs fetch, func check). CI/CD is the familiar case, not the only one senro covers.
 ---
 
 # senro: a pipeline engine defined in Go
@@ -288,6 +288,54 @@ verify.Step("integration", exec.Command("go", "test", "./store/...")).Needs("db"
   Exit 0 if every service settled `succeeded`, 1 otherwise, 2 for no services.
 - Not supported: services on Kubernetes or SSH, command probes, a per-run
   Docker network, retries/Pure/handlers on a service.
+
+## Kits: `Add` and `kit/*`
+
+A kit is a preset step for one tool with per-test results already wired in.
+Packages: `kit/gotest`, `kit/pytest`, `kit/eslint`, `kit/playwright`
+(`github.com/xavidop/senro/kit/...`).
+
+```go
+verify.Add("test", gotest.Step(gotest.Race()))
+verify.Add("e2e", playwright.Step(playwright.Dir("e2e")))
+verify.Expand("test", gowork.Modules()).Template(gotest.Template())
+```
+
+- `(*WorkflowBuilder).Add(id, sb)` adopts a builder made elsewhere (a kit's
+  `Step`, or `senro.NewStep`) and returns it, so `Needs`, `Env`, `When` chain
+  as on `Step`. `Build` refuses, naming the id: a builder added twice (or to
+  two workflows), a handler builder, a nil builder.
+- Every kit has `Step(opts...)` (one step, `WorkDir` from `Dir`),
+  `Template(opts...)` (a func for `Expand(...).Template`, one step per unit run
+  from `u.Dir`, `Dir` ignored, a fresh builder per call) and
+  `Detect(root) ([]kit.Match, error)`. Options on all: `Dir(d)`, `Args(a...)`.
+  Neither form calls `Pure()`: add `.Pure().Inputs(u.Sources()...)` yourself.
+- gotest: `go test -json [-race] [-tags a,b] [Args...] <Packages|./...>`;
+  `testreport.GoTestJSON()`, so reruns select by test. Options `Packages`,
+  `Race`, `Tags`. Applies where a `go.mod` is.
+- pytest: `<runner> pytest --junitxml=.senro/pytest.xml [Args...] [Paths...]`;
+  runner `uv run` (uv.lock), `poetry run` (poetry.lock), else `python -m`,
+  found at build time from the process working directory; `Runner(argv...)`
+  overrides. Report `JUnitXML` with `Selecting("-k", "{tests}").JoinedBy(" or ")`.
+  Options `Paths`, `Runner`. Applies on `[tool.pytest.ini_options]`, pytest in
+  project/optional/poetry dependencies, `pytest.ini`, `[pytest]` in tox.ini,
+  `[tool:pytest]` in setup.cfg.
+- eslint: `<pm> eslint <Paths|.> --format junit --output-file
+  .senro/eslint.xml [Args...]`; `<pm>` is `pnpm exec`, `yarn`, `bunx` or `npx`
+  from the nearest lockfile (none is npx). Report `JUnitXML` with NO selection
+  (rule hits are not rerunnable names), so a rerun runs the whole step. Option
+  `Paths`. Applies on a package.json with an ESLint config file or eslint as a
+  dependency.
+- playwright: `<pm> playwright test --reporter=list,junit [Args...]` with
+  `PLAYWRIGHT_JUNIT_OUTPUT_NAME=.senro/playwright.xml`; report `JUnitXML` with
+  `Selecting("-g", "{tests}").JoinedBy("|")`. Applies on a
+  `playwright.config.{ts,js,mjs,cjs,mts,cts}`.
+- Reports go under `.senro/` in the step's working directory
+  (`kit.ReportDir`); detection skips `.`/`_`-prefixed directories,
+  `node_modules`, `vendor`, `testdata`, `venv`, `env`, `build`, `dist`,
+  `target`, `site-packages`.
+- `kit/all.Detect(ctx, root)` runs every kit's `Detect`, sorted by kit then
+  directory; `senro init` uses it (see the CLI section).
 
 ## `Timeout`, `OnFailure`, `Always`
 
@@ -895,6 +943,7 @@ or is refused.
 senro run <pkg> [--ui=auto|tui|plain|none] [--trigger-event PATH] [--break-on-failure]
     [-- pipeline-args...]
 senro up <pkg> [--ui=auto|tui|plain|none] [-- pipeline-args...]
+senro init [DIR] [--out ci] [--force] [--dry-run] [--no-tidy]
 senro attach [--pid <pid> | --run <id> | --addr <host:port>] [--follow] [--tls]
     [--ui=auto|tui|plain|none]
 senro shell [--pid <pid> | --run <id> | --addr <host:port>] [--tls] [--tty]

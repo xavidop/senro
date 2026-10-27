@@ -54,6 +54,31 @@ ends (Ctrl-C included) with every service settled `succeeded`, `1` otherwise,
 (`this pipeline declares no services`). `--break-on-failure` is accepted and
 `--trigger-event` forwarded, as for `senro run`.
 
+## `senro init`
+
+```
+senro init [DIR] [--out ci] [--force] [--dry-run] [--no-tidy]
+```
+
+Writes `<out>/main.go` (default `ci/main.go`, relative to DIR, default `.`) from
+the kits that apply: `gotest` for a `go.mod`, `pytest`, `eslint`, `playwright`
+(rules in the Kits section of SKILL.md). One `verify.Add(kit, kit.Step(...))`
+per match, with `kit.Dir("<dir>")` off the root; several `gotest` or `pytest`
+matches become one `verify.Expand` over `gowork.Modules()` or
+`pyproject.Packages()` with the kit's `Template()`; several `eslint` or
+`playwright` matches get ids like `eslint-apps-web`. No `Needs` between them.
+Then makes the package buildable: if neither `DIR/go.mod` nor `<out>/go.mod`
+exists it writes `<out>/go.mod` (`module <DIR name>/<out name>`, the running
+toolchain's Go version), and in the module's directory runs
+`go get github.com/xavidop/senro@<version>` (`latest` for a development build)
+and `go mod tidy`; a failure there is a warning, and `--no-tidy` prints the
+commands instead. An existing `<out>/main.go` is refused without `--force`;
+`--dry-run` prints the file to stdout and writes nothing. Summary (stderr):
+`senro init: detected`, one `<kit> <dir> <reason>` line per match,
+`Wrote <path>`, `Next: senro run ./ci`. Exit `0` written or printed, `1`
+detection or write failed, `2` usage error (unknown flag, DIR not a directory,
+nothing detected, main.go exists without `--force`).
+
 ## `senro attach`
 
 ```
