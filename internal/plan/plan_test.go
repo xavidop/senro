@@ -121,7 +121,7 @@ func TestDigestIgnoresOrderButNotContent(t *testing.T) {
 	swapped := base()
 	swapped.Nodes[2].Needs = []string{"y", "x"}
 	if base().Digest() != swapped.Digest() {
-		t.Error("Needs order changed the digest — the same edge set is the same timetable")
+		t.Error("Needs order changed the digest: the same edge set is the same timetable")
 	}
 
 	// But every semantic change must change it, or the digest is worthless.
@@ -220,6 +220,22 @@ func TestValidateRejectsHandlerWithWhen(t *testing.T) {
 	}
 }
 
+// A handler mounts its parent's workspaces read-only, so CheckGenerated on
+// one has nothing it could write and nothing to compare: refused with the
+// handler-specific reason, not the generic "no read-write mount" one.
+func TestValidateRejectsHandlerWithCheckGenerated(t *testing.T) {
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{{
+		ID: "deploy", Kind: "exec", Cmd: []string{"true"},
+		OnFailure: []plan.Node{{ID: "regen", Kind: "exec", Cmd: []string{"true"}, CheckGenerated: true}},
+	}}}
+	err := p.Validate()
+	want := `plan: handler "regen" of step "deploy" declares CheckGenerated: ` +
+		"a handler cannot CheckGenerated: it mounts its parent's workspaces read-only"
+	if err == nil || err.Error() != want {
+		t.Errorf("Validate = %v, want %q", err, want)
+	}
+}
+
 func TestValidateRejectsDuplicateHandlerIDs(t *testing.T) {
 	p := &plan.Plan{Version: 1, Nodes: []plan.Node{{
 		ID: "deploy", Kind: "exec", Cmd: []string{"true"},
@@ -309,7 +325,7 @@ func TestDigestRespectsHandlerOrder(t *testing.T) {
 		}}}
 	}
 	if mk("a", "b").Digest() == mk("b", "a").Digest() {
-		t.Error("swapping two handlers did not change the digest — handler order is execution order")
+		t.Error("swapping two handlers did not change the digest, yet handler order is execution order")
 	}
 }
 

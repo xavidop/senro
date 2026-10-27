@@ -1,12 +1,18 @@
 package engine_test
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/xavidop/senro"
 	"github.com/xavidop/senro/api"
 	"github.com/xavidop/senro/exec"
+	"github.com/xavidop/senro/internal/engine"
+	"github.com/xavidop/senro/internal/executor/localexec"
+	"github.com/xavidop/senro/internal/sink"
+	"github.com/xavidop/senro/internal/storage"
 )
 
 // checkGenerated runs a seed step that writes gen.txt into a run-scoped
@@ -155,5 +161,73 @@ func TestCheckGeneratedReportsEveryDriftedWorkspace(t *testing.T) {
 		"generated files are out of date in workspace docs: 1 changed: ref.md"
 	if body.Error != want {
 		t.Errorf("Error =\n %q\nwant\n %q", body.Error, want)
+	}
+}
+
+// A manual step.retry of a drifted CheckGenerated step is refused: the
+// run-scoped workspace already holds the drifted tree the first attempt
+// recorded, so the retry would regenerate against that tree, match it and
+// settle the step recovered. The step stays failed.
+func TestCheckGeneratedRefusesAManualRetryOfADriftedStep(t *testing.T) {
+	ws := senro.Workspace("src", senro.Scope(senro.ScopeRun))
+	pipe := senro.New("ci")
+	l := pipe.Workflow("main")
+	l.Step("seed", exec.Command("sh", "-c", "echo original > gen.txt")).
+		WorkDir("/src").Mount(ws.At("/src", senro.RW))
+	l.Step("codegen", exec.Command("sh", "-c", "echo appended >> gen.txt")).
+		Needs("seed").WorkDir("/src").Mount(ws.At("/src", senro.RW)).CheckGenerated()
+	// Keeps the run alive long enough for the control request to land.
+	l.Step("keepalive", exec.Command("sh", "-c", "sleep 2"))
+	p, err := pipe.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	runDir := filepath.Join(t.TempDir(), "run")
+	store, err := storage.Open(filepath.Join(t.TempDir(), "cache"))
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	csink := newControlSink()
+	finished := make(chan api.Event, 4)
+	csink.onEmit = func(e api.Event) {
+		if e.Type == api.StepFinished && e.Step == "codegen" {
+			finished <- e
+		}
+	}
+	out := runAsync(context.Background(), p, engine.Options{
+		Dir: runDir, Executor: localexec.New(runDir, store.Snapshotter), Sink: csink,
+		Storage: store, MaxParallel: 4, RunID: "01CGRETRY",
+	})
+	first := waitForEvent(t, finished, func(e api.Event) bool { return e.Attempt == 1 })
+	var body api.StepFinishedBody
+	if err := first.Decode(&body); err != nil {
+		t.Fatalf("decode step.finished: %v", err)
+	}
+	if body.State != api.StateFailed {
+		t.Fatalf("codegen state = %s, want failed (drift)", body.State)
+	}
+
+	resp := sendSettled(t, csink, sink.ControlRequest{
+		ID: "r1", Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": "codegen"},
+	})
+	if resp.OK {
+		t.Fatal("step.retry of a drifted CheckGenerated step was accepted")
+	}
+	if resp.Error != "check_generated_drifted_tree" {
+		t.Errorf("reason = %q, want %q", resp.Error, "check_generated_drifted_tree")
+	}
+
+	res := <-out
+	if res.err != nil {
+		t.Fatalf("Run: %v", res.err)
+	}
+	if res.status != api.RunFailed {
+		t.Errorf("status = %s, want failed", res.status)
+	}
+	for _, e := range csink.Events() {
+		if e.Step == "codegen" && (e.Type == api.StepRetried || e.Attempt > 1) {
+			t.Errorf("event %s attempt %d for codegen: the refused retry ran anyway", e.Type, e.Attempt)
+		}
 	}
 }

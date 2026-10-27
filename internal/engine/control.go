@@ -69,6 +69,15 @@ const (
 	// where nothing changed. The mirror image of reasonStepSettled.
 	reasonStepNotSettled = "step_not_settled"
 
+	// reasonCheckGeneratedDriftedTree refuses a step.retry of a step
+	// declaring CheckGenerated: its failed attempt already recorded the
+	// drifted tree into the run-scoped workspace, so a retry would remount
+	// that tree, regenerate the same bytes, compare against the drifted
+	// tree and settle recovered. `senro rerun --step` is unaffected: it
+	// starts a fresh run from the recorded snapshots of the step's
+	// dependencies, not from the drifted one.
+	reasonCheckGeneratedDriftedTree = "check_generated_drifted_tree"
+
 	// reasonMissingProposal, reasonUnknownProposal and reasonProposalSettled
 	// are the three ways an analysis decision can name nothing this run can
 	// decide: no id, an unknown id, an id already decided. The third is a
@@ -1075,7 +1084,9 @@ func (rc *runCore) handleRunCancel(h schedHandle, req sink.ControlRequest) {
 // the step is not currently running (reasonStepRunning: two attempts of one
 // step alive at once could not say whose log lines and exit code are whose)
 // and its last recorded state is a FAILED one per api.State.Failed
-// (reasonStepNotFailed).
+// (reasonStepNotFailed), and it does not declare CheckGenerated
+// (reasonCheckGeneratedDriftedTree: a retry would compare against the
+// drifted tree its failed attempt left in the workspace).
 //
 // Accepted, it schedules exactly ONE new attempt: not attempt.go's full
 // backoff/predicate loop, and deliberately not another OnFailure/Always
@@ -1113,6 +1124,11 @@ func (rc *runCore) handleStepRetry(h schedHandle, req sink.ControlRequest) bool 
 	if !settled || !st.Failed() {
 		h.mu.Unlock()
 		refuse(req, reasonStepNotFailed)
+		return false
+	}
+	if n.CheckGenerated {
+		h.mu.Unlock()
+		refuse(req, reasonCheckGeneratedDriftedTree)
 		return false
 	}
 	// Accepted: unsettle so the node can be scheduled again. running is set

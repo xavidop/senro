@@ -69,3 +69,23 @@ func TestARetriedStepsFinishedEventCarriesTheLastAttemptsUsage(t *testing.T) {
 		t.Errorf("usage = %+v, want the second attempt's", b.Usage)
 	}
 }
+
+// A step killed by its own timeout still reports what its process used: the
+// executor reaps the killed process, and the rusage of that wait is the
+// usage, so step.finished settles timed_out and carries usage.
+func TestATimedOutLocalStepsFinishedEventCarriesUsage(t *testing.T) {
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{{
+		ID: "slow", Kind: "exec", Cmd: []string{"sleep", "30"}, TimeoutMS: 200,
+	}}}
+	_, events, _ := runPlan(t, t.TempDir(), p)
+	_, b := finishedOf(t, events, "slow")
+	if b.State != api.StateTimedOut {
+		t.Fatalf("state = %s, want timed_out", b.State)
+	}
+	if b.Usage == nil {
+		t.Fatal("step.finished of a timed-out local step carries no usage")
+	}
+	if b.Usage.MaxRSS <= 0 {
+		t.Errorf("usage = %+v, want the killed process's max rss", *b.Usage)
+	}
+}

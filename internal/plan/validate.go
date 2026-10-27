@@ -643,6 +643,13 @@ func validateHandlers(parent *Node, lists ...[]Node) error {
 	seen := make(map[string]bool)
 	for _, list := range lists {
 		for _, h := range list {
+			// Before nodeShape, whose generic "no read-write workspace
+			// mount" refusal would otherwise name the wrong reason.
+			if h.CheckGenerated {
+				return fmt.Errorf(
+					"plan: handler %q of step %q declares CheckGenerated: a handler cannot "+
+						"CheckGenerated: it mounts its parent's workspaces read-only", h.ID, parentID)
+			}
 			if err := nodeShape(h); err != nil {
 				return err
 			}
