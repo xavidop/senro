@@ -147,7 +147,13 @@ func Record(runDir, path string) error {
 	}
 	observed, observedCPU := observe(events)
 
-	merged := file{Version: Version, Expansions: map[string]map[string]int64{}}
+	// Both maps start allocated: a cold start has no file to clone from, and
+	// mergeUnits writes into whatever it is given.
+	merged := file{
+		Version:    Version,
+		Expansions: map[string]map[string]int64{},
+		CPU:        map[string]map[string]int64{},
+	}
 	if b, readErr := os.ReadFile(path); readErr == nil {
 		var existing file
 		if err := json.Unmarshal(b, &existing); err != nil {
