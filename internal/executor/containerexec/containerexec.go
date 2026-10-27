@@ -417,6 +417,18 @@ func (s *sandbox) PutSecret(_ context.Context, name string, v []byte) (string, e
 // expiry branch quickly.
 var logDrainGrace = 5 * time.Second
 
+// runPhase, when a test sets it, is told as Run passes each of its waits:
+// "waited" once the container has exited, "logs" once the log stream has
+// drained or been cut, "stats" once the stats stream has ended. It is how a
+// timing test says WHICH wait took the time. Nil outside tests.
+var runPhase func(phase string)
+
+func notePhase(phase string) {
+	if runPhase != nil {
+		runPhase(phase)
+	}
+}
+
 // containerSpecFor is the daemon-side description of one command in this
 // sandbox: its binds, its working directory and its labels. Shared by Run
 // and RunInteractive so a session cannot see the step's workspaces
@@ -568,6 +580,7 @@ func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Wr
 	// keepFollowing) and is then cut; the timer runs alongside the log drain
 	// below rather than in front of it.
 	exited.Store(true)
+	notePhase("waited")
 	statsTimer := time.AfterFunc(statsTailGrace, stopStats)
 	defer statsTimer.Stop()
 
@@ -588,10 +601,12 @@ func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Wr
 		stopLogs()
 		<-logsDone
 	}
+	notePhase("logs")
 	// Bounded by statsTailGrace through the timer above, so Usage, read by
 	// the engine as soon as Run returns, sees every sample the stream
 	// delivered and no goroutine writes the sandbox's usage afterwards.
 	<-statsDone
+	notePhase("stats")
 
 	switch {
 	case cancelled != nil:

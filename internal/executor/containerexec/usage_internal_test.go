@@ -2,8 +2,10 @@ package containerexec
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,14 +87,27 @@ func TestRunDoesNotWaitOutTheDrainGraceForTheStatsStream(t *testing.T) {
 	}
 	defer func() { _ = sb.Close(context.Background(), false) }()
 
+	// Timed from the container's exit, not from Run's start: create and
+	// start on a loaded daemon can take seconds by themselves, and that is
+	// not the wait this test is about.
 	start := time.Now()
+	at := map[string]time.Duration{}
+	var phases []string
+	runPhase = func(phase string) {
+		at[phase] = time.Since(start)
+		phases = append(phases, fmt.Sprintf("%s at %s", phase, at[phase].Round(time.Millisecond)))
+	}
+	defer func() { runPhase = nil }()
 	code, err := sb.Run(ctx, senroexec.Cmd{Args: []string{"sh", "-c", "sleep 1"}}, io.Discard, io.Discard)
-	elapsed := time.Since(start)
 	if err != nil || code != 0 {
 		t.Fatalf("Run = %d, %v", code, err)
 	}
-	if limit := logDrainGrace - time.Second; elapsed >= limit {
-		t.Errorf("Run of a one-second command took %s (limit %s): the stats stream was waited out, not cut",
-			elapsed, limit)
+	waited, stats := at["waited"], at["stats"]
+	if waited == 0 || stats == 0 {
+		t.Fatalf("Run did not pass both the waited and stats phases: %s", strings.Join(phases, ", "))
+	}
+	if drain, limit := stats-waited, logDrainGrace-time.Second; drain >= limit {
+		t.Errorf("the drain after exit took %s (limit %s): the stats stream was waited out, not cut; phases: %s",
+			drain.Round(time.Millisecond), limit, strings.Join(phases, ", "))
 	}
 }

@@ -175,7 +175,32 @@ func firstErr(errs ...error) error {
 //
 // Not ErrInfra: the host's state is the pipeline's to fix, so the service
 // settles failed with this message, like a typo in its command.
+//
+// A port still held when the check first runs gets portReleaseGrace to come
+// free, polled every portPollInterval: a service revived the moment its
+// previous execution was stopped may find that execution's listener still
+// closing, and refusing it for that would fail a restart the engine asked
+// for. A port something else owns is still refused, just that much later.
 func portsFree(ports []int) error {
+	deadline := time.Now().Add(portReleaseGrace)
+	for {
+		err := portsFreeNow(ports)
+		if err == nil || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(portPollInterval)
+	}
+}
+
+// portReleaseGrace is how long portsFree waits for a held port to come free;
+// portPollInterval is how often it looks.
+const (
+	portReleaseGrace = time.Second
+	portPollInterval = 50 * time.Millisecond
+)
+
+// portsFreeNow is one pass of portsFree's checks.
+func portsFreeNow(ports []int) error {
 	for _, p := range ports {
 		port := strconv.Itoa(p)
 		for _, host := range []string{"127.0.0.1", ""} {

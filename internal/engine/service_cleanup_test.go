@@ -92,13 +92,13 @@ func TestRetryingAConsumerDuringItsServicesStopGraceWaitsForTheRestart(t *testin
 	waitForEvent(t, useFinished, func(api.Event) bool { return true })
 	time.Sleep(300 * time.Millisecond)
 	if indexOf(csink.Events(), api.StepFinished, "db") >= 0 {
-		t.Fatal("db finished before the retry: the grace did not hold it")
+		t.Fatalf("db finished before the retry: the grace did not hold it (db: %s)", dbVerdict(csink.Events()))
 	}
 	resp := sendSettled(t, csink, sink.ControlRequest{
 		ID: "r1", Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": "use"},
 	})
 	if !resp.OK {
-		t.Fatalf("step.retry response = %+v, want OK", resp)
+		t.Fatalf("step.retry response = %+v, want OK (db: %s)", resp, dbVerdict(csink.Events()))
 	}
 	awaitResult(t, out, 15*time.Second)
 
@@ -151,7 +151,7 @@ func TestTwoConsumersRetriedBackToBackBothWaitForTheRevivedService(t *testing.T)
 			ID: "r-" + step, Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": step},
 		})
 		if !resp.OK {
-			t.Fatalf("step.retry %s response = %+v, want OK", step, resp)
+			t.Fatalf("step.retry %s response = %+v, want OK (db: %s)", step, resp, dbVerdict(csink.Events()))
 		}
 	}
 	awaitResult(t, out, 15*time.Second)
@@ -219,7 +219,7 @@ func TestAConsumerOfARetriedServiceThatNeverRunsIsNotLeftWaiting(t *testing.T) {
 			ID: "r-" + step, Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": step},
 		})
 		if !resp.OK {
-			t.Fatalf("step.retry %s response = %+v, want OK", step, resp)
+			t.Fatalf("step.retry %s response = %+v, want OK (db: %s)", step, resp, dbVerdict(csink.Events()))
 		}
 	}
 	// keep ends at 8s; a consumer left waiting would hold the run until the
