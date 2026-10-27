@@ -59,12 +59,22 @@ func main() {
 		namespace  = flag.String("namespace", "", "Kubernetes namespace for a Lease-based lock; empty uses a file lock")
 		lockDir    = flag.String("lock-dir", os.TempDir(), "directory for the file lock")
 		cancelIP   = flag.Bool("cancel-in-progress", false, "terminate a run in progress instead of rejecting")
-		timeout    = flag.Duration("timeout", time.Hour, "how long one run may take before it is killed")
+		timeout    = flag.Duration("timeout", time.Hour, "how long one run may take before it is killed "+
+			"(a GitHub App installation token lives one hour, so a longer run cannot close its check)")
+		appID      = flag.String("github-app-id", "", "GitHub App id; with -github-private-key-file, report check runs")
+		keyFile    = flag.String("github-private-key-file", "", "the GitHub App's PEM private key")
+		githubAPI  = flag.String("github-api", "https://api.github.com", "GitHub API base URL")
+		checkName  = flag.String("check-name", "senro", "the check run's name")
+		detailsURL = flag.String("details-url", "", "check run details URL; {run} is the run id")
 	)
 	flag.Parse()
 
 	if *secretFile == "" || *pipeline == "" {
 		fmt.Fprintln(os.Stderr, "dispatcher: -secret-file and -pipeline are required")
+		os.Exit(2)
+	}
+	if err := appFlagsError(*appID, *keyFile); err != nil {
+		fmt.Fprintf(os.Stderr, "dispatcher: %v\n", err)
 		os.Exit(2)
 	}
 	secret, err := os.ReadFile(*secretFile)
@@ -89,6 +99,12 @@ func main() {
 		locker:   locker,
 		cancel:   *cancelIP,
 		timeout:  *timeout,
+	}
+	if *appID != "" {
+		if d.app, err = loadGitHubApp(*appID, *keyFile, *githubAPI, *checkName, *detailsURL); err != nil {
+			fmt.Fprintf(os.Stderr, "dispatcher: %v\n", err)
+			os.Exit(2)
+		}
 	}
 	log.Printf("dispatcher: listening on %s, pipeline %s, group %s", *addr, *pipeline, *group)
 	srv := &http.Server{
@@ -140,6 +156,7 @@ type dispatcher struct {
 	locker   persist.Locker
 	cancel   bool
 	timeout  time.Duration
+	app      *githubApp // nil outside GitHub App mode (githubapp.go)
 
 	// mu guards running, which is how -cancel-in-progress reaches the
 	// process it has to displace. The LOCK is what excludes; this is only
@@ -192,8 +209,11 @@ func (d *dispatcher) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	check := d.startCheck(provider, event, body)
+
 	release, err := d.take()
 	if err != nil {
+		check.notRun(d.group, err)
 		// A held group and a broken lock must not share a status: 409 says
 		// "busy, nothing queued, do not wait"; anything else is a 500 worth
 		// a log line, because nobody watches the sender's response.
@@ -213,7 +233,7 @@ func (d *dispatcher) serve(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = io.WriteString(w, "accepted\n")
 
-	go d.run(envelope, release)
+	go d.run(envelope, release, check)
 }
 
 // verify checks the HMAC. Constant-time, and the whole of the
@@ -277,7 +297,7 @@ func (d *dispatcher) take() (persist.Unlocker, error) {
 
 // run execs the pipeline with the delivery on disk, then forgets everything
 // about it.
-func (d *dispatcher) run(body []byte, release persist.Unlocker) {
+func (d *dispatcher) run(body []byte, release persist.Unlocker, check *appCheck) {
 	defer func() { _ = release.Release(context.Background()) }()
 
 	f, err := os.CreateTemp("", "senro-delivery-*.json")
@@ -306,7 +326,11 @@ func (d *dispatcher) run(body []byte, release persist.Unlocker) {
 
 	cmd := exec.CommandContext(ctx, d.pipeline, "--trigger-event", f.Name())
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if env := check.environ(); env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	err = cmd.Run()
+	check.finish(err)
 
 	// Exit 78 is "no trigger matched", which is an ordinary answer and not a
 	// failure: most deliveries are not for this pipeline.
