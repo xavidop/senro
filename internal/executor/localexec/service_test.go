@@ -4,6 +4,7 @@ package localexec_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -275,6 +276,67 @@ func TestStopEndsTheChildrenAServiceForked(t *testing.T) {
 	}
 	if _, err := waitWithin(t, svc, time.Second); err != nil {
 		t.Errorf("Wait: %v", err)
+	}
+}
+
+// A declared port something else already holds is refused before anything
+// starts: the probe would otherwise pass against the squatter and hand it to
+// the consumers as this service.
+func TestAServiceWhosePortIsTakenIsRefused(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	runner := serviceSandbox(t, port).(executor.ServiceRunner)
+	svc, err := runner.StartService(context.Background(),
+		executor.Cmd{Args: []string{"sleep", "60"}}, io.Discard, io.Discard)
+	if err == nil {
+		_ = svc.Stop(context.Background(), 0)
+		t.Fatal("StartService on a taken port succeeded")
+	}
+	want := "localexec: port " + strconv.Itoa(port) + " is already in use"
+	if err.Error() != want {
+		t.Errorf("err = %q, want %q", err, want)
+	}
+	if errors.Is(err, executor.ErrInfra) {
+		t.Error("a taken port reads as infrastructure; it is the pipeline's to fix")
+	}
+}
+
+// A wrapper that exits on its own may leave a child in its group holding
+// the port. Stop still kills the group, so nothing outlives the service.
+func TestStopKillsAChildTheWrapperLeftBehind(t *testing.T) {
+	runner := serviceSandbox(t).(executor.ServiceRunner)
+	out := &syncBuffer{}
+	svc, err := runner.StartService(context.Background(), executor.Cmd{Args: []string{"sh", "-c",
+		"sleep 60 >/dev/null 2>&1 & echo $!; exit 0"}}, out, io.Discard)
+	if err != nil {
+		t.Fatalf("StartService: %v", err)
+	}
+	if exit, err := waitWithin(t, svc, 5*time.Second); err != nil || exit != 0 {
+		t.Fatalf("Wait = (%d, %v), want (0, nil)", exit, err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(out.String()))
+	if err != nil {
+		t.Fatalf("child pid %q: %v", out.String(), err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatalf("the child was gone before Stop: %v", err)
+	}
+
+	if err := svc.Stop(context.Background(), time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("the child the wrapper left behind is still alive after Stop")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

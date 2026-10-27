@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -42,6 +44,9 @@ func (s *sandbox) StartService(
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("localexec: %w: %w", senroexec.ErrInfra, err)
 	}
+	if err := portsFree(s.spec.Ports); err != nil {
+		return nil, err
+	}
 
 	cmd := exec.Command(c.Args[0], c.Args[1:]...)
 	cmd.Dir = s.commandDir(c)
@@ -72,6 +77,30 @@ func (s *sandbox) StartService(
 		close(svc.done)
 	}()
 	return svc, nil
+}
+
+// portsFree refuses a service whose declared port something on this host
+// already holds on 127.0.0.1.
+//
+// A local service binds the declared port itself, and the probe dials it on
+// the loopback, so whatever already owns the port (a developer's own
+// database, a previous run's orphan) would pass the probe and be handed to
+// the consumers as this service, while the real one fails to bind and dies
+// in a log nobody reads. Listening and closing at once is the cheapest
+// honest check; the window between the close and the service's own bind is
+// a race only another process starting at that instant can lose.
+//
+// Not ErrInfra: the host's state is the pipeline's to fix, so the service
+// settles failed with this message, like a typo in its command.
+func portsFree(ports []int) error {
+	for _, p := range ports {
+		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p)))
+		if err != nil {
+			return fmt.Errorf("localexec: port %d is already in use", p)
+		}
+		_ = ln.Close()
+	}
+	return nil
 }
 
 // serviceVerdict is the (exit, err) for a finished service process.
@@ -127,9 +156,19 @@ func (l *localService) Wait() (int, error) {
 // It returns only once the reaping goroutine has finished, so the process is
 // gone and the pipes drained (bounded by waitDelay) by the time the caller
 // moves on to Close.
+//
+// A wrapper that already exited on its own may have left children in its
+// group (a backgrounded server that did not detach): they would keep the
+// port and outlive the run. So a Stop that finds the wrapper gone still
+// sends the group one SIGKILL; an empty group is ESRCH, which is success.
+// pgid 0 is a program that never started, and kill(0) would signal senro's
+// own group.
 func (l *localService) Stop(ctx context.Context, grace time.Duration) error {
 	select {
 	case <-l.done:
+		if l.pgid != 0 {
+			return signalGroup(l.pgid, syscall.SIGKILL)
+		}
 		return nil
 	default:
 	}
