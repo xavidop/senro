@@ -60,24 +60,31 @@ ends (Ctrl-C included) with every service settled `succeeded`, `1` otherwise,
 senro init [DIR] [--out ci] [--force] [--dry-run] [--no-tidy]
 ```
 
-Writes `<out>/main.go` (default `ci/main.go`, relative to DIR, default `.`) from
+Writes `<out>/main.go` (default `ci/main.go`; `--out` is relative to DIR, default `.`, or absolute) from
 the kits that apply: `gotest` for a `go.mod`, `pytest`, `eslint`, `playwright`
 (rules in the Kits section of SKILL.md). One `verify.Add(kit, kit.Step(...))`
 per match, with `kit.Dir("<dir>")` off the root; several `gotest` or `pytest`
 matches become one `verify.Expand` over `gowork.Modules()` or
 `pyproject.Packages()` with the kit's `Template()`; several `eslint` or
 `playwright` matches get ids like `eslint-apps-web`. No `Needs` between them.
-Then makes the package buildable: if neither `DIR/go.mod` nor `<out>/go.mod`
-exists it writes `<out>/go.mod` (`module <DIR name>/<out name>`, the running
-toolchain's Go version), and in the module's directory runs
+Then makes the package buildable: `DIR/go.mod` is joined only when `--out` is
+inside DIR; an `--out` elsewhere (absolute included) gets its own go.mod, used
+as is if it exists, else written (`module <DIR name>/<out name>`, the running
+toolchain's Go version). In the module's directory it runs
 `go get github.com/xavidop/senro@<version>` (`latest` for a development build)
-and `go mod tidy`; a failure there is a warning, and `--no-tidy` prints the
-commands instead. An existing `<out>/main.go` is refused without `--force`;
+and `go mod tidy`; a failure there, or no `go` on PATH, is a warning (exit
+still 0), and `--no-tidy` prints the commands instead. The generated main
+prints the `senro.Run` error before `os.Exit(1)`. An existing `<out>/main.go` is refused without `--force`;
 `--dry-run` prints the file to stdout and writes nothing. Summary (stderr):
 `senro init: detected`, one `<kit> <dir> <reason>` line per match,
-`Wrote <path>`, `Next: senro run ./ci`. Exit `0` written or printed, `1`
+`Wrote <out>/main.go`, `Wrote <out>/go.mod` (when it created the module file)
+or `Updated go.mod: go get github.com/xavidop/senro@<version>` (when it joined
+an existing module and both commands succeeded), then `Next:`: `senro run
+./<out>` (bare path for an absolute `--out`), shell-quoted, prefixed with
+`cd <DIR> &&` whenever the process cwd is not DIR. Exit `0` written or printed, `1`
 detection or write failed, `2` usage error (unknown flag, DIR not a directory,
-nothing detected, main.go exists without `--force`).
+nothing detected, `--out` exists and is not a directory, main.go exists
+without `--force`).
 
 ## `senro attach`
 

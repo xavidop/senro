@@ -82,10 +82,13 @@ func main() {
 	// Run builds p first, so a duplicate id or a bad option surfaces here,
 	// before anything executes.
 	if err := senro.Run(ctx, p, senro.WithAttach(att)); err != nil {
+		log.Print(err)
 		os.Exit(1)
 	}
 }
 ```
+
+If the run fails, the generated `main` prints the error from `senro.Run` before it exits `1`.
 
 How matches become steps:
 
@@ -101,8 +104,10 @@ How matches become steps:
 
 The file is a Go package, so it needs a module. `senro init` handles three cases:
 
-- If `DIR/go.mod` exists (a Go repository), the pipeline joins that module.
-- If `<out>/go.mod` exists, it is used as it is.
+- If `DIR/go.mod` exists (a Go repository) and `--out` is inside `DIR`, the pipeline joins that
+  module.
+- If `--out` is somewhere else (an absolute path, say, or `../ci`), it gets a module of its own:
+  `<out>/go.mod` is used as it is when it exists.
 - Otherwise it writes `<out>/go.mod`, with the module path `<DIR's name>/<out's name>` (so
   `myrepo/ci` by default) and the Go version of the toolchain running `senro`.
 
@@ -110,13 +115,14 @@ Then, in the module's directory, it runs `go get github.com/xavidop/senro@<versi
 `go mod tidy`. The version is the one `senro` itself was built from, or `latest` for a development
 build. A command that fails, or a missing Go toolchain, is a **warning**, not a failure: the file
 is already written, and the warning says the module needs those commands before `senro run`.
-`--no-tidy` skips both and prints them instead.
+`--no-tidy` skips both and prints them instead. With no `go` on the `PATH` it does the same: it
+prints a warning and the two commands, and still exits `0`.
 
 ## Flags
 
 | Flag | What it does |
 |---|---|
-| `--out DIR` | Where to write `main.go`, relative to `DIR` (default `ci`) |
+| `--out DIR` | Where to write `main.go`: relative to `DIR`, or an absolute path (default `ci`) |
 | `--force` | Replace an existing `<out>/main.go`. Without it, `senro init` refuses |
 | `--dry-run` | Print the file to stdout and write nothing, not even a `go.mod` |
 | `--no-tidy` | Do not run `go get` and `go mod tidy`; print them |
@@ -130,10 +136,16 @@ senro init: detected
   gotest     .          go.mod
   eslint     web        package.json devDependencies
 Wrote ci/main.go
+Wrote ci/go.mod
 Next: senro run ./ci
 ```
 
-When `DIR` is not the current directory the last line is `Next: cd <DIR> && senro run ./ci`.
+- `Wrote <out>/go.mod` appears only when `senro init` created the module file.
+- When it joined an existing module instead, and both commands succeeded, a line
+  `Updated go.mod: go get github.com/xavidop/senro@<version>` takes its place.
+- `Next:` follows `--out`: `senro run ./<out>`, or the bare path for an absolute `--out`. The path is
+  shell-quoted when it needs it. When the process is not running in `DIR`, it is prefixed with
+  `cd <DIR> &&`.
 
 ## Exit codes
 
@@ -141,7 +153,7 @@ When `DIR` is not the current directory the last line is `Next: cd <DIR> && senr
 |---|---|
 | `0` | The file was written, or printed with `--dry-run` |
 | `1` | Detection failed (a `package.json` or `pyproject.toml` that does not parse, say), or a file could not be written |
-| `2` | A usage error: an unknown flag, `DIR` is not a directory, nothing was detected, or `<out>/main.go` exists and `--force` was not given |
+| `2` | A usage error: an unknown flag, `DIR` is not a directory, nothing was detected, `--out` exists and is not a directory, or `<out>/main.go` exists and `--force` was not given |
 
 A failing `go get` or `go mod tidy` does not change the exit code.
 
