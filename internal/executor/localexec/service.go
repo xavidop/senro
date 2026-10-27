@@ -296,9 +296,17 @@ func (l *localService) Stop(ctx context.Context, grace time.Duration) error {
 	l.stopping = true
 	swept := l.swept
 	l.mu.Unlock()
+	// Swept means the process was reaped and its group killed: the id is no
+	// longer ours to signal, even while done is still open behind the
+	// output drain. Waiting for done keeps "returns once the process is gone
+	// and the pipes drained".
+	if swept {
+		<-l.done
+		return nil
+	}
 	select {
 	case <-l.done:
-		if l.pgid == 0 || swept {
+		if l.pgid == 0 {
 			return nil
 		}
 		return signalGroup(l.pgid, syscall.SIGKILL)
@@ -332,7 +340,7 @@ func (l *localService) groupEmptyWithin(ctx context.Context, expired <-chan time
 	tick := time.NewTicker(groupPoll)
 	defer tick.Stop()
 	for {
-		if err := syscall.Kill(-l.pgid, 0); errors.Is(err, syscall.ESRCH) {
+		if err := killGroup(l.pgid, 0); errors.Is(err, syscall.ESRCH) {
 			return true
 		}
 		select {
@@ -348,11 +356,16 @@ func (l *localService) groupEmptyWithin(ctx context.Context, expired <-chan time
 // groupPoll is how often Stop looks for what a stopped wrapper left behind.
 const groupPoll = 50 * time.Millisecond
 
+// killGroup is kill(-pgid, sig): every signal a service's process group is
+// sent, the probe for an empty group included, goes through it. A var so an
+// internal test can count them; nothing else writes it.
+var killGroup = func(pgid int, sig syscall.Signal) error { return syscall.Kill(-pgid, sig) }
+
 // signalGroup signals every process in the group. ESRCH is success: the group
 // emptied between the check and the signal, and the outcome Stop wants is
 // already true.
 func signalGroup(pgid int, sig syscall.Signal) error {
-	if err := syscall.Kill(-pgid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := killGroup(pgid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("localexec: %w: signalling service process group %d: %w",
 			senroexec.ErrInfra, pgid, err)
 	}
