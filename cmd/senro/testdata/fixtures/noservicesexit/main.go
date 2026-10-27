@@ -51,8 +51,9 @@ func realMain() int {
 	if err := senro.Run(ctx, pipe, senro.WithAttach(att)); err != nil {
 		var runErr *senro.RunError
 		if errors.As(err, &runErr) {
-			// A real run outcome, just not "succeeded": still 1, this
-			// fixture's whole point is to BE the success case.
+			// A real run outcome, just not "succeeded": 1, as any
+			// pipeline's main returns for a failed run. Never reached
+			// under SENRO_UP=1, where Run refuses before running.
 			return 1
 		}
 		fmt.Fprintln(os.Stderr, err)

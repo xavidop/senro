@@ -167,3 +167,29 @@ func TestANodeWithNoServiceDigestsExactlyAsItAlwaysHas(t *testing.T) {
 		t.Fatalf("plan digest = %s, want %s (a Service field reached the digest of a plan without one)", got, want)
 	}
 }
+
+// Every field of a service's declaration is in the plan digest: the ports
+// it publishes, its probe, and its two durations. The same declaration twice
+// is one digest.
+func TestAServicesDeclarationIsInThePlanDigest(t *testing.T) {
+	base := serviceNode(nil).Digest()
+	if again := serviceNode(nil).Digest(); again != base {
+		t.Fatalf("the same service declaration digests as %s and %s", base, again)
+	}
+	for name, mutate := range map[string]func(*plan.Node){
+		"another port": func(n *plan.Node) { n.Service.Ports = []int{5432, 5433} },
+		"a different port": func(n *plan.Node) {
+			n.Service.Ports = []int{5433}
+			n.Service.Probe.Port = 5433
+		},
+		"an HTTP probe": func(n *plan.Node) {
+			n.Service.Probe = plan.ProbeSpec{Kind: plan.ServiceProbeHTTP, Port: 5432, Path: "/healthz"}
+		},
+		"a ready timeout": func(n *plan.Node) { n.Service.ReadyTimeoutMS = 30000 },
+		"a stop grace":    func(n *plan.Node) { n.Service.StopGraceMS = 1000 },
+	} {
+		if got := serviceNode(mutate).Digest(); got == base {
+			t.Errorf("%s left the plan digest unchanged", name)
+		}
+	}
+}

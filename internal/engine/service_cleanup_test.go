@@ -221,7 +221,7 @@ func TestAServiceAddressIsNeverInTheCacheKeysEnvInput(t *testing.T) {
 	}
 	t.Chdir(dir)
 	store := openStore(t, dir)
-	spy :=&envSpyExecutor{Executor: localexec.New(dir, store.Snapshotter)}
+	spy := &envSpyExecutor{Executor: localexec.New(dir, store.Snapshotter)}
 	p := &plan.Plan{Version: 1, Nodes: []plan.Node{
 		serveNode(t, "db", freePort(t), false),
 		{ID: "use", Kind: "exec", Needs: []string{"db"}, Pure: true, Inputs: []string{"file:in.txt"},

@@ -107,6 +107,23 @@ func TestUpRefusalMapsToUsageWhateverTheChildExitCode(t *testing.T) {
 	}
 }
 
+// The other half of the sniff: a pipeline that exits non-zero WITHOUT
+// printing the refusal keeps its own exit code. noattach exits 42 having
+// printed only its arguments.
+func TestUpKeepsTheChildsCodeWithoutTheRefusalText(t *testing.T) {
+	isolateRegistry(t)
+	fastRegistrationPoll(t, 10*time.Millisecond)
+
+	var stdout, stderr strings.Builder
+	code := cmdUp([]string{"./testdata/fixtures/noattach", "--ui=none"}, &stdout, &stderr, false)
+	if code != 42 {
+		t.Fatalf("exit = %d, want the pipeline's own 42; stderr=%s", code, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "declares no services") {
+		t.Errorf("stderr = %q, want no refusal for a pipeline that never printed one", stderr.String())
+	}
+}
+
 func TestUpPrintsEndpointsAndExitsZeroOnInterrupt(t *testing.T) {
 	isolateRegistry(t)
 	fastRegistrationPoll(t, 10*time.Millisecond)
