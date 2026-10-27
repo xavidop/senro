@@ -25,7 +25,8 @@ and memory it used, in the TUI and in the trace.
 - **Notifier adoption:** `notify.GitHubChecks` can adopt an existing check run (PATCH to
   `in_progress` instead of POST), carry a details URL, and be built from the dispatcher's
   environment in one call.
-- **`senro lock <pkg>`:** resolves every container and Kubernetes image a pipeline declares to a
+- **`senro lock <pkg>`:** resolves every container image a pipeline declares (Kubernetes steps
+  already require a digest at Build, so they need no lock entry; amended in review) to a
   registry digest and writes `senro.lock` beside the pipeline; `senro run` and `senro up` apply
   it automatically; `--check` fails when the registry has moved a tag. A locked run pulls by
   digest, so the cache key's executor class is the locked digest on every machine.
