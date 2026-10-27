@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -111,6 +112,10 @@ func cmdShellOffline(runFlag, step, cacheDir string, keep, fellBack bool, cmd []
 		return exitRunFailed
 	}
 	_, _ = fmt.Fprintf(stderr, "senro shell: offline, workspaces restored to %s\n", root)
+	if missing := unrestoredMounts(n, snaps); len(missing) > 0 {
+		_, _ = fmt.Fprintf(stderr, "senro shell: not restored (no snapshot by this step): %s\n",
+			strings.Join(missing, ", "))
+	}
 	defer func() {
 		if keep {
 			_, _ = fmt.Fprintf(stderr, "senro shell: kept %s\n", root)
@@ -122,6 +127,24 @@ func cmdShellOffline(runFlag, step, cacheDir string, keep, fellBack bool, cmd []
 	}()
 
 	return runOfflineShell(ctx, root, workDir, offlineShellEnv(n, runID, step), cmd, stdin, stdout, stderr)
+}
+
+// unrestoredMounts names, in the step's mount order and once each, every
+// workspace the step mounts that it recorded no snapshot of: a read-only
+// mount, say, or one a cancelled step never got to snapshot. Its mount path
+// is empty in the shell, and the banner says why rather than leaving an
+// empty directory to explain itself.
+func unrestoredMounts(n *plan.Node, snaps map[string]api.WSSnapshotBody) []string {
+	var out []string
+	for _, ms := range n.Mounts {
+		if ms.Workspace == "" || slices.Contains(out, ms.Workspace) {
+			continue
+		}
+		if _, ok := snaps[ms.Workspace]; !ok {
+			out = append(out, ms.Workspace)
+		}
+	}
+	return out
 }
 
 // offlineShellEnv is what the offline shell runs with: the step's declared
@@ -159,6 +182,9 @@ func offlineShellEnv(n *plan.Node, runID, step string) []string {
 //     (LD_PRELOAD, DYLD_INSERT_LIBRARIES), code injected into every
 //     process;
 //   - BASH_ENV, ENV, ZDOTDIR: a startup file the shell sources;
+//   - BASH_FUNC_*: an exported bash function (BASH_FUNC_ls%%), defined
+//     in the shell and every bash it starts, shadowing the command it is
+//     named after;
 //   - PROMPT_COMMAND, PS4: a command run at every prompt or trace line;
 //   - SHELLOPTS, BASHOPTS: shell options set before any rc file;
 //   - IFS: how every unquoted expansion splits.
@@ -168,7 +194,7 @@ func offlineShellEnv(n *plan.Node, runID, step string) []string {
 // anywhere (a CI artifact, a colleague). Standing in it must not mean
 // running whatever it says.
 func shellEnvDenied(name string) bool {
-	if strings.HasPrefix(name, "LD_") || strings.HasPrefix(name, "DYLD_") {
+	if strings.HasPrefix(name, "LD_") || strings.HasPrefix(name, "DYLD_") || strings.HasPrefix(name, "BASH_FUNC_") {
 		return true
 	}
 	switch name {
@@ -271,6 +297,10 @@ func restoreStepWorkspaces(ctx context.Context, store *storage.Storage, p *plan.
 		}
 	}
 
+	// targets, not order: the fallback is the first mount as the step
+	// declares it, which is what someone reading the pipeline expects to
+	// land in; order is by depth only so a nested restore lands after the
+	// mount enclosing it.
 	workDir = root
 	if len(targets) > 0 {
 		workDir = targets[0].path

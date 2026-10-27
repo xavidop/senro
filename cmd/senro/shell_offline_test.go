@@ -8,9 +8,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xavidop/senro"
 	"github.com/xavidop/senro/exec"
+	"github.com/xavidop/senro/internal/attachsrv"
 	"github.com/xavidop/senro/internal/plan"
 	"github.com/xavidop/senro/internal/storage"
 )
@@ -209,7 +211,7 @@ func TestOfflineShellDropsLoaderAndStartupVariables(t *testing.T) {
 	runDir, cacheDir := seedOfflineShellRun(t)
 	denied := []string{"LD_PRELOAD=/x.so", "LD_LIBRARY_PATH=/x", "DYLD_INSERT_LIBRARIES=/x.dylib",
 		"BASH_ENV=/x.sh", "ENV=/x.sh", "ZDOTDIR=/x", "PROMPT_COMMAND=touch /x", "SHELLOPTS=xtrace",
-		"BASHOPTS=extglob", "IFS=x", "PS4=$(touch /x)"}
+		"BASHOPTS=extglob", "IFS=x", "PS4=$(touch /x)", "BASH_FUNC_ls%%=() { touch /x; }"}
 	rewritePlan(t, runDir, func(n *plan.Node) {
 		n.Env = append(append(n.Env, "ORDINARY=visible"), denied...)
 	})
@@ -241,7 +243,8 @@ func TestOfflineShellDropsLoaderAndStartupVariables(t *testing.T) {
 	if code != exitSuccess {
 		t.Fatalf("exit = %d, stderr: %s", code, errb.String())
 	}
-	if strings.Contains(out.String(), "LD_PRELOAD") || strings.Contains(out.String(), "BASH_ENV") {
+	if strings.Contains(out.String(), "LD_PRELOAD") || strings.Contains(out.String(), "BASH_ENV") ||
+		strings.Contains(out.String(), "BASH_FUNC_") {
 		t.Errorf("env printed a denied variable:\n%s", out.String())
 	}
 }
@@ -363,5 +366,84 @@ func TestOfflineShellStripsSecretEnv(t *testing.T) {
 		if !strings.Contains(env, kept) {
 			t.Errorf("the offline shell's environment lacks %q:\n%s", kept, env)
 		}
+	}
+}
+
+// TestOfflineShellNamesTheMountsItCouldNotRestore: a workspace the step
+// mounts but never snapshotted is an empty directory in the shell, and the
+// banner says which ones and why.
+func TestOfflineShellNamesTheMountsItCouldNotRestore(t *testing.T) {
+	runDir, cacheDir := seedOfflineShellRun(t)
+	rewritePlan(t, runDir, func(n *plan.Node) {
+		n.Mounts = append(n.Mounts,
+			plan.MountSpec{Workspace: "deps", At: "/deps"},
+			plan.MountSpec{Workspace: "tools", At: "/tools"})
+	})
+
+	var out, errb bytes.Buffer
+	code := cmdShell([]string{"--run", runDir, "--step", "build", "--offline", "--cache-dir", cacheDir,
+		"--cmd", "true"}, &out, &errb, strings.NewReader(""))
+	if code != exitSuccess {
+		t.Fatalf("exit = %d, stderr: %s", code, errb.String())
+	}
+	if want := "senro shell: not restored (no snapshot by this step): deps, tools\n"; !strings.Contains(errb.String(), want) {
+		t.Errorf("stderr = %q, want %q", errb.String(), want)
+	}
+
+	// Nothing to name: no line.
+	runDir, cacheDir = seedOfflineShellRun(t)
+	errb.Reset()
+	if code := cmdShell([]string{"--run", runDir, "--step", "build", "--offline", "--cache-dir", cacheDir,
+		"--cmd", "true"}, &out, &errb, strings.NewReader("")); code != exitSuccess {
+		t.Fatalf("exit = %d, stderr: %s", code, errb.String())
+	}
+	if strings.Contains(errb.String(), "not restored") {
+		t.Errorf("stderr names unrestored mounts when every mount was restored: %q", errb.String())
+	}
+}
+
+// TestOfflineShellCleansUpWhenTheShellCannotStart: a command that never
+// starts still leaves no restored directory behind.
+func TestOfflineShellCleansUpWhenTheShellCannotStart(t *testing.T) {
+	runDir, cacheDir := seedOfflineShellRun(t)
+
+	var out, errb bytes.Buffer
+	code := cmdShell([]string{"--run", runDir, "--step", "build", "--offline", "--cache-dir", cacheDir,
+		"--cmd", filepath.Join(t.TempDir(), "no-such-shell")}, &out, &errb, strings.NewReader(""))
+	if code != exitRunFailed {
+		t.Errorf("exit = %d, want %d; stderr: %s", code, exitRunFailed, errb.String())
+	}
+	root := offlineRoot(t, errb.String())
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Errorf("%s is still there after the shell failed to start (stat: %v)", root, err)
+		_ = os.RemoveAll(root)
+	}
+}
+
+// TestShellOnARegisteredRunItCannotReachDoesNotGoOffline: a run with a live
+// registration is live, and a socket that refuses is an error to report,
+// not a cue to restore an older recording and stand in that instead.
+func TestShellOnARegisteredRunItCannotReachDoesNotGoOffline(t *testing.T) {
+	runDir, cacheDir := seedOfflineShellRun(t)
+	unregister, err := attachsrv.Register(attachsrv.Entry{
+		PID: os.Getpid(), Socket: filepath.Join(t.TempDir(), "gone.sock"), RunID: runDir,
+		Pipeline: "ci", StartedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	t.Cleanup(unregister)
+
+	var out, errb bytes.Buffer
+	code := cmdShell([]string{"--run", runDir, "--step", "build", "--cache-dir", cacheDir,
+		"--cmd", "true"}, &out, &errb, strings.NewReader(""))
+	if code != exitUsage {
+		t.Errorf("exit = %d, want %d; stderr: %s", code, exitUsage, errb.String())
+	}
+	if strings.Contains(errb.String(), "offline") {
+		t.Errorf("a refused live socket fell back to the offline form: %q", errb.String())
+	}
+	if !strings.Contains(errb.String(), "could not connect") {
+		t.Errorf("stderr = %q, want it to say the registered run could not be reached", errb.String())
 	}
 }
