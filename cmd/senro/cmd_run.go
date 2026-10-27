@@ -292,9 +292,24 @@ const (
 	breakOnFailureEnv = "SENRO_BREAK_ON_FAILURE"
 )
 
-// buildPipeline runs `go build -o <tmp> pkg`. Build output goes to stderr,
-// never stdout: it is a diagnostic about the BUILD, not the pipeline's
-// output. ctx bounds the build (Ctrl-C should interrupt a stuck `go build`,
+// buildArgs is the go command line that builds pkg into the absolute path
+// bin. A pkg naming a local directory (./ci, ci, /abs/ci) is built with
+// `-C pkg`, so the toolchain resolves the module from that directory: a
+// pipeline in ci/ with its own ci/go.mod (what senro init writes for a
+// repository that is not a Go module) builds from the parent, which has no
+// go.mod. Inside a single module -C changes nothing. Any other pkg is an
+// import path and is built from the caller's directory as written. Only the
+// build moves; the binary still runs in the caller's directory.
+func buildArgs(pkg, bin string) []string {
+	if fi, err := os.Stat(pkg); err == nil && fi.IsDir() {
+		return []string{"build", "-C", pkg, "-o", bin, "."}
+	}
+	return []string{"build", "-o", bin, pkg}
+}
+
+// buildPipeline runs `go build` for pkg (see buildArgs) into a temp
+// directory. Build output goes to stderr, never stdout: it is a diagnostic
+// about the BUILD, not the pipeline's output. ctx bounds the build (Ctrl-C should interrupt a stuck `go build`,
 // and there is no run yet to cancel gracefully), unlike the pipeline
 // process, which cmdRun deliberately does not bind to ctx.
 func buildPipeline(ctx context.Context, goBin, pkg string, stderr io.Writer) (binPath string, cleanup func(), err error) {
@@ -304,8 +319,12 @@ func buildPipeline(ctx context.Context, goBin, pkg string, stderr io.Writer) (bi
 	}
 	cleanup = func() { _ = os.RemoveAll(dir) }
 
-	binPath = filepath.Join(dir, "pipeline")
-	cmd := exec.CommandContext(ctx, goBin, "build", "-o", binPath, pkg)
+	binPath, err = filepath.Abs(filepath.Join(dir, "pipeline"))
+	if err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("create build directory: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, goBin, buildArgs(pkg, binPath)...)
 	cmd.Stdout = stderr
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {

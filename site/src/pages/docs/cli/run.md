@@ -20,7 +20,10 @@ senro run ./ci -- --env=staging   # flags after -- go to the pipeline, not to se
 senro run ./ci --break-on-failure # hold a failed step open for a shell
 ```
 
-`senro run` builds the named package with `go build` into a temporary binary, then runs it. If the
+`senro run` builds the named package with `go build` into a temporary binary, then runs it. A
+package given as a directory (`./ci`) is built from inside that directory (`go build -C ./ci`), so
+`ci/` can be a module of its own, as `senro init` writes it for a repository without a `go.mod`.
+The binary itself still runs in your current directory. If the
 pipeline registered an attach server (by calling `attach.Listen`, see
 [Run options and outcomes](/docs/run/options/)), senro attaches to it and renders the
 run exactly like `senro attach` would.

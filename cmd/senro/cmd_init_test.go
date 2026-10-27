@@ -321,11 +321,14 @@ func TestInitGeneratedPipelineBuilds(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, goBin, "build", "./...")
-	cmd.Dir = filepath.Join(dir, "ci")
-	if b, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, b)
+	// The way senro run builds it: from DIR, which has no go.mod of its own.
+	t.Chdir(dir)
+	var build bytes.Buffer
+	_, cleanup, err := buildPipeline(ctx, goBin, "./ci", &build)
+	if err != nil {
+		t.Fatalf("buildPipeline ./ci from %s: %v\n%s", dir, err, build.String())
 	}
+	cleanup()
 }
 
 func TestInitOutOutsideDirGetsItsOwnModule(t *testing.T) {
