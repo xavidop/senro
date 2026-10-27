@@ -1,0 +1,8 @@
+{
+  "name": "web",
+  "private": true,
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "eslint": "^9.0.0"
+  }
+}

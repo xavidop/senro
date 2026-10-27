@@ -1,4 +1,5 @@
-// Command senro is the CLI companion to the senro pipeline engine: it builds
+// Command senro is the CLI companion to the senro pipeline engine: it writes
+// a first pipeline from what a repository already has (senro init), builds
 // and runs an embedded pipeline (senro run), attaches to one already running
 // or finished (senro attach), lists what's under ./runs (senro runs), opens
 // a session on a live step (senro shell), reads what a run left behind
@@ -30,6 +31,15 @@ Usage:
       service settled cleanly, 2 for a pipeline that declares no services.
       --break-on-failure is accepted and --trigger-event is forwarded, both
       exactly as for senro run.
+
+  senro init [DIR] [--out ci] [--force] [--dry-run] [--no-tidy]
+      Write a first pipeline to <out>/main.go from what DIR (default .)
+      already has: go test for each go.mod, pytest, ESLint and Playwright
+      where they are configured. Then makes the package buildable: writes
+      <out>/go.mod when DIR has none and runs go get and go mod tidy, which
+      --no-tidy prints instead. An existing main.go is refused without
+      --force; --dry-run prints the file and writes nothing. Exits 2 when it
+      detects nothing.
 
   senro attach [--pid <pid> | --run <id> | --addr <host:port>] [--follow]
       [--tls] [--ui=auto|tui|plain|none]
@@ -150,6 +160,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "up":
 		return cmdUp(args[1:], stdout, stderr, stdoutIsTTY())
+	case "init":
+		return cmdInit(args[1:], stdout, stderr)
 	case "run":
 		return cmdRun(args[1:], stdout, stderr, stdoutIsTTY())
 	case "attach":
