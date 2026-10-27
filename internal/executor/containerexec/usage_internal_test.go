@@ -1,10 +1,18 @@
 package containerexec
 
 import (
+	"context"
+	"io"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/xavidop/senro/internal/cas"
 	"github.com/xavidop/senro/internal/dockerd"
+	"github.com/xavidop/senro/internal/dockerd/dockertest"
 	senroexec "github.com/xavidop/senro/internal/executor"
+	"github.com/xavidop/senro/internal/plan"
+	"github.com/xavidop/senro/internal/workspace"
 )
 
 // foldSample keeps the LAST cpu figures and the PEAK memory, net of the
@@ -37,5 +45,54 @@ func TestFoldSampleKeepsLastCPUAndPeakMemory(t *testing.T) {
 
 	if _, ok := foldSample(senroexec.ResourceUsage{}, false, dockerd.StatsSample{}); ok {
 		t.Error("an empty sample alone reported ok")
+	}
+}
+
+// Once the container is known to have exited, the empty sample the daemon
+// sends for a stopped container ends the stream; before that, nothing does.
+func TestStatsFollowingStopsOnTheEmptySampleAfterExit(t *testing.T) {
+	if !keepFollowing(false, dockerd.StatsSample{}) {
+		t.Error("an empty sample before exit stopped the stream")
+	}
+	if !keepFollowing(true, dockerd.StatsSample{MemUsage: 1}) {
+		t.Error("a real sample after exit stopped the stream")
+	}
+	if keepFollowing(true, dockerd.StatsSample{}) {
+		t.Error("the empty sample after exit did not stop the stream")
+	}
+}
+
+// The stats stream of a stopped container is not ended by the daemon (only
+// removal ends it, and Close removes after Run returns), so Run must cut it
+// itself instead of waiting out logDrainGrace. Skips without a daemon.
+func TestRunDoesNotWaitOutTheDrainGraceForTheStatsStream(t *testing.T) {
+	c := dockertest.Require(t)
+	dockertest.Pull(t, c)
+	store, err := cas.Open(filepath.Join(t.TempDir(), "cas"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ex, err := New(plan.ExecutorSpec{Kind: plan.ExecutorContainer, Image: dockertest.Image},
+		workspace.NewSnapshotter(store), WithClient(c), WithRunID("stats-drain"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	sb, err := ex.Sandbox(ctx, senroexec.SandboxSpec{StepID: "sleepy", Attempt: 1})
+	if err != nil {
+		t.Fatalf("Sandbox: %v", err)
+	}
+	defer func() { _ = sb.Close(context.Background(), false) }()
+
+	start := time.Now()
+	code, err := sb.Run(ctx, senroexec.Cmd{Args: []string{"sh", "-c", "sleep 1"}}, io.Discard, io.Discard)
+	elapsed := time.Since(start)
+	if err != nil || code != 0 {
+		t.Fatalf("Run = %d, %v", code, err)
+	}
+	if limit := logDrainGrace - time.Second; elapsed >= limit {
+		t.Errorf("Run of a one-second command took %s (limit %s): the stats stream was waited out, not cut",
+			elapsed, limit)
 	}
 }

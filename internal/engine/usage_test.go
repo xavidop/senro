@@ -1,3 +1,7 @@
+// Unix only: localexec reads rusage, and reports no usage elsewhere.
+
+//go:build unix
+
 package engine_test
 
 import (

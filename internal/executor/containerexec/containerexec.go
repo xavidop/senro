@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xavidop/senro/internal/dockerd"
@@ -516,11 +517,13 @@ func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Wr
 	bg := context.WithoutCancel(ctx)
 	// The stats stream starts right after start, so the first sample the
 	// daemon takes is not missed, and survives cancellation like the log
-	// stream: a killed workload still consumed something. The daemon ends
-	// it when the container stops; the drain below bounds that.
+	// stream: a killed workload still consumed something. The daemon does
+	// not end it when the container stops (only removal does), so it is
+	// cut below, statsTailGrace after the exit.
 	statsCtx, stopStats := context.WithCancel(bg)
 	defer stopStats()
-	statsDone := s.followStats(statsCtx, id)
+	var exited atomic.Bool
+	statsDone := s.followStats(statsCtx, id, &exited)
 	// The log stream gets its own cancellable context so the drain below
 	// can STOP it rather than merely stop waiting for it.
 	logCtx, stopLogs := context.WithCancel(bg)
@@ -553,6 +556,13 @@ func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Wr
 		_ = s.ex.cli.ContainerKill(bg, id)
 		res = <-waitDone
 	}
+	// The container has exited. The stats stream gets statsTailGrace to
+	// deliver one more sample (or the empty one that ends it, see
+	// keepFollowing) and is then cut; the timer runs alongside the log drain
+	// below rather than in front of it.
+	exited.Store(true)
+	statsTimer := time.AfterFunc(statsTailGrace, stopStats)
+	defer statsTimer.Stop()
 
 	// Drain the log stream before returning, bounded, so every byte the step
 	// produced is in the file before the engine emits step.finished.
@@ -571,15 +581,10 @@ func (s *sandbox) Run(ctx context.Context, c senroexec.Cmd, stdout, stderr io.Wr
 		stopLogs()
 		<-logsDone
 	}
-	// The same bounded drain for the stats stream, so Usage, read by the
-	// engine as soon as Run returns, sees every sample the daemon sent and
-	// no goroutine is left writing the sandbox's usage afterwards.
-	select {
-	case <-statsDone:
-	case <-time.After(logDrainGrace):
-		stopStats()
-		<-statsDone
-	}
+	// Bounded by statsTailGrace through the timer above, so Usage, read by
+	// the engine as soon as Run returns, sees every sample the stream
+	// delivered and no goroutine writes the sandbox's usage afterwards.
+	<-statsDone
 
 	switch {
 	case cancelled != nil:

@@ -64,7 +64,10 @@ func scrub(e api.Event, a *traceAliases) api.Event {
 			// step.finished's usage is DELETED, not nulled: it is measured,
 			// so it varies per run, and whether it is present at all depends
 			// on the host (no rusage off unix). usage_test.go pins it.
-			delete(m, "usage")
+			// Only there: no other payload has a usage field to drop.
+			if e.Type == api.StepFinished {
+				delete(m, "usage")
+			}
 			for _, k := range []string{"span_id", "parent_span_id"} {
 				if s, ok := m[k].(string); ok {
 					m[k] = a.span(s)

@@ -780,6 +780,49 @@ func TestContainerStatsDecodesEachSampleOfTheStream(t *testing.T) {
 	}
 }
 
+// TestContainerStatsFallsBackToTotalInactiveFile: a cgroup v1 daemon may
+// report only total_inactive_file; inactive_file wins when both are present.
+func TestContainerStatsFallsBackToTotalInactiveFile(t *testing.T) {
+	c := fakeDaemon(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"memory_stats":{"usage":4096,"stats":{"total_inactive_file":512}}}`+"\n")
+		_, _ = io.WriteString(w, `{"memory_stats":{"usage":4096,"stats":{"inactive_file":256,"total_inactive_file":512}}}`+"\n")
+	})
+	var got []uint64
+	if err := c.ContainerStats(ctx(t), "abc", func(s StatsSample) bool {
+		got = append(got, s.MemInactiveFile)
+		return true
+	}); err != nil {
+		t.Fatalf("ContainerStats: %v", err)
+	}
+	if len(got) != 2 || got[0] != 512 || got[1] != 256 {
+		t.Errorf("MemInactiveFile = %v, want [512 256]", got)
+	}
+}
+
+// TestContainerStatsIsCutByItsContext: a stats stream on a stopped but
+// unremoved container never ends by itself, so cancelling the context is
+// the only way out, and it must be prompt.
+func TestContainerStatsIsCutByItsContext(t *testing.T) {
+	c := fakeDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"memory_stats":{"usage":1}}`+"\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // a stream that never ends on its own
+	})
+	cctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	n := 0
+	start := time.Now()
+	_ = c.ContainerStats(cctx, "abc", func(StatsSample) bool { n++; return true })
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("ContainerStats returned %s after a 300ms context; the stream was not cut", elapsed)
+	}
+	if n != 1 {
+		t.Errorf("callback ran %d times, want 1", n)
+	}
+}
+
 // TestContainerStatsStopsWhenTheCallbackSaysSo: returning false ends the
 // stream early without an error.
 func TestContainerStatsStopsWhenTheCallbackSaysSo(t *testing.T) {

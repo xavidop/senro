@@ -749,7 +749,8 @@ func (c *Client) ContainerLogs(ctx context.Context, id string, stdout, stderr io
 // StatsSample is the part of one stats-stream object senro reads: the
 // container's cumulative CPU time in nanoseconds and its current memory in
 // bytes. CPUUser and CPUKernel are zero on cgroup v2 daemons that do not
-// split the total; MemInactiveFile is zero when the daemon omits it.
+// split the total. MemInactiveFile is inactive_file, else cgroup v1's
+// total_inactive_file, else zero.
 type StatsSample struct {
 	CPUTotal, CPUUser, CPUKernel uint64
 	MemUsage, MemInactiveFile    uint64
@@ -778,7 +779,8 @@ func (c *Client) ContainerStats(ctx context.Context, id string, each func(StatsS
 			Mem struct {
 				Usage uint64 `json:"usage"`
 				Stats struct {
-					InactiveFile uint64 `json:"inactive_file"`
+					InactiveFile      *uint64 `json:"inactive_file"`
+					TotalInactiveFile uint64  `json:"total_inactive_file"`
 				} `json:"stats"`
 			} `json:"memory_stats"`
 		}
@@ -788,12 +790,19 @@ func (c *Client) ContainerStats(ctx context.Context, id string, each func(StatsS
 			}
 			return fmt.Errorf("dockerd: decoding stats for %s: %w", id, err)
 		}
+		// inactive_file when the daemon reports it (cgroup v2, and v1 for
+		// the container's own cgroup), else cgroup v1's
+		// total_inactive_file, which includes its descendants.
+		inactive := doc.Mem.Stats.TotalInactiveFile
+		if doc.Mem.Stats.InactiveFile != nil {
+			inactive = *doc.Mem.Stats.InactiveFile
+		}
 		if !each(StatsSample{
 			CPUTotal:        doc.CPU.Usage.Total,
 			CPUUser:         doc.CPU.Usage.User,
 			CPUKernel:       doc.CPU.Usage.Kernel,
 			MemUsage:        doc.Mem.Usage,
-			MemInactiveFile: doc.Mem.Stats.InactiveFile,
+			MemInactiveFile: inactive,
 		}) {
 			return nil
 		}
