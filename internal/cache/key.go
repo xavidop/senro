@@ -76,6 +76,15 @@ type Key struct {
 	// ToolVersions is the declared toolchain fingerprint. Empty in this
 	// build.
 	ToolVersions string `json:"tool_versions"`
+	// Services is the sorted (step id, node digest) set of the services the
+	// step needs directly (ServicesComponent): a consumer's result depends
+	// on what answered it, so a changed image or command must miss. Never
+	// the address, which differs every run.
+	//
+	// Empty for a step that needs no service, and then absent from
+	// Components and from the digest entirely, so every key written before
+	// it existed digests exactly as it did and KeyVersion does not move.
+	Services string `json:"services,omitempty"`
 	// Version is KeyVersion at the time the key was built.
 	Version int `json:"version"`
 }
@@ -89,8 +98,11 @@ type Component struct {
 // Components returns the key's pieces in the ONE canonical order. The order
 // is part of the digest and part of Explain's output, so it is defined here
 // and nowhere else.
+//
+// services is the one conditional component: present only when non-empty
+// (see Key.Services), just before version.
 func (k Key) Components() []Component {
-	return []Component{
+	out := []Component{
 		{"command", k.Command},
 		{"env", k.Env},
 		{"secrets", k.Secrets},
@@ -102,8 +114,34 @@ func (k Key) Components() []Component {
 		{"step_shape", k.StepShape},
 		{"func_identity", k.FuncIdentity},
 		{"tool_versions", k.ToolVersions},
-		{"version", strconv.Itoa(k.Version)},
 	}
+	if k.Services != "" {
+		out = append(out, Component{"services", k.Services})
+	}
+	return append(out, Component{"version", strconv.Itoa(k.Version)})
+}
+
+// ServiceDigest is one service a step needs: its step id and the digest of
+// its plan node.
+type ServiceDigest struct {
+	Step   string
+	Digest string
+}
+
+// ServicesComponent canonicalizes a step's direct service needs, sorted by
+// step id, in WorkspacesComponent's framed grammar.
+func ServicesComponent(svcs []ServiceDigest) string {
+	sorted := make([]ServiceDigest, len(svcs))
+	copy(sorted, svcs)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Step < sorted[j].Step })
+	var b strings.Builder
+	for _, s := range sorted {
+		writeFramed(&b, s.Step)
+		b.WriteByte(' ')
+		writeFramed(&b, s.Digest)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 // Digest is the key's content address, over the canonical component
@@ -180,12 +218,26 @@ type Diff struct {
 // empty result means the two keys are the same key. It only ever repeats a
 // component's existing Value, so it can leak nothing the keys do not
 // already hold (Env's Value is already NAME=<digest8>; see EnvComponent).
+//
+// Matched by name, not position: the services component is present in one
+// key and absent in the other when a step gained or lost a service need,
+// and an absent component reads as empty.
 func Explain(prev, cur Key) []Diff {
-	p, c := prev.Components(), cur.Components()
+	pv := make(map[string]string)
+	for _, c := range prev.Components() {
+		pv[c.Name] = c.Value
+	}
 	var out []Diff
-	for i := range p {
-		if p[i].Value != c[i].Value {
-			out = append(out, Diff{Name: p[i].Name, From: p[i].Value, To: c[i].Value})
+	seen := make(map[string]bool)
+	for _, c := range cur.Components() {
+		seen[c.Name] = true
+		if pv[c.Name] != c.Value {
+			out = append(out, Diff{Name: c.Name, From: pv[c.Name], To: c.Value})
+		}
+	}
+	for _, c := range prev.Components() {
+		if !seen[c.Name] && c.Value != "" {
+			out = append(out, Diff{Name: c.Name, From: c.Value})
 		}
 	}
 	return out

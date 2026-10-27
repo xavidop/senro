@@ -28,6 +28,11 @@ and how to read a miss.
 | `tool_versions` | The declared toolchain fingerprint |
 | `version` | The key format's own version |
 
+A step that needs a [service](/docs/steps/services/) directly has one more, `services`: the
+digest of each such service's declaration, so changing its image or command misses. Its address
+never enters, since that changes every run. A step that needs no service has no `services`
+component at all, so its key is the twelve above.
+
 Each component comes from something you wrote: `Inputs` feeds `input_digests`, `Mount` feeds
 `workspace_digests` and `mount_shape`, `CacheEnv` feeds `env`. See
 [Caching a step](/docs/data/caching/).

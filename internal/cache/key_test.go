@@ -59,6 +59,7 @@ func TestEveryComponentIsLoadBearing(t *testing.T) {
 		{"step_shape", func(k *cache.Key) { k.StepShape = "changed" }},
 		{"func_identity", func(k *cache.Key) { k.FuncIdentity = "changed" }},
 		{"tool_versions", func(k *cache.Key) { k.ToolVersions = "changed" }},
+		{"services", func(k *cache.Key) { k.Services = "changed" }},
 		{"version", func(k *cache.Key) { k.Version = 99 }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,6 +86,32 @@ func TestComponentsAreNamedAndOrdered(t *testing.T) {
 		if got[i].Name != want[i] {
 			t.Errorf("component %d is %q, want %q: the order is part of the digest", i, got[i].Name, want[i])
 		}
+	}
+}
+
+// The services component exists only when a step needs a service: absent,
+// it is not a component at all, so a key that never had one digests exactly
+// as it did before the component was added. Present, it sits before
+// version, and Explain matches it by name against a key without one.
+func TestTheServicesComponentIsAbsentWhenEmpty(t *testing.T) {
+	for _, c := range sampleKey().Components() {
+		if c.Name == "services" {
+			t.Fatal("a key with no services lists a services component")
+		}
+	}
+	with := sampleKey()
+	with.Services = cache.ServicesComponent([]cache.ServiceDigest{{Step: "db", Digest: "abc"}})
+	cs := with.Components()
+	if cs[len(cs)-2].Name != "services" || cs[len(cs)-1].Name != "version" {
+		t.Errorf("components end %q, %q; want services, version", cs[len(cs)-2].Name, cs[len(cs)-1].Name)
+	}
+	diffs := cache.Explain(sampleKey(), with)
+	if len(diffs) != 1 || diffs[0].Name != "services" || diffs[0].From != "" {
+		t.Errorf("Explain(without, with) = %+v, want one services diff from empty", diffs)
+	}
+	diffs = cache.Explain(with, sampleKey())
+	if len(diffs) != 1 || diffs[0].Name != "services" || diffs[0].To != "" {
+		t.Errorf("Explain(with, without) = %+v, want one services diff to empty", diffs)
 	}
 }
 

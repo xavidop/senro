@@ -140,6 +140,7 @@ func (rc *runCore) cacheLookup(ctx context.Context, n *plan.Node, opts Options) 
 	}
 
 	k := cache.Key{
+		Services:         rc.serviceNeedsComponent(n),
 		Command:          cache.CommandComponent(n.Kind, n.Cmd, n.WorkDir),
 		Env:              cache.EnvComponent(effectiveEnv, n.CacheEnv),
 		Secrets:          cache.SecretsComponent(secretIDs),
@@ -184,6 +185,41 @@ func (rc *runCore) cacheLookup(ctx context.Context, n *plan.Node, opts Options) 
 		}
 	}
 	return dec, nil
+}
+
+// serviceNeedsComponent is the cache key's services component for n: the
+// node digest of every service n needs directly, or "" when it needs none.
+//
+// A Pure consumer's result is a function of what answered it as much as of
+// its inputs: the same test against postgres:15 and postgres:16 is two
+// results. The service's address never enters (it differs every run; see
+// TestServiceEnvNeverEntersTheCacheKey), so without this a changed image or
+// command would keep serving the result the old service produced. The node
+// digest is plan.Plan.Digest's canonical form over a one-node plan, so the
+// same declaration in another field order digests the same.
+func (rc *runCore) serviceNeedsComponent(n *plan.Node) string {
+	if len(n.Needs) == 0 {
+		return ""
+	}
+	var svcs []cache.ServiceDigest
+	rc.oc.mu.Lock()
+	for _, need := range n.Needs {
+		svc := rc.byID[need]
+		if svc == nil || !svc.IsService() {
+			continue
+		}
+		svcs = append(svcs, cache.ServiceDigest{Step: need, Digest: nodeDigest(svc)})
+	}
+	rc.oc.mu.Unlock()
+	if len(svcs) == 0 {
+		return ""
+	}
+	return cache.ServicesComponent(svcs)
+}
+
+// nodeDigest is n's content digest in plan.Plan.Digest's canonical form.
+func nodeDigest(n *plan.Node) string {
+	return (&plan.Plan{Version: 1, Nodes: []plan.Node{*n}}).Digest()
 }
 
 // recordDecision writes the run's copy of a key and its verdict, which is
