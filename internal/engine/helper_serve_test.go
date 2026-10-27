@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -24,7 +25,8 @@ const (
 	helperServeHTTP        = "SENRO_TEST_SERVE_HTTP"
 	helperServeStubborn    = "SENRO_TEST_SERVE_STUBBORN"
 	helperServeExitAfterMS = "SENRO_TEST_SERVE_EXIT_AFTER_MS"
-	// helperServeFile, with helperServeHTTP, also serves that file on /file.
+	// helperServeFile, set to "1" with helperServeHTTP, also serves files
+	// under the working directory on /file/<path>.
 	helperServeFile = "SENRO_TEST_SERVE_FILE"
 )
 
@@ -67,12 +69,12 @@ func TestHelperServe(t *testing.T) {
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
-		// /file answers with the named file as it is NOW, read relative to
+		// /file/<path> answers with that file as it is NOW, read relative to
 		// the working directory on every request: what the service sees in
 		// its mount at the moment it is asked.
-		if name := os.Getenv(helperServeFile); name != "" {
-			mux.HandleFunc("/file", func(w http.ResponseWriter, _ *http.Request) {
-				b, err := os.ReadFile(name)
+		if os.Getenv(helperServeFile) == "1" {
+			mux.HandleFunc("/file/", func(w http.ResponseWriter, r *http.Request) {
+				b, err := os.ReadFile(strings.TrimPrefix(r.URL.Path, "/file/"))
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusNotFound)
 					return

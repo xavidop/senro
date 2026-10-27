@@ -264,9 +264,9 @@ The plain renderer prints `db ready at 127.0.0.1:54321 (port 5432)`, and the bro
 - **No per-run network.** Containers reach a container service on the daemon's default bridge,
   and everything else goes through the coordinator. See the table above.
 - **A service reads its workspaces, it never produces them.** It sees a private, read-only copy
-  of each workspace as it was when the service started, not later changes: restored from the
-  workspace's latest snapshot (so the snapshot's default excludes, such as `node_modules`, are not
-  in it), or copied as it stands when the workspace has never been snapshotted. senro holds the
+  of each workspace directory as it was when the service started, not later changes. It is a copy
+  of the directory itself, not of a snapshot, so the snapshot excludes don't apply: `node_modules`
+  and anything a step wrote without snapshotting are there. senro holds the
   workspace only while it makes the copy, so a long-lived service never blocks a sibling's cache
   restore, and that restore can't change what the running service sees. A write under a mount
   fails, and a service takes no snapshot when it stops, so nothing it writes reaches the ledger, a

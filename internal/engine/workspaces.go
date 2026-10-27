@@ -521,13 +521,11 @@ func (m *wsManager) handlerMounts(parent *plan.Node) ([]executor.Mount, error) {
 // change a local service's files mid-flight. A copy taken under the hold is
 // the workspace as it was when the service started, and stays that way.
 //
-// The copy is restored from the workspace's recorded digest when it has
-// one, through the same Snapshotter.RestoreTree a remote executor's staging
-// and `senro ws pull` use, so the service sees exactly the snapshot the
-// ledger names (the default excludes, node_modules and the like, are
-// therefore absent, as on any executor that is not given the coordinator's
-// directory). A workspace never snapshotted yet has no digest, and its
-// directory is copied as it stands.
+// The copy is of the DIRECTORY as it is on disk, never a restore of the
+// recorded snapshot: a snapshot applies the default excludes (node_modules
+// and the like) and misses whatever a step wrote without snapshotting, and
+// a service such as `node server.js` needs exactly those. A step standing in
+// the shared directory sees it whole, and so must a service.
 //
 // The caller must hold lockMounts for n's workspaces until this returns.
 func (m *wsManager) serviceMounts(ctx context.Context, n *plan.Node, attempt int) (
@@ -554,11 +552,10 @@ func (m *wsManager) serviceMounts(ctx context.Context, n *plan.Node, attempt int
 			continue
 		}
 		dest := filepath.Join(base, stepDirName(mt.Name))
-		if d := cas.Digest(mt.Digest); d.Valid() {
-			if _, err := m.snap.RestoreTree(ctx, d, dest); err != nil {
-				return nil, nil, fmt.Errorf("engine: copy workspace %q for service %q: %w", mt.Name, n.ID, err)
-			}
-		} else if err := copyTree(mt.Path, dest); err != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		if err := copyTree(mt.Path, dest); err != nil {
 			return nil, nil, fmt.Errorf("engine: copy workspace %q for service %q: %w", mt.Name, n.ID, err)
 		}
 		copies[mt.Name] = dest
@@ -568,10 +565,16 @@ func (m *wsManager) serviceMounts(ctx context.Context, n *plan.Node, attempt int
 }
 
 // copyTree copies the directory src to dest, which must not exist:
-// directories, regular files (with their permission bits) and symlinks (as
-// links, never followed, so a link pointing outside the workspace is not a
-// way to copy the host into it). Anything else (a socket, a device) is
-// skipped: it is not workspace content.
+// directories, empty ones included, regular files (with their permission
+// bits) and symlinks (as links, never followed, so a link pointing outside
+// the workspace is not a way to copy the host into it). A directory keeps
+// its bits plus owner rwx, without which nothing could be copied into it.
+// Anything else (a socket, a device) is skipped: it is not workspace
+// content.
+//
+// Written here rather than reused: the repo's other ways of moving a
+// workspace (workspace.Snapshotter, mountxfer's tar streams) all apply the
+// snapshot excludes, which is exactly what a service's copy must not do.
 func copyTree(src, dest string) error {
 	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {

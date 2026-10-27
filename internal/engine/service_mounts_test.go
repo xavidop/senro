@@ -103,13 +103,16 @@ func TestAServiceSeesItsWorkspaceAsItWasWhenItStarted(t *testing.T) {
 		ws := senro.Workspace("src", senro.Scope(senro.ScopeRun))
 		pipe := senro.New("ci")
 		l := pipe.Workflow("main")
-		l.Step("seed", exec.Command("sh", "-c", "printf original > main.go")).
+		// node_modules is a default snapshot exclude: the service must see it
+		// anyway, because its copy is of the directory, not of a snapshot.
+		l.Step("seed", exec.Command("sh", "-c",
+			"printf original > main.go && mkdir -p node_modules && printf dep > node_modules/x.txt")).
 			WorkDir("/src").Mount(ws.At("/src", senro.RW))
 		l.Service("db", exec.Command(self, "-test.run=^TestHelperServe$"),
 			service.Ports(port), service.HTTP(port, "/healthz")).
 			Env("SENRO_TEST_SERVE_PORT", strconv.Itoa(port)).
 			Env("SENRO_TEST_SERVE_HTTP", "1").
-			Env("SENRO_TEST_SERVE_FILE", "main.go").
+			Env("SENRO_TEST_SERVE_FILE", "1").
 			Env("GORACE", "atexit_sleep_ms=0").
 			Needs("seed").WorkDir("/src").Mount(ws.At("/src", senro.RO))
 		// gate holds cached back until db answers, without being a consumer
@@ -121,8 +124,12 @@ func TestAServiceSeesItsWorkspaceAsItWasWhenItStarted(t *testing.T) {
 			Needs("gate").WorkDir("/src").Mount(ws.At("/src", senro.RW)).
 			Pure().Inputs(artifact.Glob("**/*.go"))
 		l.Step("use", exec.Command(self, "-test.run=^TestHelperFetch$")).
-			Env("SENRO_TEST_FETCH_URL", base+"/file").Env("SENRO_TEST_FETCH_OUT", out).
+			Env("SENRO_TEST_FETCH_URL", base+"/file/main.go").Env("SENRO_TEST_FETCH_OUT", out).
 			Needs("db", "cached")
+		l.Step("dep", exec.Command(self, "-test.run=^TestHelperFetch$")).
+			Env("SENRO_TEST_FETCH_URL", base+"/file/node_modules/x.txt").
+			Env("SENRO_TEST_FETCH_OUT", out+".dep").
+			Needs("db")
 		p, err := pipe.Build()
 		if err != nil {
 			t.Fatalf("Build: %v", err)
@@ -158,6 +165,10 @@ func TestAServiceSeesItsWorkspaceAsItWasWhenItStarted(t *testing.T) {
 		b, err := os.ReadFile(out)
 		if err != nil {
 			t.Fatalf("run %s: what use was served: %v", runID, err)
+		}
+		if d, err := os.ReadFile(out + ".dep"); err != nil || string(d) != "dep" {
+			t.Errorf("run %s: node_modules/x.txt served as %q (%v), want \"dep\": the copy applied the snapshot excludes",
+				runID, d, err)
 		}
 		sh, err := os.ReadFile(filepath.Join(runDir, "ws", "src", "main.go"))
 		if err != nil {
