@@ -151,7 +151,10 @@ func Args(a ...string) Option  // appended to the tool's argv, after the kit's o
 
 - Command: `<pm> playwright test --reporter=list,junit [Args...]` with
   `Env("PLAYWRIGHT_JUNIT_OUTPUT_NAME", ".senro/playwright.xml")`.
-- Tests: `testreport.JUnitXML(".senro/playwright.xml").Selecting("-g", "{tests}").JoinedBy("|")`.
+- Tests: `testreport.JUnitXML(".senro/playwright.xml")` with no selection. (Amended in the final
+  review: Playwright's JUnit reporter names a case by its title path joined with ` › `, while
+  `--grep` matches the path joined by spaces, so a recorded name can never select its test. The
+  docs say per-test re-run is not available for Playwright.)
 - Detect: a directory with `playwright.config.{js,mjs,cjs,ts,mts,cts}`. Reason names the file.
 - Fan-out: none; one step per match with `Dir`.
 
