@@ -183,14 +183,12 @@ func (m *Model) proposalLine() string {
 	return ""
 }
 
-// endpointsNote is the log header's suffix for a focused service that has
-// reported endpoints: where it listens, so the operator need not dig the
-// address out of its output. Empty for any other step.
-func (m *Model) endpointsNote() string {
-	if m.state == nil {
-		return ""
-	}
-	s := m.state.Steps[m.focused]
+// endpointsNote is the log header's suffix for a service that has reported
+// endpoints: where it listens, so the operator need not dig the address out
+// of its output. Empty for any other step, and for nil. A function of the
+// step alone, so what it says cannot depend on which step the model has
+// focused.
+func endpointsNote(s *api.StepState) string {
 	if s == nil || s.Service == nil || len(s.Service.Endpoints) == 0 {
 		return ""
 	}
@@ -212,15 +210,20 @@ func (m *Model) renderLog() string {
 		return logPaneStyle.Render("(press enter on a step to view its log)")
 	}
 	prop := m.proposalLine()
+	var focused *api.StepState
+	if m.state != nil {
+		focused = m.state.Steps[m.focused]
+	}
+	note := endpointsNote(focused)
 	r := m.logs[m.focused]
 	if r == nil || len(r.Lines()) == 0 {
-		return logPaneStyle.Render(prop + m.focused + ":" + m.endpointsNote() + " (no log output yet)")
+		return logPaneStyle.Render(prop + m.focused + ":" + note + " (no log output yet)")
 	}
 	var b strings.Builder
 	b.WriteString(prop)
 	b.WriteString(m.focused)
 	b.WriteString(":")
-	b.WriteString(m.endpointsNote())
+	b.WriteString(note)
 	b.WriteString("\n")
 	if r.StartOffset() > 0 {
 		// Scrollback exists but has not been pulled in: a pane that

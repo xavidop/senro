@@ -367,6 +367,72 @@ func TestPlainPrintsABreakpointThatIsHitLive(t *testing.T) {
 // TestPlainPrintsAStepHeldAfterFailureLive: a --break-on-failure hold is a
 // failed step kept open, not a breakpoint a client armed, and the line says
 // so, so a CI log reader knows to look for a shell rather than a resume.
+// A service.ready that arrives while the renderer is watching names the
+// endpoint as it arrives, and one already in the snapshot is named once,
+// not again when the stream carries on past it.
+func TestPlainNamesAServiceReadyLiveOnce(t *testing.T) {
+	dir := t.TempDir()
+	l, err := eventlog.Open(dir)
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	mustAppend := func(e api.Event) {
+		t.Helper()
+		if _, err := l.Append(e); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	ready := func(step, addr string, port int) api.Event {
+		return api.Event{Type: api.ServiceReady, Run: "run1", Step: step, Attempt: 1, Payload: mustBody(api.ServiceReadyBody{
+			Endpoints: []api.Endpoint{{Port: port, Address: addr}}, Duration: time.Second,
+		})}
+	}
+	mustAppend(api.Event{Type: api.RunStarted, Run: "run1", Payload: mustBody(api.RunStartedBody{
+		Pipeline: "ci", EngineVersion: "test", StartedAt: time.Now().UTC(),
+	})})
+	for _, id := range []string{"db", "cache"} {
+		mustAppend(api.Event{Type: api.StepCreated, Run: "run1", Step: id,
+			Payload: mustBody(api.StepCreatedBody{Kind: "exec", Service: true})})
+		mustAppend(api.Event{Type: api.StepStarted, Run: "run1", Step: id, Attempt: 1})
+	}
+	// In the snapshot: db is ready before the renderer opens the source.
+	mustAppend(ready("db", "127.0.0.1:5432", 5432))
+
+	fs, err := source.OpenFile(dir, true)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer func() { _ = fs.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var buf syncBuffer
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = render.Plain(ctx, fs, &buf)
+	}()
+	waitForSubstring(t, &buf, "db ready at 127.0.0.1:5432 (port 5432)\n", 2*time.Second)
+
+	// Live: cache becomes ready, then db settles.
+	mustAppend(ready("cache", "127.0.0.1:6379", 6379))
+	waitForSubstring(t, &buf, "cache ready at 127.0.0.1:6379 (port 6379)\n", 2*time.Second)
+	mustAppend(api.Event{Type: api.StepFinished, Run: "run1", Step: "db", Attempt: 1, Payload: mustBody(api.StepFinishedBody{
+		State: api.StateSucceeded,
+	})})
+	waitForSubstring(t, &buf, "db succeeded", 2*time.Second)
+
+	cancel()
+	<-done
+	out := buf.String()
+	for _, line := range []string{"db ready at 127.0.0.1:5432 (port 5432)\n", "cache ready at 127.0.0.1:6379 (port 6379)\n"} {
+		if n := strings.Count(out, line); n != 1 {
+			t.Errorf("%q printed %d times, want exactly 1:\n%s", line, n, out)
+		}
+	}
+}
+
 func TestPlainPrintsAStepHeldAfterFailureLive(t *testing.T) {
 	dir := t.TempDir()
 	l, err := eventlog.Open(dir)
