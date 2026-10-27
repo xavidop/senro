@@ -352,34 +352,37 @@ func TestAServiceWhosePortIsTakenOnTheWildcardIsRefused(t *testing.T) {
 }
 
 // A wrapper that exits on its own may leave a child in its group holding
-// the port. Stop still kills the group, so nothing outlives the service.
-func TestStopKillsAChildTheWrapperLeftBehind(t *testing.T) {
+// the port and the output pipe. The group is killed as the wrapper exits,
+// so Wait reports the exit at once rather than after waitDelay, nothing
+// outlives the service, and a later Stop has nothing left to do.
+func TestAWrapperThatExitsTakesTheChildItLeftBehind(t *testing.T) {
 	runner := serviceSandbox(t).(executor.ServiceRunner)
 	out := &syncBuffer{}
 	svc, err := runner.StartService(context.Background(), executor.Cmd{Args: []string{"sh", "-c",
-		"sleep 60 >/dev/null 2>&1 & echo $!; exit 0"}}, out, io.Discard)
+		"sleep 60 & echo $!; exit 0"}}, out, io.Discard)
 	if err != nil {
 		t.Fatalf("StartService: %v", err)
 	}
+	start := time.Now()
 	if exit, err := waitWithin(t, svc, 5*time.Second); err != nil || exit != 0 {
 		t.Fatalf("Wait = (%d, %v), want (0, nil)", exit, err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("Wait took %v: the child holding the pipe delayed the wrapper's exit", took)
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(out.String()))
 	if err != nil {
 		t.Fatalf("child pid %q: %v", out.String(), err)
 	}
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
-	if err := syscall.Kill(pid, 0); err != nil {
-		t.Fatalf("the child was gone before Stop: %v", err)
-	}
 
 	if err := svc.Stop(context.Background(), time.Second); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for syscall.Kill(pid, 0) == nil {
 		if time.Now().After(deadline) {
-			t.Fatal("the child the wrapper left behind is still alive after Stop")
+			t.Fatal("the child the wrapper left behind is still alive")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

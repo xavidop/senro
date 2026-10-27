@@ -1185,6 +1185,10 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 	// here at dispatch, closed (once, then forgotten) by stopIdleServices
 	// from this same loop.
 	serviceStops := make(map[string]chan struct{})
+	// Services to restart once they have stopped, owned by this goroutine
+	// for the same reason: queued by serve, drained at the top of a pass
+	// (see reviveServicesLocked and revivePendingLocked).
+	pendingRevive := make(map[string]string)
 	// The run-wide pause (api.OpRunPause), owned by this goroutine for the
 	// same reason the breakpoints map is: handleRunPause writes it only
 	// from serve, and only this loop reads it.
@@ -1193,7 +1197,7 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 		return schedHandle{
 			ctx: ctx, byID: byID, live: &live, mu: mu, states: states, running: running,
 			breakpoints: breakpoints, paused: &paused, serviceStops: serviceStops,
-			wg: &wg, acquire: acquire, release: release, signal: signal,
+			pendingRevive: pendingRevive, wg: &wg, acquire: acquire, release: release, signal: signal,
 			logs: logs, opts: opts,
 		}
 	}
@@ -1260,6 +1264,11 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 			}
 		}
 		mu.Lock()
+		// Before readySet, in the same critical section, so a service queued
+		// to restart behind its StopGrace is unsettled the moment its old
+		// execution has settled, and nothing that needs it is dispatched
+		// against the stopped one in between.
+		restarts := rc.revivePendingLocked(handle())
 		// Read ONCE per pass and reused below: the idle wait's decision to
 		// watch ctx.Done() must describe the same instant readySet was
 		// given. Two reads let one pass both decline to settle a cancelled
@@ -1307,6 +1316,10 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 		stuck := idle && len(running) == 0 && len(held) == 0 && !paused
 		unresolved := len(live) - len(states)
 		mu.Unlock()
+
+		for _, r := range restarts {
+			rc.emitRevived(r.consumer, r.svcs)
+		}
 
 		if len(settled) > 0 {
 			// Sorted so nodes settling in the same pass are recorded in a
@@ -1426,12 +1439,16 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 		for _, n := range ready {
 			n := n
 			var stop chan struct{}
+			var gen int
 			if n.IsService() {
 				// Created here, on this loop, before the goroutine exists, so
 				// stopIdleServices can never look for a channel a service has
-				// not been handed yet. A rerun replaces a stale one.
+				// not been handed yet. A rerun replaces a stale one. The
+				// generation likewise, so a consumer's retry served on this
+				// loop sees this execution counted (see handleStepRetry).
 				stop = make(chan struct{})
 				serviceStops[n.ID] = stop
+				gen = rc.services.begin(n.ID)
 			}
 			wg.Add(1)
 			go func() {
@@ -1454,11 +1471,16 @@ func (rc *runCore) schedule(ctx context.Context, p *plan.Plan, opts Options, log
 					state = api.StateCancelled
 					rc.emitStepFinished(n.ID, state, "")
 					release()
+					if n.IsService() {
+						// An execution that never ran still has an outcome,
+						// for anyone awaiting it.
+						rc.services.withdraw(n.ID, gen)
+					}
 				} else if n.IsService() {
 					// A service's whole life, start to stop; runService owns
 					// the slot from here exactly as runStep does, and gives it
 					// back once the service is ready (see runService).
-					state = rc.runService(ctx, n, opts, logs, stop, release, signal, false)
+					state = rc.runService(ctx, n, opts, logs, stop, gen, release, signal, false)
 				} else {
 					// From here runStep owns releasing the slot, exactly
 					// once, however it returns: its retry loop gives the
@@ -1653,6 +1675,11 @@ func (rc *runCore) stopIdleServices(live *[]*plan.Node, states map[string]api.St
 		}
 		if !pending {
 			idle = append(idle, id)
+			// No longer ready from this instant: a consumer unsettled while
+			// the service is inside its StopGrace (a rerun_from) must wait
+			// for the restart reviveServicesLocked queues, not be dispatched
+			// against a server on its way down.
+			delete(rc.oc.ready, id)
 		}
 	}
 	rc.oc.mu.Unlock()

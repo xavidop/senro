@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/exec"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -48,22 +50,40 @@ func (s *sandbox) StartService(
 		return nil, err
 	}
 
+	// The output pipes are made here, not by exec, so cmd.Wait returns the
+	// moment the process is reaped instead of after the copies finish: a
+	// wrapper that backgrounded its server leaves the server holding the
+	// write ends, and with exec's own pipes its exit would go unseen for a
+	// whole waitDelay while the server kept the port.
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("localexec: %w: %w", senroexec.ErrInfra, err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		_, _ = outR.Close(), outW.Close()
+		return nil, fmt.Errorf("localexec: %w: %w", senroexec.ErrInfra, err)
+	}
+
 	cmd := exec.Command(c.Args[0], c.Args[1:]...)
 	cmd.Dir = s.commandDir(c)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
+	cmd.Stdout = outW
+	cmd.Stderr = errW
 	cmd.Env = envWithDefaultPATH(c.Env)
-	cmd.WaitDelay = waitDelay
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	svc := &localService{done: make(chan struct{})}
-	if err := cmd.Start(); err != nil {
+	startErr := cmd.Start()
+	// The child holds its own copies; ours would keep the pipes open forever.
+	_, _ = outW.Close(), errW.Close()
+	if startErr != nil {
+		_, _ = outR.Close(), errR.Close()
 		// classifyRunError draws Run's line for a start failure too: a
 		// missing or unexecutable program is the pipeline's 127 or 126 with a
 		// nil error, anything else is infrastructure. The former is reported
 		// as a service that has already exited, so the engine sees the same
 		// verdict a step with the same typo would get.
-		exit, err := s.classifyRunError(ctx, cmd, err)
+		exit, err := s.classifyRunError(ctx, cmd, startErr)
 		if err != nil {
 			return nil, err
 		}
@@ -72,11 +92,66 @@ func (s *sandbox) StartService(
 		return svc, nil
 	}
 	svc.pgid = cmd.Process.Pid
+
+	copied := make(chan error, 2)
+	for _, p := range []struct {
+		w io.Writer
+		r *os.File
+	}{{stdout, outR}, {stderr, errR}} {
+		go func() {
+			_, err := io.Copy(p.w, p.r)
+			copied <- err
+		}()
+	}
 	go func() {
-		svc.exit, svc.err = serviceVerdict(cmd, cmd.Wait())
+		waitErr := cmd.Wait()
+		svc.sweepUnlessStopping()
+		svc.exit, svc.err = serviceVerdict(cmd, firstErr(waitErr, drainCopies(copied, outR, errR)))
 		close(svc.done)
 	}()
 	return svc, nil
+}
+
+// drainCopies waits for both output copies, the way exec.Cmd.Wait does with
+// a WaitDelay: up to waitDelay for whatever the process left behind to let
+// go of the pipes, then the read ends are closed under the copies and the
+// answer is exec.ErrWaitDelay. A copy that failed otherwise is its error.
+func drainCopies(copied <-chan error, readers ...*os.File) error {
+	var copyErr error
+	drained := make(chan struct{})
+	go func() {
+		for range readers {
+			if err := <-copied; err != nil && copyErr == nil {
+				copyErr = err
+			}
+		}
+		close(drained)
+	}()
+	timer := time.NewTimer(waitDelay)
+	defer timer.Stop()
+	select {
+	case <-drained:
+	case <-timer.C:
+		for _, r := range readers {
+			_ = r.Close()
+		}
+		<-drained
+		copyErr = exec.ErrWaitDelay
+	}
+	for _, r := range readers {
+		_ = r.Close()
+	}
+	return copyErr
+}
+
+// firstErr is the first non-nil error.
+func firstErr(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // portsFree refuses a service whose declared port something on this host
@@ -155,18 +230,48 @@ func exitCode(cmd *exec.Cmd) int {
 }
 
 // localService is a started service process. exit and err are written once,
-// before done is closed, and read only after it is.
+// before done is closed, and read only after it is. stopping and swept are
+// under mu.
 type localService struct {
 	pgid int
 	done chan struct{}
 	exit int
 	err  error
+
+	mu       sync.Mutex
+	stopping bool // Stop has begun: the group's end is Stop's to decide
+	swept    bool // the group was killed when the process exited on its own
 }
 
 // Wait implements senroexec.RunningService.
 func (l *localService) Wait() (int, error) {
 	<-l.done
 	return l.exit, l.err
+}
+
+// sweepUnlessStopping kills what is left of the process group once the
+// process has exited on its own, unless Stop is already ending it.
+//
+// A wrapper that exited on its own (a `sh -c "server &"`, a launcher that
+// forks and returns) may have left children in its group: they would keep
+// the port and the pipes and outlive the run, and the service has failed
+// regardless. Killed here, straight after the reap, rather than whenever the
+// caller next calls Stop: the group's id is not handed out again while any
+// member lives, so a group with survivors is still ours, and the one hazard,
+// an EMPTY group whose id the kernel has since given to a new group leader,
+// needs the pid space to wrap in the moment between the reap and this call.
+// An empty group is ESRCH, which is success.
+//
+// Not while stopping: a wrapper that exits on Stop's SIGTERM may leave a
+// server still shutting down inside the grace, and Stop gives it that.
+func (l *localService) sweepUnlessStopping() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.stopping {
+		return
+	}
+	l.swept = true
+	_ = signalGroup(l.pgid, syscall.SIGKILL)
 }
 
 // Stop implements senroexec.RunningService: SIGTERM to the process group,
@@ -176,33 +281,24 @@ func (l *localService) Wait() (int, error) {
 // gone and the pipes drained (bounded by waitDelay) by the time the caller
 // moves on to Close.
 //
-// A wrapper that already exited on its own may have left children in its
-// group (a backgrounded server that did not detach): they would keep the
-// port and outlive the run. So a Stop that finds the wrapper gone still
-// sends the group one SIGKILL; an empty group is ESRCH, which is success.
-// pgid 0 is a program that never started, and kill(0) would signal senro's
-// own group.
-//
-// That SIGKILL goes to a group whose leader has been reaped, which is safe
-// while the group still has a member: a process group id is not handed out
-// again while any process in the group lives, so a survivor makes the id
-// still ours. The hazard is an EMPTY group whose id the kernel has since
-// given to a new group leader. kill(-pgid, 0) first rules out the empty
-// group that was never reused (ESRCH, nothing to do); what is left is the
-// reuse arriving between the reap and this call, which the engine keeps to
-// the moment it takes to notice the exit (it stops a service that exited
-// early at once), and which needs the pid space to wrap in that moment.
+// The grace is the group's, not only the process's: a wrapper that exits on
+// the SIGTERM may leave its server still shutting down, and the server gets
+// what is left of the grace before the kill. A process that had already
+// exited on its own had its group swept at that moment (see
+// sweepUnlessStopping), so Stop has nothing to do. pgid 0 is a program
+// that never started, and kill(0) would signal senro's own group.
 //
 // A ctx already done skips the SIGTERM: the caller has run out of time for
 // a grace, so the group is killed at once, as the kill after an expired
 // grace would.
 func (l *localService) Stop(ctx context.Context, grace time.Duration) error {
+	l.mu.Lock()
+	l.stopping = true
+	swept := l.swept
+	l.mu.Unlock()
 	select {
 	case <-l.done:
-		if l.pgid == 0 {
-			return nil
-		}
-		if err := syscall.Kill(-l.pgid, 0); errors.Is(err, syscall.ESRCH) {
+		if l.pgid == 0 || swept {
 			return nil
 		}
 		return signalGroup(l.pgid, syscall.SIGKILL)
@@ -216,7 +312,9 @@ func (l *localService) Stop(ctx context.Context, grace time.Duration) error {
 		defer timer.Stop()
 		select {
 		case <-l.done:
-			return nil
+			if l.groupEmptyWithin(ctx, timer.C) {
+				return nil
+			}
 		case <-timer.C:
 		case <-ctx.Done():
 		}
@@ -227,6 +325,28 @@ func (l *localService) Stop(ctx context.Context, grace time.Duration) error {
 	<-l.done
 	return nil
 }
+
+// groupEmptyWithin polls the process group until it is empty (true) or
+// expired or ctx ends first (false, and the caller kills it).
+func (l *localService) groupEmptyWithin(ctx context.Context, expired <-chan time.Time) bool {
+	tick := time.NewTicker(groupPoll)
+	defer tick.Stop()
+	for {
+		if err := syscall.Kill(-l.pgid, 0); errors.Is(err, syscall.ESRCH) {
+			return true
+		}
+		select {
+		case <-expired:
+			return false
+		case <-ctx.Done():
+			return false
+		case <-tick.C:
+		}
+	}
+}
+
+// groupPoll is how often Stop looks for what a stopped wrapper left behind.
+const groupPoll = 50 * time.Millisecond
 
 // signalGroup signals every process in the group. ESRCH is success: the group
 // emptied between the check and the signal, and the outcome Stop wants is

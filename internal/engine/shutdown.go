@@ -82,11 +82,13 @@ type outcomes struct {
 	handlerAnchors map[string]handlerAnchor
 
 	// ready is every service whose readiness probe has passed in its
-	// current execution. Its own map rather than a state in `states`: a
-	// ready service is still running, and `states` holds only terminal
-	// outcomes, which is what lets readySet keep reading "absent" as "not
-	// finished". readySet reads it under mu beside states; markReady is the
-	// only writer, and unsettleLocked clears it for a node going round again.
+	// current execution and that has not been told to stop. Its own map
+	// rather than a state in `states`: a ready service is still running, and
+	// `states` holds only terminal outcomes, which is what lets readySet keep
+	// reading "absent" as "not finished". readySet reads it under mu beside
+	// states; markReady is the only writer, stopIdleServices clears it as it
+	// stops a service, and unsettleLocked clears it for a node going round
+	// again.
 	ready map[string]bool
 }
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,23 +46,61 @@ const (
 // goroutine, and nothing here needs to be consistent with the scheduler's
 // maps, because a consumer is dispatched only after publish has returned
 // (markReady follows it).
+//
+// Every execution of a service has a generation, its count of dispatches so
+// far (begin), so a step.retry of a consumer can wait for one particular
+// execution: the one it revived, or the one a sibling's retry revived, or
+// the one that will follow a service still in its StopGrace, and not be
+// woken by the old execution's withdraw (see handleStepRetry).
 type serviceTable struct {
 	mu      sync.Mutex
 	entries map[string]serviceEntry
-	// waiters are closed by the next publish or withdraw of their step: how
-	// a step.retry of a consumer whose service had stopped waits for the
-	// restarted one (see handleStepRetry). One per step, made on demand.
-	waiters map[string]chan struct{}
+	// execs is each service's last generation handed out by begin.
+	execs map[string]int
+	// heard is the newest generation that has published or withdrawn: the
+	// one whose outcome is known.
+	heard map[string]int
+	// waiters are closed once heard reaches their generation.
+	waiters map[string][]genWaiter
 }
 
-// serviceEntry is one ready service: which executor runs it, its declared
-// ports as published on the coordinator (what service.ready reports), and,
-// for a container service, the address another container dials each
-// declared port at (executor.ContainerAddressable), nil otherwise.
+// genWaiter is one await: ch closes once step's heard generation is gen or
+// newer.
+type genWaiter struct {
+	gen int
+	ch  chan struct{}
+}
+
+// serviceEntry is one ready service: which execution it is, which executor
+// runs it, its declared ports as published on the coordinator (what
+// service.ready reports), and, for a container service with a consumer in a
+// container, the address another container dials each declared port at
+// (executor.ContainerAddressable), nil otherwise.
 type serviceEntry struct {
+	gen         int
 	kind        string
 	published   []api.Endpoint
 	inContainer map[int]string
+}
+
+// begin hands out the next generation of step. Called on schedule's loop
+// at every dispatch of a service, before its goroutine exists, so the
+// generation a consumer computes on that same loop cannot be overtaken.
+func (t *serviceTable) begin(step string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.execs == nil {
+		t.execs = make(map[string]int)
+	}
+	t.execs[step]++
+	return t.execs[step]
+}
+
+// current is step's last generation handed out, 0 before its first.
+func (t *serviceTable) current(step string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.execs[step]
 }
 
 // publish records step's addresses. A rerun's new execution replaces the
@@ -73,53 +112,68 @@ func (t *serviceTable) publish(step string, e serviceEntry) {
 		t.entries = make(map[string]serviceEntry)
 	}
 	t.entries[step] = e
-	t.wakeLocked(step)
+	t.heardLocked(step, e.gen)
 }
 
-// withdraw forgets step's addresses once it has stopped, for whatever
-// reason: a consumer set up after this (a retry, a rerun, a shell) must not
-// be handed an address nothing answers on.
-func (t *serviceTable) withdraw(step string) {
+// withdraw forgets step's addresses once execution gen has stopped, for
+// whatever reason: a consumer set up after this (a retry, a rerun, a shell)
+// must not be handed an address nothing answers on. A newer execution's
+// entry is left alone.
+func (t *serviceTable) withdraw(step string, gen int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	delete(t.entries, step)
-	t.wakeLocked(step)
+	if e, ok := t.entries[step]; ok && e.gen <= gen {
+		delete(t.entries, step)
+	}
+	t.heardLocked(step, gen)
 }
 
-func (t *serviceTable) wakeLocked(step string) {
-	if ch, ok := t.waiters[step]; ok {
-		close(ch)
+// heardLocked records that execution gen of step has an outcome, and wakes
+// every waiter it satisfies.
+func (t *serviceTable) heardLocked(step string, gen int) {
+	if t.heard == nil {
+		t.heard = make(map[string]int)
+	}
+	t.heard[step] = max(t.heard[step], gen)
+	kept := t.waiters[step][:0]
+	for _, w := range t.waiters[step] {
+		if w.gen <= t.heard[step] {
+			close(w.ch)
+		} else {
+			kept = append(kept, w)
+		}
+	}
+	if len(kept) == 0 {
 		delete(t.waiters, step)
+	} else {
+		t.waiters[step] = kept
 	}
 }
 
-// wait returns a channel closed once step is published or withdrawn; at
-// once when it is published already.
-func (t *serviceTable) wait(step string) <-chan struct{} {
+// await returns a channel closed once execution gen of step (or a newer
+// one) has published or withdrawn; at once when it already has.
+func (t *serviceTable) await(step string, gen int) <-chan struct{} {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, ok := t.entries[step]; ok {
-		done := make(chan struct{})
-		close(done)
-		return done
+	ch := make(chan struct{})
+	if t.heard[step] >= gen {
+		close(ch)
+		return ch
 	}
 	if t.waiters == nil {
-		t.waiters = make(map[string]chan struct{})
+		t.waiters = make(map[string][]genWaiter)
 	}
-	ch, ok := t.waiters[step]
-	if !ok {
-		ch = make(chan struct{})
-		t.waiters[step] = ch
-	}
+	t.waiters[step] = append(t.waiters[step], genWaiter{gen: gen, ch: ch})
 	return ch
 }
 
-// ready reports whether step is published right now.
-func (t *serviceTable) ready(step string) bool {
+// readyAt reports whether execution gen of step, or a newer one, is
+// published right now.
+func (t *serviceTable) readyAt(step string, gen int) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	_, ok := t.entries[step]
-	return ok
+	e, ok := t.entries[step]
+	return ok && e.gen >= gen
 }
 
 // envFor is the SENRO_SERVICE_* environment for consumer: for each ready
@@ -196,6 +250,22 @@ func executorKind(n *plan.Node) string {
 	return n.Executor.Kind
 }
 
+// hasContainerConsumer reports whether any node in the run names service in
+// Needs and runs in a container. Under oc.mu, which guards rc.live.
+func (rc *runCore) hasContainerConsumer(service string) bool {
+	rc.oc.mu.Lock()
+	defer rc.oc.mu.Unlock()
+	if rc.live == nil {
+		return false
+	}
+	for _, n := range *rc.live {
+		if consumesFromContainer(n) && slices.Contains(n.Needs, service) {
+			return true
+		}
+	}
+	return false
+}
+
 // consumesFromContainer reports whether n runs in a container, and so
 // reaches a service by a container or gateway address rather than on the
 // coordinator's loopback (see serviceTable.envFor).
@@ -230,6 +300,10 @@ func serviceEnvName(stepID string) string {
 // cheapest evidence a server is listening. HTTP is a GET answered 200..399,
 // so a redirect to a login page counts as up, and a 5xx from a server still
 // starting does not.
+//
+// Each attempt is bounded by its own timeout, cut to what is left of ctx's
+// deadline when that is sooner, so the probe that is in flight when the
+// readiness deadline passes cannot carry the verdict past it.
 func probeOnce(ctx context.Context, p plan.ProbeSpec, address string) error {
 	if p.Kind == plan.ServiceProbeHTTP {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address+p.Path, nil)
@@ -239,7 +313,7 @@ func probeOnce(ctx context.Context, p plan.ProbeSpec, address string) error {
 		// Redirects are not followed: the status of the first answer is the
 		// verdict, and following one could probe a different server.
 		client := &http.Client{
-			Timeout:       2 * time.Second,
+			Timeout:       probeTimeout(ctx, httpProbeTimeout),
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		}
 		resp, err := client.Do(req)
@@ -252,13 +326,32 @@ func probeOnce(ctx context.Context, p plan.ProbeSpec, address string) error {
 		}
 		return nil
 	}
-	d := net.Dialer{Timeout: time.Second}
+	d := net.Dialer{Timeout: probeTimeout(ctx, tcpProbeTimeout)}
 	c, err := d.DialContext(ctx, "tcp", address)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = c.Close() }()
 	return tcpAnswered(c)
+}
+
+// How long one HTTP request, or one TCP connect, of a probe may take.
+const (
+	httpProbeTimeout = 2 * time.Second
+	tcpProbeTimeout  = time.Second
+)
+
+// probeTimeout is limit, or what is left of ctx's deadline when that is
+// shorter. Never zero, which both http.Client and net.Dialer read as "no
+// timeout": a deadline already passed gets a token millisecond, and ctx
+// itself ends the attempt.
+func probeTimeout(ctx context.Context, limit time.Duration) time.Duration {
+	if dl, ok := ctx.Deadline(); ok {
+		if left := time.Until(dl); left < limit {
+			return max(left, time.Millisecond)
+		}
+	}
+	return limit
 }
 
 // tcpSettle is how long a TCP probe waits on an accepted connection for the
@@ -331,9 +424,13 @@ func readyTimeout(n *plan.Node) time.Duration {
 // handleStepRetry apply to a step that failed before it passed: collapsing
 // the two is how a flaky dependency stays invisible in a run's rolled-up
 // status. A rerun_from execution is not a retry, as it is not for a step.
+//
+// gen is this execution's generation (serviceTable.begin), taken by the
+// dispatcher on schedule's loop; it labels what this execution publishes
+// and withdraws.
 func (rc *runCore) runService(
 	ctx context.Context, n *plan.Node, opts Options, logs *eventlog.LogSet,
-	stop <-chan struct{}, release, wake func(), retried bool,
+	stop <-chan struct{}, gen int, release, wake func(), retried bool,
 ) api.State {
 	start := time.Now()
 	attempt := rc.oc.attemptOf(n.ID) + 1
@@ -342,12 +439,12 @@ func (rc *runCore) runService(
 	giveBack := func() { once.Do(release) }
 	defer giveBack()
 
-	res := rc.serviceAttempt(ctx, n, opts, logs, attempt, start, stop, giveBack, wake)
+	res := rc.serviceAttempt(ctx, n, opts, logs, attempt, gen, start, stop, giveBack, wake)
 	// Before finishStep, so by the time the scheduler sees this service
 	// terminal no consumer set up afterwards (a retry, a rerun, a shell) can
 	// be handed its address, and a retry waiting on it (handleStepRetry)
 	// learns it is gone.
-	rc.services.withdraw(n.ID)
+	rc.services.withdraw(n.ID, gen)
 	// After serviceAttempt has returned: its writer closes have run, so the
 	// log files are final (see archiveAttempt).
 	rc.archiveAttempt(logs, n.ID, attempt)
@@ -370,7 +467,7 @@ func (rc *runCore) runService(
 // the way runAttempt owns a step's: everything it opened is closed by the
 // time it returns.
 func (rc *runCore) serviceAttempt(
-	ctx context.Context, n *plan.Node, opts Options, logs *eventlog.LogSet, attempt int,
+	ctx context.Context, n *plan.Node, opts Options, logs *eventlog.LogSet, attempt, gen int,
 	start time.Time, stop <-chan struct{}, release, wake func(),
 ) attemptResult {
 	s, err := rc.prepareAttempt(ctx, ctx, n, opts, logs, attempt)
@@ -424,14 +521,39 @@ func (rc *runCore) serviceAttempt(
 	// began before it (a scheduler stop with a long grace) or because of it.
 	// Half of teardown's wait, so the kill and the reap that follows land
 	// inside it rather than racing the abandonment.
+	//
+	// Measured from the cancellation itself, not from this call: a stop that
+	// starts a while after the run was cancelled (the probe loop noticing
+	// late) has already spent part of teardown's wait. cancelledAt is set by
+	// an AfterFunc the moment ctx is done, and read as now when that has not
+	// run yet.
 	stopBudget := opts.cleanupGrace() / 4
+	var (
+		cancelMu    sync.Mutex
+		cancelledAt time.Time
+	)
+	unwatch := context.AfterFunc(ctx, func() {
+		cancelMu.Lock()
+		cancelledAt = time.Now()
+		cancelMu.Unlock()
+	})
+	defer unwatch()
+	budgetLeft := func() time.Duration {
+		cancelMu.Lock()
+		at := cancelledAt
+		cancelMu.Unlock()
+		if at.IsZero() {
+			return stopBudget
+		}
+		return max(stopBudget-time.Since(at), 0)
+	}
 	stopNow := func() error {
 		sctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 		defer cancel()
 		go func() {
 			select {
 			case <-ctx.Done():
-				t := time.NewTimer(stopBudget)
+				t := time.NewTimer(budgetLeft())
 				defer t.Stop()
 				select {
 				case <-t.C:
@@ -448,7 +570,16 @@ func (rc *runCore) serviceAttempt(
 		return err
 	}
 	// exitedEarly is the verdict for a process that ended on its own.
+	//
+	// The process that exited may be only the wrapper: a `sh -c "server &"`
+	// leaves its server in the group, holding the port and outliving the
+	// run. So the group is stopped now, with no grace (there is no one to be
+	// graceful to; the service has already failed), before the verdict is
+	// settled. Now rather than at teardown also keeps the time between the
+	// wrapper's reap and the group's kill as short as it can be (see
+	// localexec's Stop on a reused group id).
 	exitedEarly := func(e exited, before string) attemptResult {
+		_ = svc.Stop(context.WithoutCancel(ctx), 0)
 		_ = rc.flushAttempt(n, attempt, s)
 		msg := fmt.Sprintf("exited with status %d before %s", e.code, before)
 		if e.err != nil {
@@ -472,7 +603,11 @@ func (rc *runCore) serviceAttempt(
 	defer deadline.Stop()
 	tick := time.NewTicker(probeInterval)
 	defer tick.Stop()
-	for probeOnce(ctx, n.Service.Probe, probeAddr) != nil {
+	// The same deadline as a context, so a probe in flight when it passes is
+	// cut short with it (see probeOnce) instead of overrunning it.
+	pctx, pcancel := context.WithTimeout(ctx, limit)
+	defer pcancel()
+	for probeOnce(pctx, n.Service.Probe, probeAddr) != nil {
 		select {
 		case e := <-waited:
 			return exitedEarly(e, "it was ready")
@@ -502,8 +637,15 @@ func (rc *runCore) serviceAttempt(
 	// Where another container reaches each port, for a container consumer
 	// (see serviceTable.envFor). Not in service.ready: that event reports
 	// what a person on the coordinator dials, which is the published port.
+	//
+	// Asked for only when some consumer runs in a container: nobody else
+	// reads it, and a daemon that cannot answer it must not fail a service
+	// whose consumers all dial the published port. A container consumer
+	// spliced in by a generator after this point is the one case left out;
+	// it is handed the published address, which works everywhere but native
+	// Linux.
 	var inContainer map[int]string
-	if ca, ok := s.sb.(executor.ContainerAddressable); ok {
+	if ca, ok := s.sb.(executor.ContainerAddressable); ok && rc.hasContainerConsumer(n.ID) {
 		inContainer = make(map[int]string, len(n.Service.Ports))
 		for _, port := range n.Service.Ports {
 			a, err := ca.ContainerAddress(ctx, port)
@@ -522,7 +664,9 @@ func (rc *runCore) serviceAttempt(
 	// the service as ready, so no consumer is dispatched to an environment
 	// missing its address; and the event precedes both, so service.ready is
 	// in the ledger before any consumer's step.started.
-	rc.services.publish(n.ID, serviceEntry{kind: executorKind(n), published: eps, inContainer: inContainer})
+	rc.services.publish(n.ID, serviceEntry{
+		gen: gen, kind: executorKind(n), published: eps, inContainer: inContainer,
+	})
 	rc.oc.markReady(n.ID)
 	release()
 	wake()

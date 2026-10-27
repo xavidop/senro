@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -145,12 +147,18 @@ type schedHandle struct {
 	// registered where stopIdleServices looks. Unlocked for the reason
 	// breakpoints is: only schedule's loop touches it.
 	serviceStops map[string]chan struct{}
-	wg           *sync.WaitGroup
-	acquire      func(context.Context) error
-	release      func()
-	signal       func()
-	logs         *eventlog.LogSet
-	opts         Options
+	// pendingRevive is schedule's own map of services to restart once they
+	// have stopped, each naming the consumer that asked: a service still
+	// inside its StopGrace when a consumer went round again cannot be
+	// unsettled while its goroutine lives (see reviveServicesLocked).
+	// Unlocked for the reason serviceStops is.
+	pendingRevive map[string]string
+	wg            *sync.WaitGroup
+	acquire       func(context.Context) error
+	release       func()
+	signal        func()
+	logs          *eventlog.LogSet
+	opts          Options
 }
 
 // serveControl dispatches one request to its op-specific handler, or
@@ -407,26 +415,107 @@ type revivedService struct {
 // is the operator's request to try again, and refusing it would block the
 // analyzer-retry flow for exactly the consumer whose service died under it.
 //
+// A service still running but already told to stop (inside its StopGrace;
+// stopIdleServices has closed and forgotten its stop channel) is as good as
+// stopped, and is restarted too, but only once its goroutine has finished:
+// it is queued in h.pendingRevive, and revivePendingLocked unsettles it on
+// the first pass after it settles.
+//
+// The second result is what a consumer retried by hand must wait for
+// before it runs: every direct service need not ready right now, with the
+// generation (serviceTable.begin) of the execution that will answer for it.
+// That covers the services revived here, one queued behind its StopGrace,
+// one a sibling's retry revived a moment ago (unsettled, not yet
+// dispatched), and one still being probed. A ready service needs no wait,
+// and neither does one that never ran: the consumer meets it as readySet
+// left it.
+//
 // The caller must hold h.mu, and emits the step.retried events (see
 // emitRevived) after releasing it.
-func (rc *runCore) reviveServicesLocked(h schedHandle, n *plan.Node) []revivedService {
+func (rc *runCore) reviveServicesLocked(h schedHandle, n *plan.Node) ([]revivedService, []serviceNeed) {
 	if n == nil {
-		return nil
+		return nil, nil
 	}
-	var out []revivedService
+	var (
+		revived []revivedService
+		waits   []serviceNeed
+	)
 	for _, need := range n.Needs {
 		svc := h.byID[need]
-		if svc == nil || !svc.IsService() || h.running[need] {
+		if svc == nil || !svc.IsService() {
 			continue
 		}
+		_, live := h.serviceStops[need]
 		st, settled := h.states[need]
 		ran := st == api.StateSucceeded || st == api.StateRecovered || st.Failed()
-		if !settled || !ran {
+		switch {
+		case h.running[need] && live && rc.oc.ready[need]:
+			// Up and answering.
+		case h.running[need] && live:
+			// Dispatched, not ready yet: this execution is the one to wait for.
+			waits = append(waits, serviceNeed{id: need, gen: rc.services.current(need)})
+		case h.running[need]:
+			// Stopping. The next execution answers.
+			if _, queued := h.pendingRevive[need]; !queued {
+				h.pendingRevive[need] = n.ID
+			}
+			waits = append(waits, serviceNeed{id: need, gen: rc.services.current(need) + 1})
+		case settled && ran:
+			attempt, _, _ := rc.unsettleLocked(h, need)
+			revived = append(revived, revivedService{id: need, attempt: attempt})
+			waits = append(waits, serviceNeed{id: need, gen: rc.services.current(need) + 1})
+		case !settled:
+			// Unsettled and not running: revived already (by a sibling's
+			// retry, or a rerun) and waiting for the scheduler's next pass.
+			waits = append(waits, serviceNeed{id: need, gen: rc.services.current(need) + 1})
+		}
+	}
+	return revived, waits
+}
+
+// serviceNeed is one direct service need a retried consumer waits on: the
+// generation of the execution it must see ready.
+type serviceNeed struct {
+	id  string
+	gen int
+}
+
+// serviceRestart is one consumer's revived services, for emitRevived.
+type serviceRestart struct {
+	consumer string
+	svcs     []revivedService
+}
+
+// revivePendingLocked unsettles every service queued in h.pendingRevive
+// whose goroutine has finished, so the readySet that follows in the same
+// critical section dispatches it again; before readySet, so no consumer is
+// dispatched against the stopped execution in between. A service unsettled
+// by something else meanwhile (a rerun) is dropped from the queue, and the
+// whole queue is dropped once the run is cancelled: nothing restarts during
+// teardown. The caller holds h.mu and emits the events after releasing it.
+func (rc *runCore) revivePendingLocked(h schedHandle) []serviceRestart {
+	if len(h.pendingRevive) == 0 {
+		return nil
+	}
+	var out []serviceRestart
+	for id, consumer := range h.pendingRevive {
+		if h.ctx.Err() != nil {
+			delete(h.pendingRevive, id)
 			continue
 		}
-		attempt, _, _ := rc.unsettleLocked(h, need)
-		out = append(out, revivedService{id: need, attempt: attempt})
+		if h.running[id] {
+			continue
+		}
+		delete(h.pendingRevive, id)
+		st, settled := h.states[id]
+		if !settled || !(st == api.StateSucceeded || st == api.StateRecovered || st.Failed()) {
+			continue
+		}
+		attempt, _, _ := rc.unsettleLocked(h, id)
+		out = append(out, serviceRestart{consumer: consumer, svcs: []revivedService{{id: id, attempt: attempt}}})
 	}
+	// Map order is random; the ledger is not.
+	slices.SortFunc(out, func(a, b serviceRestart) int { return strings.Compare(a.svcs[0].id, b.svcs[0].id) })
 	return out
 }
 
@@ -568,15 +657,12 @@ func (rc *runCore) handleRerunFrom(h schedHandle, req sink.ControlRequest) {
 	// After the closure, so a service inside it (already unsettled) is not
 	// revived twice: what is left is a stopped service OUTSIDE the closure
 	// that a rerun consumer needs. The scheduler then dispatches it, and the
-	// consumer waits for it to be ready as on a first run.
-	type restart struct {
-		consumer string
-		svcs     []revivedService
-	}
-	var restarts []restart
+	// consumer waits for it to be ready as on a first run; readySet does that
+	// waiting, so the waits reviveServicesLocked reports are not needed here.
+	var restarts []serviceRestart
 	for _, r := range revived {
-		if svcs := rc.reviveServicesLocked(h, h.byID[r.id]); len(svcs) > 0 {
-			restarts = append(restarts, restart{consumer: r.id, svcs: svcs})
+		if svcs, _ := rc.reviveServicesLocked(h, h.byID[r.id]); len(svcs) > 0 {
+			restarts = append(restarts, serviceRestart{consumer: r.id, svcs: svcs})
 		}
 	}
 	h.mu.Unlock()
@@ -994,9 +1080,10 @@ func (rc *runCore) handleRunCancel(h schedHandle, req sink.ControlRequest) {
 // (rc.oc.attempts[id]+1), it never rewrites what is on disk or in the
 // ledger.
 //
-// A service the step needs directly that has already stopped is restarted
-// first (reviveServicesLocked), and the attempt waits for it to be ready:
-// the step is retried against a live address, never a dead one.
+// A service the step needs directly that has already stopped, or is
+// stopping, is restarted first (reviveServicesLocked), and the attempt waits
+// for every direct service need that is not ready right now: the step is
+// retried against a live address, never a dead one.
 //
 // The new attempt runs on its own goroutine, tracked by h.wg and respecting
 // h.acquire/h.release, exactly like an ordinary scheduled step. The bool
@@ -1028,7 +1115,7 @@ func (rc *runCore) handleStepRetry(h schedHandle, req sink.ControlRequest) bool 
 	// immediately, so the node is busy from this instant.
 	h.running[stepID] = true
 	nextAttempt, anchor, hadAnchor := rc.unsettleLocked(h, stepID)
-	revivedSvcs := rc.reviveServicesLocked(h, n)
+	revivedSvcs, svcWaits := rc.reviveServicesLocked(h, n)
 	h.mu.Unlock()
 
 	// Args reconstructed from the validated stepID, never req.Args (see
@@ -1060,9 +1147,11 @@ func (rc *runCore) handleStepRetry(h schedHandle, req sink.ControlRequest) bool 
 	// goroutine exists, exactly as a first dispatch registers one, so
 	// stopIdleServices stops it once its consumers settle.
 	var stop chan struct{}
+	var gen int
 	if n.IsService() {
 		stop = make(chan struct{})
 		h.serviceStops[stepID] = stop
+		gen = rc.services.begin(stepID)
 	}
 
 	h.wg.Add(1)
@@ -1071,15 +1160,19 @@ func (rc *runCore) handleStepRetry(h schedHandle, req sink.ControlRequest) bool 
 		// A revived service is dispatched by the scheduler on its next pass;
 		// this attempt waits for it to be ready (or to fail) BEFORE taking a
 		// slot, since the service needs one to start and with MaxParallel 1
-		// holding it here would deadlock the two. A service that stopped
-		// without becoming ready leaves this consumer what readySet would
-		// have made it: skipped_upstream_failed.
-		for _, r := range revivedSvcs {
+		// holding it here would deadlock the two. The same goes for every
+		// other direct service need that is not ready right now (see
+		// reviveServicesLocked): each is awaited by generation, so the
+		// withdraw of an execution on its way down does not pass for the
+		// restart. A service whose awaited execution stopped without becoming
+		// ready leaves this consumer what readySet would have made it:
+		// skipped_upstream_failed.
+		for _, w := range svcWaits {
 			select {
-			case <-rc.services.wait(r.id):
+			case <-rc.services.await(w.id, w.gen):
 			case <-h.ctx.Done():
 			}
-			if h.ctx.Err() == nil && !rc.services.ready(r.id) {
+			if h.ctx.Err() == nil && !rc.services.readyAt(w.id, w.gen) {
 				h.mu.Lock()
 				h.states[stepID] = api.StateSkippedUpstreamFailed
 				delete(h.running, stepID)
@@ -1108,7 +1201,7 @@ func (rc *runCore) handleStepRetry(h schedHandle, req sink.ControlRequest) bool 
 			// settles through finishStep and offerAnalysis itself. retried, so
 			// a clean stop settles recovered, the rule below for a step: it
 			// failed once before it passed.
-			state := rc.runService(h.ctx, n, h.opts, h.logs, stop, h.release, h.signal, true)
+			state := rc.runService(h.ctx, n, h.opts, h.logs, stop, gen, h.release, h.signal, true)
 			h.mu.Lock()
 			h.states[stepID] = state
 			delete(h.running, stepID)

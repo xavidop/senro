@@ -71,43 +71,65 @@ func TestEnvForPicksTheAddressByBothExecutors(t *testing.T) {
 
 	// A stopped service is withdrawn, and a consumer set up afterwards gets
 	// nothing for it rather than an address nothing answers on.
-	tab.withdraw("web")
+	tab.withdraw("web", 0)
 	if got := tab.envFor(&plan.Node{ID: "l", Needs: []string{"web"}}); got != nil {
 		t.Errorf("a consumer of a withdrawn service got %v", got)
 	}
 }
 
-// wait wakes on the next publish or withdraw, and at once for a step already
-// published.
-func TestServiceTableWaitWakesOnPublishAndWithdraw(t *testing.T) {
+// await wakes once the execution it names (or a newer one) publishes or
+// withdraws, and not for an older one: a retry waiting for the restart of a
+// service still in its StopGrace must not take the old execution's withdraw
+// for it.
+func TestServiceTableAwaitWakesOnlyForTheExecutionItNames(t *testing.T) {
 	var tab serviceTable
-	ch := tab.wait("db")
+	first := tab.begin("db")
+	tab.publish("db", serviceEntry{gen: first, published: []api.Endpoint{{Port: 1, Address: "127.0.0.1:1"}}})
+	select {
+	case <-tab.await("db", first):
+	default:
+		t.Fatal("await on a published execution did not return at once")
+	}
+
+	next := tab.current("db") + 1
+	ch := tab.await("db", next)
+	tab.withdraw("db", first)
 	select {
 	case <-ch:
-		t.Fatal("wait returned before anything was published")
-	default:
+		t.Fatal("the old execution's withdraw woke a waiter for the next one")
+	case <-time.After(50 * time.Millisecond):
 	}
-	tab.publish("db", serviceEntry{published: []api.Endpoint{{Port: 1, Address: "127.0.0.1:1"}}})
+	if tab.readyAt("db", first) {
+		t.Error("a withdrawn execution reads as ready")
+	}
+
+	if got := tab.begin("db"); got != next {
+		t.Fatalf("begin = %d, want %d", got, next)
+	}
+	tab.publish("db", serviceEntry{gen: next, published: []api.Endpoint{{Port: 1, Address: "127.0.0.1:1"}}})
 	select {
 	case <-ch:
 	case <-time.After(time.Second):
-		t.Fatal("publish did not wake the waiter")
+		t.Fatal("publishing the awaited execution did not wake the waiter")
 	}
-	select {
-	case <-tab.wait("db"):
-	default:
-		t.Fatal("wait on a published step did not return at once")
+	if !tab.readyAt("db", next) {
+		t.Error("the published execution does not read as ready")
 	}
-	tab.withdraw("db")
-	ch = tab.wait("db")
-	tab.withdraw("db")
+	// A late withdraw of the older execution leaves the newer one's entry.
+	tab.withdraw("db", first)
+	if !tab.readyAt("db", next) {
+		t.Error("an older execution's withdraw removed the newer one's address")
+	}
+
+	ch = tab.await("db", next+1)
+	tab.withdraw("db", next+1)
 	select {
 	case <-ch:
 	case <-time.After(time.Second):
-		t.Fatal("withdraw did not wake the waiter")
+		t.Fatal("a withdraw of the awaited execution did not wake the waiter")
 	}
-	if tab.ready("db") {
-		t.Error("a withdrawn step reads as ready")
+	if tab.readyAt("db", next+1) {
+		t.Error("an execution that withdrew without publishing reads as ready")
 	}
 }
 
