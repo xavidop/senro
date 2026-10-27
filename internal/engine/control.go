@@ -447,7 +447,7 @@ func (rc *runCore) reviveServicesLocked(h schedHandle, n *plan.Node) ([]revivedS
 		}
 		_, live := h.serviceStops[need]
 		st, settled := h.states[need]
-		ran := st == api.StateSucceeded || st == api.StateRecovered || st.Failed()
+		ran := serviceRan(st)
 		switch {
 		case h.running[need] && live && rc.oc.ready[need]:
 			// Up and answering.
@@ -471,6 +471,13 @@ func (rc *runCore) reviveServicesLocked(h schedHandle, n *plan.Node) ([]revivedS
 		}
 	}
 	return revived, waits
+}
+
+// serviceRan reports whether a service settled in st actually ran, and so is
+// one a consumer going round again may restart: stopped cleanly, recovered,
+// or failed. Skipped and cancelled are the run's decisions, not outcomes.
+func serviceRan(st api.State) bool {
+	return st == api.StateSucceeded || st == api.StateRecovered || st.Failed()
 }
 
 // serviceNeed is one direct service need a retried consumer waits on: the
@@ -507,8 +514,7 @@ func (rc *runCore) revivePendingLocked(h schedHandle) []serviceRestart {
 			continue
 		}
 		delete(h.pendingRevive, id)
-		st, settled := h.states[id]
-		if !settled || !(st == api.StateSucceeded || st == api.StateRecovered || st.Failed()) {
+		if st, settled := h.states[id]; !settled || !serviceRan(st) {
 			continue
 		}
 		attempt, _, _ := rc.unsettleLocked(h, id)
