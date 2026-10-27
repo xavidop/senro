@@ -227,6 +227,15 @@ type Options struct {
 	BreakOnFailure bool
 }
 
+// noControlForBreakOnFailure is the warning Run prints when BreakOnFailure
+// is asked for and nothing could ever release a held step.
+const noControlForBreakOnFailure = "senro: --break-on-failure needs an attached client to release a held step; " +
+	"nothing is attached, so steps will not be held"
+
+// warnOut is where Run's operator warnings go. A var so an internal test can
+// capture it; nothing else writes it.
+var warnOut io.Writer = os.Stderr
+
 // Run executes p to completion: it opens the run's ledger and log set under
 // Options.Dir, schedules every node respecting Needs and ContinueOnError, and
 // returns the run's rolled-up status.
@@ -260,6 +269,15 @@ func Run(ctx context.Context, p *plan.Plan, opts Options) (api.RunStatus, error)
 	}
 	if opts.Sink == nil {
 		opts.Sink = sink.Nop()
+	}
+	// A hold is released only by a client's breakpoint.clear (or by the run
+	// being cancelled). With no control channel nothing can send one, so a
+	// held step would sit until the run is killed: a CI job hanging until
+	// its timeout, which is worse than not holding. So the option is
+	// dropped, out loud, rather than honoured into a hang.
+	if opts.BreakOnFailure && opts.Sink.Control() == nil {
+		_, _ = fmt.Fprintln(warnOut, noControlForBreakOnFailure)
+		opts.BreakOnFailure = false
 	}
 
 	if err := checkSecretRefs(p, opts.Secrets); err != nil {
