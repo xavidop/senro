@@ -12,6 +12,7 @@ import (
 
 	"github.com/xavidop/senro/api"
 	"github.com/xavidop/senro/internal/source"
+	"github.com/xavidop/senro/internal/webui/present"
 )
 
 // Plain renders a run as plain-text lines with no ANSI escapes of its own:
@@ -253,9 +254,9 @@ func printStep(w io.Writer, s *api.StepState) error {
 		// fold has none until step.finished, which prints it after release.
 		_, err = fmt.Fprintf(w, "%s held after failure\n", s.ID)
 	case s.State != "" && s.Error != "":
-		_, err = fmt.Fprintf(w, "%s %s: %s%s\n", s.ID, s.State, s.Error, testSummary(s))
+		_, err = fmt.Fprintf(w, "%s %s: %s%s%s\n", s.ID, s.State, s.Error, testSummary(s), usageSuffix(s))
 	case s.State != "":
-		_, err = fmt.Fprintf(w, "%s %s%s\n", s.ID, s.State, testSummary(s))
+		_, err = fmt.Fprintf(w, "%s %s%s%s\n", s.ID, s.State, testSummary(s), usageSuffix(s))
 	case s.Paused:
 		// Before the started case: a held step never started, so it would
 		// otherwise print nothing and a deliberate stop would read as a
@@ -562,4 +563,16 @@ func (p *logPrinter) cursor(k logKey) *logCursor {
 	p.cursors[k] = c
 	p.cursorOrder = append(p.cursorOrder, k)
 	return c
+}
+
+// FormatUsage is a step's cost as "cpu 1.2s  rss 85 MB", or "" when its
+// executor could not measure it. The TUI uses the same text, so a step reads
+// the same in a CI log and on a terminal.
+func FormatUsage(u *api.ResourceUsage) string { return present.FormatUsage(u) }
+
+func usageSuffix(s *api.StepState) string {
+	if t := FormatUsage(s.Usage); t != "" {
+		return "  " + t
+	}
+	return ""
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/xavidop/senro/api"
+	"github.com/xavidop/senro/internal/render"
 )
 
 // Layout: a step pane on the left with expansion groups collapsed, a log
@@ -121,6 +122,9 @@ func (m *Model) renderSteps(st *api.RunState, rows []string) string {
 		line := marker + id
 		if s := st.Steps[id]; s != nil {
 			line += " " + stepStatusLabel(s) + testSuffix(s)
+			if u := render.FormatUsage(s.Usage); u != "" {
+				line += "  " + u
+			}
 		}
 		if _, isGroup := st.Expansions[id]; isGroup {
 			c := st.Group(id)
