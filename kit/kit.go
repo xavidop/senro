@@ -65,9 +65,20 @@ func skipDir(name string) bool {
 // target or site-packages are skipped, as is any directory whose name starts
 // with "." or "_". The root is always visited, even if its own name would
 // have been skipped: the caller chose it.
+//
+// A directory that cannot be read, such as one without read permission, is
+// still passed to fn but its contents are skipped rather than ending the
+// walk: one locked directory should not hide every other match in the
+// repository. A root that does not exist is still an error.
 func Walk(root string, fn func(dir, rel string) error) error {
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			// WalkDir reports a failed ReadDir by calling again with the
+			// directory's entry and the error; the first call already
+			// visited it.
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
 			return err
 		}
 		if !d.IsDir() {

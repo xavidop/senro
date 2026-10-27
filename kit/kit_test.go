@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -65,6 +66,32 @@ func TestWalkVisitsRootEvenWhenItsNameIsSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 	if want := []string{".", "a"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("visited %v, want %v", got, want)
+	}
+}
+
+func TestWalkSkipsAnUnreadableDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permissions do not deny reads on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a directory whatever its mode")
+	}
+	root := t.TempDir()
+	mkdirs(t, root, "a/hidden", "b")
+	locked := filepath.Join(root, "a")
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	var got []string
+	if err := Walk(root, func(_, rel string) error {
+		got = append(got, rel)
+		return nil
+	}); err != nil {
+		t.Fatalf("an unreadable directory stopped the walk: %v", err)
+	}
+	if want := []string{".", "a", "b"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("visited %v, want %v", got, want)
 	}
 }
