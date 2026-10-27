@@ -19,11 +19,12 @@ func TestFormatUsage(t *testing.T) {
 		want string
 	}{
 		{"nil", nil, ""},
-		{"small", &api.ResourceUsage{CPUUser: 40 * time.Millisecond, MaxRSS: 640 << 10}, "cpu 0s  rss 640 KB"},
+		{"small", &api.ResourceUsage{CPUUser: 40 * time.Millisecond, MaxRSS: 640 << 10}, "cpu 0.0s  rss 640 KB"},
+		{"cpu only", &api.ResourceUsage{CPUUser: 1200 * time.Millisecond}, "cpu 1.2s"},
 		{"sums user and system, rounds to 100ms",
 			&api.ResourceUsage{CPUUser: 900 * time.Millisecond, CPUSystem: 340 * time.Millisecond, MaxRSS: 85 << 20},
 			"cpu 1.2s  rss 85 MB"},
-		{"large", &api.ResourceUsage{CPUUser: 90 * time.Second, MaxRSS: 1288490189}, "cpu 1m30s  rss 1.2 GB"},
+		{"large", &api.ResourceUsage{CPUUser: 90 * time.Second, MaxRSS: 1288490189}, "cpu 90.0s  rss 1.2 GB"},
 	}
 	for _, c := range cases {
 		if got := render.FormatUsage(c.in); got != c.want {

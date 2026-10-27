@@ -301,9 +301,10 @@ func Detail(st *api.RunState, id string, now time.Time) []Field {
 		fields = append(fields, Field{Label: "exit", Value: fmt.Sprint(s.ExitCode)})
 	}
 	if s.Usage != nil {
-		fields = append(fields,
-			Field{Label: "cpu", Value: FormatCPU(s.Usage)},
-			Field{Label: "memory", Value: FormatRSS(s.Usage)})
+		fields = append(fields, Field{Label: "cpu", Value: FormatCPU(s.Usage)})
+		if s.Usage.MaxRSS > 0 {
+			fields = append(fields, Field{Label: "memory", Value: FormatRSS(s.Usage)})
+		}
 	}
 	if s.Group != "" {
 		fields = append(fields, Field{Label: "group", Value: s.Group})

@@ -131,6 +131,11 @@ func (m *Model) renderSteps(st *api.RunState, rows []string) string {
 			line += fmt.Sprintf(" (%d units · %d failed · %d cached · %d running)",
 				c.Total, c.Failed, c.Cached, c.Running)
 		}
+		// A row wider than the terminal would wrap or push the log pane off
+		// the screen; the usage text is last, so the cut takes it first.
+		if m.width > 0 {
+			line = clipLine(line, max(m.width-stepsPaneStyle.GetHorizontalPadding(), 1))
+		}
 		if i == m.cursor {
 			line = cursorStyle.Render(line)
 		}
