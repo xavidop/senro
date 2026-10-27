@@ -579,6 +579,74 @@ func TestARetriedServiceRunsAsAService(t *testing.T) {
 	}
 }
 
+// A consumer retried after its service stopped (it was the last consumer,
+// and it failed) restarts the service: a second service.ready lands before
+// the consumer's second step.started, and the consumer runs against it.
+// keep holds the run open long enough to send the retry.
+func TestRetryingAConsumerRestartsItsStoppedService(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "tried")
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{
+		serveNode(t, "db", freePort(t), false),
+		{ID: "keep", Kind: "exec", Cmd: []string{"sleep", "4"}},
+		{ID: "use", Kind: "exec", Needs: []string{"db"}, Cmd: []string{"sh", "-c", fmt.Sprintf(
+			`if [ -f %s ] && [ -n "$SENRO_SERVICE_DB_HOST" ]; then exit 0; fi; touch %s; exit 1`,
+			marker, marker)}},
+	}}
+	dir := t.TempDir()
+	csink := newControlSink()
+	dbFinished := make(chan api.Event, 4)
+	csink.onEmit = func(e api.Event) {
+		if e.Type == api.StepFinished && e.Step == "db" {
+			dbFinished <- e
+		}
+	}
+	out := runAsync(context.Background(), p, engine.Options{
+		Dir: dir, Executor: localexec.New(dir, nil), Sink: csink, MaxParallel: 4, RunID: "01REVIVESVC",
+	})
+
+	// db stops once use, its only consumer, has failed.
+	waitForEvent(t, dbFinished, func(e api.Event) bool { return e.Attempt == 1 })
+	resp := sendSettled(t, csink, sink.ControlRequest{
+		ID: "r1", Op: api.OpStepRetry, ClientID: "tester", Args: map[string]string{"step": "use"},
+	})
+	if !resp.OK {
+		t.Fatalf("step.retry response = %+v, want OK", resp)
+	}
+	select {
+	case res := <-out:
+		if res.err != nil {
+			t.Fatalf("Run returned an engine error: %v", res.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run did not end within 10s of the retry")
+	}
+
+	events := readLedger(t, dir)
+	ready, started := -1, -1
+	for i, e := range events {
+		if e.Type == api.ServiceReady && e.Step == "db" && e.Attempt == 2 {
+			ready = i
+		}
+		if e.Type == api.StepStarted && e.Step == "use" && e.Attempt == 2 {
+			started = i
+		}
+	}
+	if ready < 0 {
+		t.Fatal("no second service.ready for db: the retry did not restart it")
+	}
+	if started < ready {
+		t.Errorf("use's second step.started at %d, before db's second service.ready at %d", started, ready)
+	}
+	states := foldStates(t, dir)
+	// Recovered: a manual retry of a failed step that then passes.
+	if states["use"] != api.StateRecovered {
+		t.Errorf("use = %s, want recovered", states["use"])
+	}
+	if states["db"] != api.StateSucceeded {
+		t.Errorf("db = %s, want succeeded once its consumer settled again", states["db"])
+	}
+}
+
 // lastIndex is indexOf from the end: a retried step has one step.finished
 // per execution.
 func lastIndex(events []api.Event, typ api.Type, step string) int {

@@ -388,6 +388,55 @@ func (rc *runCore) unsettleLocked(h schedHandle, id string) (nextAttempt int, an
 	return rc.oc.attempts[id] + 1, anchor, hadAnchor
 }
 
+// revivedService is a stopped service unsettled so a consumer going round
+// again has something to talk to.
+type revivedService struct {
+	id      string
+	attempt int
+}
+
+// reviveServicesLocked unsettles every service n needs DIRECTLY that has
+// already stopped, so the scheduler dispatches it again: a fresh stop
+// channel, a fresh probe, fresh endpoints. Without it, a consumer retried or
+// rerun after its last sibling consumer let the service stop would run with
+// no address for it (or, before withdraw existed, the dead one).
+//
+// Only a service that ran: one skipped by a condition or manually stays
+// skipped, since reviving it would run what the run decided not to, and one
+// still running needs nothing. A failed service is revived too: the retry
+// is the operator's request to try again, and refusing it would block the
+// analyzer-retry flow for exactly the consumer whose service died under it.
+//
+// The caller must hold h.mu, and emits the step.retried events (see
+// emitRevived) after releasing it.
+func (rc *runCore) reviveServicesLocked(h schedHandle, n *plan.Node) []revivedService {
+	if n == nil {
+		return nil
+	}
+	var out []revivedService
+	for _, need := range n.Needs {
+		svc := h.byID[need]
+		if svc == nil || !svc.IsService() || h.running[need] {
+			continue
+		}
+		st, settled := h.states[need]
+		if !settled || !(st == api.StateSucceeded || st == api.StateRecovered || st.Failed()) {
+			continue
+		}
+		attempt, _, _ := rc.unsettleLocked(h, need)
+		out = append(out, revivedService{id: need, attempt: attempt})
+	}
+	return out
+}
+
+// emitRevived announces each revived service's new execution. A service
+// has no handlers, so there is no handler.superseded to emit.
+func (rc *runCore) emitRevived(consumer string, revived []revivedService) {
+	for _, r := range revived {
+		rc.emitStepRetried(r.id, r.attempt, "restarted for "+consumer+", which needs it")
+	}
+}
+
 // emitHandlerSuperseded marks a completed OnFailure/Always pass as no longer
 // describing its step's final outcome, because attempt nextAttempt has
 // superseded the one it ran against. See api.HandlerSuperseded's own doc.
@@ -515,9 +564,26 @@ func (rc *runCore) handleRerunFrom(h schedHandle, req sink.ControlRequest) {
 		attempt, anchor, hadAnchor := rc.unsettleLocked(h, id)
 		revived = append(revived, reset{id: id, attempt: attempt, anchor: anchor, hadAnchor: hadAnchor})
 	}
+	// After the closure, so a service inside it (already unsettled) is not
+	// revived twice: what is left is a stopped service OUTSIDE the closure
+	// that a rerun consumer needs. The scheduler then dispatches it, and the
+	// consumer waits for it to be ready as on a first run.
+	type restart struct {
+		consumer string
+		svcs     []revivedService
+	}
+	var restarts []restart
+	for _, r := range revived {
+		if svcs := rc.reviveServicesLocked(h, h.byID[r.id]); len(svcs) > 0 {
+			restarts = append(restarts, restart{consumer: r.id, svcs: svcs})
+		}
+	}
 	h.mu.Unlock()
 
 	rc.emitControlApplied(req, map[string]string{"step": n.ID})
+	for _, r := range restarts {
+		rc.emitRevived(r.consumer, r.svcs)
+	}
 	reason := "rerun from " + n.ID + " requested via control by client " + req.ClientID
 	for _, r := range revived {
 		if r.hadAnchor {
@@ -916,6 +982,10 @@ func (rc *runCore) handleRunCancel(h schedHandle, req sink.ControlRequest) {
 // (rc.oc.attempts[id]+1), it never rewrites what is on disk or in the
 // ledger.
 //
+// A service the step needs directly that has already stopped is restarted
+// first (reviveServicesLocked), and the attempt waits for it to be ready:
+// the step is retried against a live address, never a dead one.
+//
 // The new attempt runs on its own goroutine, tracked by h.wg and respecting
 // h.acquire/h.release, exactly like an ordinary scheduled step. The bool
 // reports whether the retry was ACCEPTED: serveControl ignores it;
@@ -946,11 +1016,13 @@ func (rc *runCore) handleStepRetry(h schedHandle, req sink.ControlRequest) bool 
 	// immediately, so the node is busy from this instant.
 	h.running[stepID] = true
 	nextAttempt, anchor, hadAnchor := rc.unsettleLocked(h, stepID)
+	revivedSvcs := rc.reviveServicesLocked(h, n)
 	h.mu.Unlock()
 
 	// Args reconstructed from the validated stepID, never req.Args (see
 	// emitControlApplied).
 	rc.emitControlApplied(req, map[string]string{"step": stepID})
+	rc.emitRevived(stepID, revivedSvcs)
 
 	// hadAnchor is true only when a handler pass GENUINELY RAN against an
 	// earlier, not-yet-superseded attempt, taken from
@@ -984,6 +1056,27 @@ func (rc *runCore) handleStepRetry(h schedHandle, req sink.ControlRequest) bool 
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
+		// A revived service is dispatched by the scheduler on its next pass;
+		// this attempt waits for it to be ready (or to fail) BEFORE taking a
+		// slot, since the service needs one to start and with MaxParallel 1
+		// holding it here would deadlock the two. A service that stopped
+		// without becoming ready leaves this consumer what readySet would
+		// have made it: skipped_upstream_failed.
+		for _, r := range revivedSvcs {
+			select {
+			case <-rc.services.wait(r.id):
+			case <-h.ctx.Done():
+			}
+			if h.ctx.Err() == nil && !rc.services.ready(r.id) {
+				h.mu.Lock()
+				h.states[stepID] = api.StateSkippedUpstreamFailed
+				delete(h.running, stepID)
+				h.mu.Unlock()
+				rc.emitStepFinished(stepID, api.StateSkippedUpstreamFailed, "")
+				h.signal()
+				return
+			}
+		}
 		if err := h.acquire(h.ctx); err != nil {
 			// The run was cancelled while this retry waited for a slot:
 			// recorded exactly like a queued-but-never-dispatched step (see
