@@ -647,6 +647,34 @@ func TestRetryingAConsumerRestartsItsStoppedService(t *testing.T) {
 	}
 }
 
+// A shell on a consumer held after failing is told where its services are,
+// as the attempt was: the service is still up (its consumer has not
+// settled), and poking it by hand is the point of standing there.
+func TestAShellOnAHeldConsumerSeesItsServices(t *testing.T) {
+	port := freePort(t)
+	p := &plan.Plan{Version: 1, Nodes: []plan.Node{
+		serveNode(t, "db", port, false),
+		{ID: "use", Kind: "exec", Needs: []string{"db"}, Cmd: []string{"sh", "-c", "exit 3"}},
+	}}
+	dir := t.TempDir()
+	out, s, events := breakOnFailureRunIn(t, context.Background(), dir, openStore(t, dir), p, true)
+	waitForEvent(t, events, func(e api.Event) bool { return e.Type == api.BreakpointHit && e.Step == "use" })
+
+	sn := open(t, s, sink.ShellRequest{ID: "sh1", ClientID: "c1", Step: "use",
+		Cmd: []string{"sh", "-c", "echo $SENRO_SERVICE_DB_HOST:$SENRO_SERVICE_DB_PORT_" + strconv.Itoa(port)}})
+	if resp := sn.wait(t, 5*time.Second); !resp.OK || resp.ExitCode != 0 {
+		t.Fatalf("shell response = %+v, stderr = %q", resp, sn.stderr.String())
+	}
+	if got, want := strings.TrimSpace(sn.stdout.String()), "127.0.0.1:"+strconv.Itoa(port); got != want {
+		t.Errorf("the shell saw %q, want %q", got, want)
+	}
+	if resp := send(t, s.controlSink, sink.ControlRequest{ID: "c", Op: api.OpBreakpointClear,
+		ClientID: "tester", Args: map[string]string{"step": "use"}}); !resp.OK {
+		t.Fatalf("breakpoint.clear = %+v, want OK", resp)
+	}
+	waitRun(t, out)
+}
+
 // lastIndex is indexOf from the end: a retried step has one step.finished
 // per execution.
 func lastIndex(events []api.Event, typ api.Type, step string) int {

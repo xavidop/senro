@@ -306,11 +306,25 @@ func (rc *runCore) runShellSession(
 	}
 
 	env := plan.ShellEnv(n)
-	// Secrets is empty, deliberately and permanently. See this file's doc.
-	sb, err := ex.Sandbox(ctx, executor.SandboxSpec{
+	// Where the services this step needs answer, as its own attempt was
+	// told: a consumer held after failing is exactly where someone wants to
+	// poke the database by hand. Only services still up (the table forgets
+	// a stopped one), so a session never names an address nothing answers
+	// on. Addresses carry host and port only, so this widens nothing the
+	// secret rule above guards.
+	spec := executor.SandboxSpec{
 		StepID: shellStepID(n.ID, session), Attempt: 1,
-		Env: env, WorkDir: workDir, Mounts: mounts,
-	})
+		WorkDir: workDir, Mounts: mounts,
+	}
+	if svcEnv := rc.serviceEnv(n); len(svcEnv) > 0 {
+		env = append(append([]string(nil), env...), svcEnv...)
+		if consumesFromContainer(n) {
+			spec.ExtraHosts = []string{dockerHostGateway}
+		}
+	}
+	spec.Env = env
+	// Secrets is empty, deliberately and permanently. See this file's doc.
+	sb, err := ex.Sandbox(ctx, spec)
 	if err != nil {
 		refuseShell(req, reasonSandbox)
 		return
