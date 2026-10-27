@@ -319,14 +319,20 @@ verify.Step("generated", exec.Command("go", "generate", "./...")).
   (up to ten paths, then `and N more`). Added, removed, modified, mode and
   kind changes all count.
 - A non-zero exit is the generator's own failure; the check does not run.
-- The drifted snapshot is kept: `senro ws diff` and `senro ws pull` show what
-  the generator produced.
+- The drift is within one run. The drifted snapshot is kept: `senro ws pull
+  RUN src` writes out what the generator produced (the workspace's last
+  snapshot in the run); `senro ws diff CLEAN-RUN RUN src` only compares with a
+  clean run.
 - A sibling step that writes the same run-scoped workspace shows as drift.
   Give the checking step its own workspace or order it with `Needs`.
 - `Build` refuses it on a service, together with `NoSnapshot`, and on a step
   with no read-write workspace mount.
 - `Retry` together with `CheckGenerated` is refused at `Build`: a retry would compare against the
-  drifted tree. A step whose only read-write mounts are step-scoped or claim-backed is refused too.
+  drifted tree. A manual `step.retry` (TUI, browser, after a `--break-on-failure` hold) is refused
+  `check_generated_drifted_tree` for the same reason; `senro rerun --step` is a fresh run and works.
+- A step whose only read-write mounts are step-scoped or claim-backed is refused too: neither is
+  snapshotted (no later step reads a step-scoped one; a claim has no coordinator-side copy). A
+  handler cannot `CheckGenerated`: it mounts its parent's workspaces read-only.
 - `CheckGenerated` is part of the cache key (`step_shape`).
 
 ## Kits: `Add` and `kit/*`
@@ -973,8 +979,8 @@ window size from its own stdin's terminal, which it lacks):
 
 A refusal is a first-class answer: `ok:false` with a stable code (`unknown_op`,
 `run_finished`, `already_cancelled`, `run_not_active`, `missing_step`,
-`unknown_step`, `step_running`, `step_not_failed`, `step_settled`,
-`step_not_settled`, `breakpoint_exists`, `no_breakpoint`, `already_paused`,
+`unknown_step`, `step_running`, `step_not_failed`,
+`check_generated_drifted_tree`, `step_settled`, `step_not_settled`, `breakpoint_exists`, `no_breakpoint`, `already_paused`,
 `not_paused`, `missing_proposal`, `unknown_proposal`, `proposal_settled`,
 `no_remedy`, `no_workspace`, `snapshot_failed`). An operation applies completely
 or is refused.
@@ -983,8 +989,14 @@ or is refused.
 
 A tag moves; `senro lock <pkg>` writes `<pkg>/senro.lock`, pinning every
 container image the pipeline names by tag to its current digest. `senro run`
-and `senro up` apply that file when it exists (`SENRO_LOCK`); from Go it is
-`senro.WithLock(path)`, which wins over the variable.
+and `senro up` apply that file when it exists (`SENRO_LOCK`; a `SENRO_LOCK` you
+set yourself wins, an empty value counts as unset, and to run unlocked you move
+or delete the file); from Go it is `senro.WithLock(path)`, which wins over the
+variable.
+
+- A locked run records the pins it applied (only its plan's images) as
+  `runs/<id>/lock.json` (`senro.RunLockFile`); `senro rerun` reapplies them, so
+  a rerun pulls the same digests. No `lock.json`, no lock on the rerun.
 
 - Strict: a locked run refuses an image the file does not list, before a run
   directory exists (`senro: image "golang:1.26" is not in ci/senro.lock; run
@@ -1010,8 +1022,11 @@ exit 78 `neutral`, exit 0 `success`, non-zero `failure`, killed by the
 dispatcher's `-timeout` or `-cancel-in-progress` `cancelled`, a start or
 staging failure `failure`, a busy group `neutral`. A check the pipeline already
 completed is left alone. The App needs `checks: write` and `metadata: read` and
-the `push` and `pull_request` events. The installation token lives one hour
-(refreshed at 50 minutes for the close), hence `-timeout` defaults to one hour.
+the `push` and `pull_request` events. The installation token is scoped to the
+delivery's one repository with `checks: write` and `metadata: read`, lives one
+hour (refreshed at 50 minutes for the close, same scope), hence `-timeout`
+defaults to one hour. A dispatcher that crashes mid-run leaves its check
+`in_progress`.
 
 The pipeline gets `SENRO_GITHUB_TOKEN`, `_API`, `_REPO`, `_SHA`, `_CHECK_RUN`,
 `_CHECK_NAME` and `_DETAILS_URL`, read by `notify.GitHubChecksFromEnv()`:

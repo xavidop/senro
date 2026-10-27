@@ -71,6 +71,10 @@ Run this on a schedule to learn that a base image moved before a build does.
 ## Applying a lock
 
 `senro run` and `senro up` apply `<pkg>/senro.lock` when it exists, and need no flag to do so.
+They do it by setting `SENRO_LOCK` for the pipeline, so a `SENRO_LOCK` you set yourself beats
+`<pkg>/senro.lock`; an empty value counts as unset. There is no flag to run unlocked: to run
+without the lock, move or delete `<pkg>/senro.lock`.
+
 A pipeline run any other way passes the file itself:
 
 ```go
@@ -82,6 +86,12 @@ sets. `WithLock` wins over the variable.
 
 An applied lock changes what the executor pulls, not what you wrote. The plan is the same with or
 without a lock.
+
+**Reruns reapply the recorded pins.** A locked run writes the pins it applied to
+`runs/<id>/lock.json`, beside its manifest: a lock file holding only the images that run's plan
+named by tag. [`senro rerun`](/docs/cli/rerun/) reads it and applies it, so a rerun pulls the
+digests the run pulled, whatever `<pkg>/senro.lock` says today. A run directory without
+`lock.json` was not locked, and reruns unlocked.
 
 **The lock is strict.** A run with a lock refuses, before it creates a run directory, an image the
 file doesn't list:

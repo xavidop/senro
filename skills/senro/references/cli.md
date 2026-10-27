@@ -106,7 +106,10 @@ per image; under `--check`, one `<reference>  <locked>  ->  <current>` line per
 difference (`missing` for an absent side) and nothing is written.
 
 `senro run` and `senro up` set `SENRO_LOCK` to `<pkg>/senro.lock` when it
-exists; a locked run refuses an image the file does not list. Container images
+exists, unless you set `SENRO_LOCK` yourself (an empty value counts as unset;
+move or delete the file to run unlocked); a locked run refuses an image the
+file does not list. A locked run writes the pins it applied to
+`<run>/lock.json`, and `senro rerun` reapplies them. Container images
 only (Kubernetes steps already require a digest), HTTPS registries only.
 
 Exit `0` written or current, `1` drift under `--check` (recognised by the
@@ -154,7 +157,8 @@ purpose is never mistaken for one that hung.
 A refused control operation comes back as `ok:false` with a stable
 machine-readable code, not prose: `unknown_op`, `run_finished`,
 `already_cancelled`, `run_not_active`, `missing_step`, `unknown_step`,
-`step_running`, `step_not_failed`, `step_settled`, `step_not_settled`,
+`step_running`, `step_not_failed`, `check_generated_drifted_tree`,
+`step_settled`, `step_not_settled`,
 `breakpoint_exists`, `no_breakpoint`, `missing_proposal`, `unknown_proposal`,
 `proposal_settled`, `no_remedy`, `no_workspace`, `snapshot_failed`.
 
@@ -458,6 +462,8 @@ senro rerun [--run RUN] [--step STEP [--test NAME ...] [--failed-tests]]
 Re-executes the plan a previous run recorded, read from `<run>/plan.json`
 rather than by rebuilding the pipeline package, so a pipeline edited since
 cannot change what the re-run means. `--run` defaults to the most recent run.
+A run that recorded `<run>/lock.json` is rerun with
+those pins, so it pulls the same image digests; without one it reruns unlocked.
 Unchanged steps are served from the action cache, and a generator replays the
 subgraph it recorded unless `--regenerate` asks for a fresh one (a Go
 `senro.Generate` closure cannot be regenerated from a plan and fails, naming

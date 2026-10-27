@@ -57,7 +57,8 @@ plain repository webhook, another event, another provider) goes through the disp
 it does without the App flags.
 
 1. **Mint a token.** The dispatcher signs a short JWT with the App key and exchanges it for an
-   installation token for that repository.
+   installation token scoped to that one repository and to two permissions, `checks: write` and
+   `metadata: read`, whatever else the installation covers.
 2. **Create a queued check** on the commit being built: the `after` SHA of a push, the head SHA of
    a pull request. Its output says `Waiting for dispatcher group <group>`.
 3. **Take the group and answer `202`.** The two GitHub calls above happen before the answer, each
@@ -96,8 +97,10 @@ closed `neutral` at once, rather than left queued forever.
 
 ### Tokens
 
-An installation token lives one hour. When the run ends the dispatcher mints a fresh one if the
-first is 50 minutes old, and keeps the old one if that fails. The token travels in the pipeline's
+An installation token lives one hour and covers the delivery's repository only, with
+`checks: write` and `metadata: read`: an App installed on a whole organization still hands each
+pipeline a token for the one repository it is building. When the run ends the dispatcher mints a
+fresh one, scoped the same way, if the first is 50 minutes old, and keeps the old one if that fails. The token travels in the pipeline's
 environment and in `Authorization` headers and nowhere else: no log line or error carries it, the
 JWT or the key.
 
@@ -142,6 +145,10 @@ creating a second one, and the completion fills in the conclusion and annotation
 - **GitHub only.** GitLab, Bitbucket and Gitea deliveries are dispatched as before, with no check.
 - **One check per delivery, one run per group.** The dispatcher is a lock, not a queue; see
   [Run it as a server](/docs/triggers/server/#one-run-at-a-time).
+- **A dispatcher crash leaves the check open.** Closing the check is step 5, done by the
+  dispatcher when the pipeline exits. A dispatcher that dies mid-run never gets there, so a check
+  the pipeline had not completed itself stays `in_progress` (or `queued`) on the commit until
+  something completes it, or GitHub marks it `stale` after 14 days.
 
 ## Where to go next
 

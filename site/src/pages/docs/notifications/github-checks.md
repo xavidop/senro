@@ -75,8 +75,9 @@ notify.GitHubChecks(owner, repo, sha, token, "",
 ```
 
 `run.started` then moves the check to in progress with a `PATCH`, and the completion `PATCH`es it as
-usual. Still two requests per run plus the one that adopts. An id of `0` is ignored, so the
-notifier creates a check as it always does.
+usual. The notifier still sends two requests per run, both `PATCH`es: the create is the
+dispatcher's, not the notifier's. An id of `0` is ignored, so the notifier creates a check as it
+always does.
 
 ## Details URL
 

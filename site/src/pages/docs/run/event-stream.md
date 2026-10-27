@@ -66,7 +66,7 @@ traced tool running inside a step joins the run's trace. See
 `step.finished` may carry a `usage` object for the attempt that concluded:
 
 ```json
-{"seq":9,"type":"step.finished","step":"test","payload":{"state":"succeeded","exit_code":0,"usage":{"cpu_user_ns":812000000,"cpu_system_ns":96000000,"max_rss_bytes":52428800}}}
+{"seq":9,"type":"step.finished","step":"test","payload":{"state":"succeeded","usage":{"cpu_user_ns":812000000,"cpu_system_ns":96000000,"max_rss_bytes":52428800}}}
 ```
 
 `cpu_user_ns` and `cpu_system_ns` are CPU time in nanoseconds; `max_rss_bytes` is peak resident

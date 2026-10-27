@@ -42,15 +42,24 @@ Workspaces with equal digests are equal, so the common case, up to date, reads n
 
 ## Looking at the difference
 
-The workspace after the step is kept, so you can see what the generator produced:
+The drift is within one run: the comparison is between what the step was given and what it left,
+both in the same run. The workspace after the step is kept as the step's own snapshot, and
+`ws pull` writes out the workspace's last snapshot in the run, which is that one when no later step
+wrote the workspace. Pull it to see what the generator produced:
 
 ```bash
-senro ws diff RUN-A RUN-B src
 senro ws pull RUN src ./generated
 ```
 
-See [Workspaces and runs](/docs/cli/workspaces/). `ws pull` gives you the regenerated tree to copy
-over your checkout and commit.
+That is the regenerated tree, to copy over your checkout and commit. `ws diff` compares two runs,
+not the two sides of one step, so use it only as a comparison against a clean run, one where the
+check passed:
+
+```bash
+senro ws diff CLEAN-RUN RUN src
+```
+
+See [Workspaces and runs](/docs/cli/workspaces/).
 
 ## Worth knowing
 
@@ -63,8 +72,12 @@ of its own, or order it with `Needs` so nothing else writes meanwhile.
 writes, and a [scratch cache](/docs/data/scratch/) is never snapshotted.
 
 **`Retry` and `CheckGenerated` do not mix.** A retry would compare against the tree the first
-attempt already drifted, not the tree the step was given, so `Build` refuses the combination. Rerun
-the pipeline instead.
+attempt already drifted, not the tree the step was given, so `Build` refuses the combination. A
+manual retry is refused for the same reason: the Retry key in `senro ui` and the browser, and a
+`step.retry` after a `--break-on-failure` hold, are answered `check_generated_drifted_tree` and the
+step stays `failed`. Fix the generator and start a new run, or use
+[`senro rerun --step`](/docs/cli/rerun/), which starts a fresh run from the recorded snapshots of
+what the step needs, not from the drifted tree.
 
 **The check is part of the cache key.** `CheckGenerated` enters the `step_shape` component of the
 [cache key](/docs/data/cache-keys/), so a result cached without the check is never served to a step
@@ -76,8 +89,12 @@ that has it.
 - **`NoSnapshot`.** The check compares snapshots, and `NoSnapshot` takes none.
 - **No read-write workspace mount.** A step with nothing it can write to has nothing to compare.
 - **`Retry`.** See above.
-- **Only step-scoped or claim-backed read-write mounts.** Neither outlives the step as a workspace
-  the check can compare, so a step whose only read-write mounts are of those kinds is refused.
+- **Only step-scoped or claim-backed read-write mounts.** Neither is snapshotted, and the check
+  compares snapshots: a step-scoped workspace is not snapshotted because no later step reads it,
+  and a claim-backed one because a claim has no coordinator-side copy to walk. A step whose only
+  read-write mounts are of those kinds is refused.
+- **A handler.** A handler mounts its parent's workspaces read-only, so it has nothing to
+  regenerate into.
 
 ## Where to go next
 

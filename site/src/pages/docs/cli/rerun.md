@@ -25,6 +25,11 @@ pipeline source is needed.
 Steps whose inputs haven't changed are served from the action cache, so an unchanged re-run is
 mostly cache hits.
 
+A rerun reapplies the recorded pins. A run that applied a [lock](/docs/cli/lock/) wrote the pins it
+used to `<run>/lock.json`, and `senro rerun` applies that file, so the rerun pulls the image digests
+the original run pulled rather than whatever the tags or `<pkg>/senro.lock` say now. A run without
+`lock.json` was not locked, and reruns unlocked.
+
 ## Flags
 
 | Flag | Meaning |

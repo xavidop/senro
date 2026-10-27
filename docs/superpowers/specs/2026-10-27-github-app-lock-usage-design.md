@@ -163,7 +163,9 @@ run` does with `SENRO_LOCK_WRITE` (or `SENRO_LOCK_CHECK`) set to `PATH`, default
 `<pkg>/senro.lock`, and forwards the child's stdout and exit code. `senro run` and `senro up` set
 `SENRO_LOCK=<pkg>/senro.lock` when that file exists and the user did not set `SENRO_LOCK`
 themselves. `senro lock` on a pipeline with no container or k8s steps writes an empty `images`
-map and says so.
+map and says so. A run that applies a lock records the applied pins (only the images its plan
+names by tag) as `runs/<id>/lock.json`, and `senro rerun` reapplies that file through `WithLock`,
+so a rerun pulls the digests the run pulled; a run directory without it reruns unlocked.
 
 ### `CheckGenerated`
 
