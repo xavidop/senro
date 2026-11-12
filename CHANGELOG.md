@@ -2,6 +2,13 @@
 
 All notable changes to senro are documented here. This file is generated from Conventional Commits by semantic-release.
 
+## [1.5.3](https://github.com/xavidop/senro/compare/v1.5.2...v1.5.3) (2026-11-12)
+
+
+### Bug Fixes
+
+* **deps:** tidy the contrib module and raise inotify limits in ci ([f8c5739](https://github.com/xavidop/senro/commit/f8c57394cda4c5ee95607218d85ba4a9633025b2))
+
 ## [1.5.2](https://github.com/xavidop/senro/compare/v1.5.1...v1.5.2) (2026-10-27)
 
 
