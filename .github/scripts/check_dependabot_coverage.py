@@ -85,10 +85,13 @@ def has_npm_project(directory: str) -> bool:
 
 
 def directories_for(config: dict, ecosystem: str) -> set[str]:
+    # An entry names one `directory` or several `directories` (a list, which
+    # is what lets dependabot group an update across modules into one PR).
     return {
-        update["directory"]
+        directory
         for update in config.get("updates", [])
         if update.get("package-ecosystem") == ecosystem
+        for directory in ([update["directory"]] if "directory" in update else update.get("directories", []))
     }
 
 
@@ -97,7 +100,7 @@ def main() -> int:
 
     problems: list[str] = []
 
-    # gomod: every discovered module needs its own entry, and every entry
+    # gomod: every discovered module needs to be listed, and every listed directory
     # needs to correspond to a module that still exists (a rename or removal
     # that leaves an entry behind makes dependabot log an error every run).
     modules = discover_go_modules()
