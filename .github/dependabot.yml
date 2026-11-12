@@ -1,28 +1,21 @@
 version: 2
 updates:
-  # senro itself: one module, one tag, everything in the repo except contrib/.
+  # Every Go module, in one entry so that Dependabot groups an update across
+  # modules into a single PR: one entry per module opened a PR per dependency
+  # per module, each of which ran the whole CI matrix.
+  # .github/scripts/check_dependabot_coverage.py keeps this list equal to the
+  # modules CI discovers (CI fails when a module is missing or stale here).
   - package-ecosystem: gomod
-    directory: "/"
-    schedule:
-      interval: weekly
-    groups:
-      go-dependencies:
-        patterns: ["*"]
-    labels: [dependencies, go]
-
-  # contrib/genkitanalyzer is a nested Go module with its own go.mod, so it
-  # needs its own entry: dependabot updates one manifest per entry, and the
-  # root entry above cannot see a manifest outside its own module. This is
-  # also the module whose dependencies actually move (Genkit's Go SDK and its
-  # tree), while senro's own graph is deliberately small.
-  #
-  # .github/scripts/check_dependabot_coverage.py fails CI when a go.mod has no
-  # entry here, so a third contrib module lands with its own entry or not at
-  # all.
-  - package-ecosystem: gomod
-    directory: "/contrib/genkitanalyzer"
-    schedule:
-      interval: weekly
+    directories:
+      # senro itself: one module, one tag, everything in the repo except contrib/.
+      - "/"
+      # contrib/genkitanalyzer is a nested Go module with its own go.mod, so it
+      # is listed by name: the root directory above cannot see a manifest
+      # outside its own module. This is also the module whose dependencies
+      # actually move (Genkit's Go SDK and its tree), while senro's own graph
+      # is deliberately small. A third contrib module is added to this list.
+      - "/contrib/genkitanalyzer"
+    schedule: { interval: weekly }
     groups:
       go-dependencies:
         patterns: ["*"]
@@ -33,9 +26,15 @@ updates:
     directory: "/"
     schedule: { interval: weekly }
     labels: [dependencies, ci]
+    groups:
+      github-actions:
+        patterns: ["*"]
 
   # Docs site (npm), built and deployed by .github/workflows/pages.yml.
   - package-ecosystem: npm
     directory: "/site"
     schedule: { interval: weekly }
     labels: [dependencies, docs]
+    groups:
+      npm-dependencies:
+        patterns: ["*"]
