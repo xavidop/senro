@@ -49,6 +49,13 @@ jobs:
       # macOS cross-platform job below deliberately does not set this: it
       # has no daemon, and dockertest.Require's skip is the correct outcome
       # there, printed with its reason.
+      # The k8s tests drive a real kind cluster, and its nodes are containers
+      # that share the runner's inotify limits. At the default of 128 instances
+      # a pod intermittently fails with "failed to create fsnotify watcher: too
+      # many open files", which fails
+      # TestEveryExecutorRealizesAMountedWorkspaceIdentically/k8s.
+      - name: Raise inotify limits for kind
+        run: sudo sysctl -w fs.inotify.max_user_instances=8192 fs.inotify.max_user_watches=524288
       - name: go test (race, coverage)
         env:
           SENRO_REQUIRE_DOCKER: "1"
@@ -131,6 +138,9 @@ jobs:
         run: |
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # Same reason as in the test job: make all runs the k8s tests too.
+      - name: Raise inotify limits for kind
+        run: sudo sysctl -w fs.inotify.max_user_instances=8192 fs.inotify.max_user_watches=524288
       - run: make all
 
   # contrib/ holds NESTED Go modules, each with its own go.mod. Go excludes a
