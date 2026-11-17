@@ -8,8 +8,8 @@ require (
 )
 
 require (
-	github.com/klauspost/compress v1.20.3
-	github.com/xavidop/mamori v1.13.0
+	github.com/klauspost/compress v1.20.4
+	github.com/xavidop/mamori v1.13.1
 )
 
 require (
